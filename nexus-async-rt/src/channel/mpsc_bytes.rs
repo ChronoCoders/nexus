@@ -64,6 +64,10 @@ impl RxWakerSlot {
 
     /// Register the receiver's task pointer. Single-registerer only.
     fn register(&self, task_ptr: *mut u8) {
+        debug_assert!(
+            !task_ptr.is_null(),
+            "RxWakerSlot::register called with null task_ptr"
+        );
         let prev = self.state.swap(REGISTERING, Ordering::Acquire);
         debug_assert_ne!(prev, REGISTERING);
 
@@ -72,7 +76,8 @@ impl RxWakerSlot {
         // mid-`wake()` can't have it freed underneath. Matched by
         // ref_dec in wake/clear/Drop.
         // SAFETY: caller (RecvFut::poll) just received task_ptr from
-        // the active receiver task whose refcount is >= 1.
+        // the active receiver task whose refcount is >= 1; the
+        // debug_assert above catches the null case in development.
         unsafe { crate::task::ref_inc(task_ptr) };
 
         // Release any prior registration's ref. Always check prev_ptr —
@@ -1076,8 +1081,19 @@ mod uaf_tests {
 
         let pre_fix = match unsafe { task::complete_and_unref(task_ptr) } {
             FreeAction::FreeBox => {
-                unsafe { task::free_task(task_ptr) };
-                true
+                // PRE-FIX path: under regular cargo test, fail early
+                // (avoid segfault from the deref below). Under miri,
+                // trigger the UAF so the diagnostic trace fires.
+                #[cfg(not(miri))]
+                panic!(
+                    "BUG-2 regression detected: register skipped ref_inc. \
+                     Run under miri for the full UAF trace."
+                );
+                #[cfg(miri)]
+                {
+                    unsafe { task::free_task(task_ptr) };
+                    true
+                }
             }
             FreeAction::Retain => false,
             FreeAction::FreeSlab => panic!("box test must not yield FreeSlab"),

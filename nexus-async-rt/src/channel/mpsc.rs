@@ -65,6 +65,11 @@ impl RxWakerSlot {
     /// Register the receiver's task pointer. Called by RecvFut::poll.
     /// Single-registerer only.
     fn register(&self, task_ptr: *mut u8) {
+        debug_assert!(
+            !task_ptr.is_null(),
+            "RxWakerSlot::register called with null task_ptr — \
+             contract violation by caller (typically RecvFut::poll)"
+        );
         let prev = self.state.swap(REGISTERING, Ordering::Acquire);
         debug_assert_ne!(prev, REGISTERING, "concurrent register on RxWakerSlot");
 
@@ -73,7 +78,8 @@ impl RxWakerSlot {
         // it freed underneath. The matching `ref_dec` happens in `wake`
         // (after `wake_task_cross_thread` returns), `clear`, or `Drop`.
         // SAFETY: caller (RecvFut::poll) just received task_ptr from the
-        // active receiver task whose refcount is >= 1.
+        // active receiver task whose refcount is >= 1; the debug_assert
+        // above catches the null case in development.
         unsafe { crate::task::ref_inc(task_ptr) };
 
         // Release any prior registration's ref. Always check prev_ptr —
@@ -1146,10 +1152,24 @@ mod uaf_tests {
         // CAS'd it above), so any future `Drop`-time release won't fire.
         let pre_fix = match action {
             FreeAction::FreeBox => {
-                // PRE-FIX path. The sender is about to deref freed memory.
-                // Free now to make the UAF deterministic for miri.
-                unsafe { task::free_task(task_ptr) };
-                true
+                // PRE-FIX path: register skipped the ref_inc, so the
+                // executor's complete_and_unref produced terminal. Under
+                // regular `cargo test`, fail early — the deref below
+                // would manifest as a segfault rather than a clean
+                // assertion failure. Under `cargo +nightly miri test`,
+                // proceed to trigger the UAF so miri can produce its
+                // diagnostic trace (the original BUG-2 proof).
+                #[cfg(not(miri))]
+                panic!(
+                    "BUG-2 regression detected: register skipped ref_inc, \
+                     so complete_and_unref produced FreeBox instead of \
+                     Retain. Run under miri for the full UAF trace."
+                );
+                #[cfg(miri)]
+                {
+                    unsafe { task::free_task(task_ptr) };
+                    true
+                }
             }
             FreeAction::Retain => false,
             FreeAction::FreeSlab => {
