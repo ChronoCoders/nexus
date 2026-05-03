@@ -456,34 +456,76 @@ impl Drop for Executor {
             // Task is completed but not TERMINAL — outstanding refs exist.
             let rc = unsafe { task::ref_count(ptr) };
             if rc > 0 {
-                // Don't panic if we're already unwinding from another panic
-                // — that would be a double-panic and abort the process
-                // (SIGABRT). Drop impls must not panic during unwinding,
-                // per Rust convention. The user-error sanity check is only
-                // useful when shutdown is the FIRST thing happening; if a
-                // panic is in flight, the user already has a bug to fix
-                // and we shouldn't compound it by aborting.
-                //
-                // Resources held by the task have already been released
-                // by `drop_task_future` above (Aeron publishers, sockets,
-                // file handles all run their Drop impls there). What
-                // leaks here is just the task allocation + waker
-                // bookkeeping — small bounded memory, freed at process
-                // exit.
-                #[cfg(debug_assertions)]
                 if std::thread::panicking() {
+                    // Mid-unwind — must not double-panic (would abort the
+                    // process via SIGABRT). Resources held by the task
+                    // were already released by `drop_task_future` above
+                    // (Aeron publishers, sockets, file handles all run
+                    // their Drop impls there).
+                    //
+                    // Cleanup behavior differs by allocation type because
+                    // of how the task memory gets reclaimed:
+                    //
+                    // - **Box tasks**: leaking is safe. The Box just sits
+                    //   in process memory; outstanding cross-thread waker
+                    //   refs that later run `ref_dec` see valid memory.
+                    //   Memory is reclaimed at process exit.
+                    //
+                    // - **Slab tasks**: leaking is UNSAFE. After this
+                    //   `Executor::drop` returns, the `_slab_guard`
+                    //   field on Runtime drops, freeing the slab's
+                    //   backing storage. Outstanding cross-thread waker
+                    //   refs that later run `ref_dec` would access
+                    //   freed slab memory → UAF.
+                    //
+                    //   For slab tasks, we wait briefly for cross-thread
+                    //   wakers to drop their refs (this happens
+                    //   asynchronously on producer threads — e.g.,
+                    //   tokio's worker thread). If they settle within
+                    //   the deadline, we free cleanly. If not, we abort
+                    //   — the original SIGABRT we were trying to avoid,
+                    //   but UAF would be worse.
+                    if unsafe { task::is_slab_allocated(ptr) } {
+                        let deadline = std::time::Instant::now()
+                            + std::time::Duration::from_millis(100);
+                        while unsafe { task::ref_count(ptr) } > 0
+                            && std::time::Instant::now() < deadline
+                        {
+                            std::thread::yield_now();
+                        }
+                        if unsafe { task::ref_count(ptr) } > 0 {
+                            eprintln!(
+                                "nexus-async-rt: slab task {ptr:p} has \
+                                 outstanding refs after 100ms during unwinding \
+                                 — aborting to avoid UAF on slab memory \
+                                 release. Cross-thread waker producer thread \
+                                 may be deadlocked or starved."
+                            );
+                            std::process::abort();
+                        }
+                        // Refs settled — free cleanly. Avoid the panic
+                        // path below.
+                        unsafe { task::free_task(ptr) };
+                        continue;
+                    }
+                    // Box task — leak is safe.
                     eprintln!(
                         "nexus-async-rt: executor dropped with {rc} outstanding \
-                         reference(s) during unwinding — suppressing panic to avoid \
-                         abort. Task resources were released via drop_task_future; \
-                         leaking task allocation + waker bookkeeping memory."
+                         reference(s) during unwinding — suppressing panic to \
+                         avoid abort. Task resources were released via \
+                         drop_task_future; leaking box task allocation + waker \
+                         bookkeeping memory."
                     );
-                } else {
-                    panic!(
-                        "executor dropped with {rc} outstanding reference(s) — \
-                         all wakers and JoinHandles must be dropped before the Runtime"
-                    );
+                    continue;
                 }
+
+                // Normal shutdown (no panic in flight) — sanity-check the
+                // user's lifetime discipline.
+                #[cfg(debug_assertions)]
+                panic!(
+                    "executor dropped with {rc} outstanding reference(s) — \
+                     all wakers and JoinHandles must be dropped before the Runtime"
+                );
                 #[cfg(not(debug_assertions))]
                 eprintln!(
                     "nexus-async-rt: executor dropped with {rc} outstanding task \
