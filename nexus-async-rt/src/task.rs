@@ -120,9 +120,9 @@ pub(crate) enum FreeAction {
 ///
 /// - Each `TaskRef` owns exactly one refcount unit on the underlying task.
 /// - `Drop` decrements; if terminal, the task is routed via
-///   `crate::cross_wake::dispose_terminal` (defer locally on the owning
-///   executor thread, queue cross-thread, or free directly for tasks
-///   with no runtime context).
+///   `crate::cross_wake::dispose_terminal` (defer via `try_defer_free`
+///   on the owning executor thread or for null-ctx test tasks; queue
+///   via the cross-wake queue off-thread).
 pub(crate) struct TaskRef {
     ptr: *mut u8,
 }
@@ -166,10 +166,20 @@ impl Drop for TaskRef {
         match unsafe { ref_dec(self.ptr) } {
             FreeAction::Retain => {}
             FreeAction::FreeBox | FreeAction::FreeSlab => {
-                // SAFETY: terminal state — ref just dropped to 0 with all
-                // lifecycle flags clear. dispose_terminal handles routing
-                // (defer / cross-queue / direct-free) per the task's
-                // header context and current thread.
+                // SAFETY: terminal state — ref just dropped to 0 with
+                // all lifecycle flags clear. dispose_terminal routes
+                // per the task's header context and current thread:
+                //
+                //   - On-thread (or null-ctx test task): try_defer_free
+                //     pushes to DEFERRED_FREE TLS if a poll cycle is
+                //     active; otherwise the slot leaks until
+                //     Executor::drop reclaims via its all_tasks scan.
+                //   - Off-thread: queues via the cross-wake queue +
+                //     conditional eventfd poke.
+                //
+                // Direct-free is never used — would race
+                // Executor::all_tasks bookkeeping. See dispose_terminal's
+                // doc-comment in `cross_wake.rs` for the full rationale.
                 unsafe { crate::cross_wake::dispose_terminal(self.ptr) };
             }
         }
@@ -797,9 +807,15 @@ pub(crate) unsafe fn storage_offset(ptr: *mut u8) -> usize {
 /// `ptr` must point to a live `Task<S>` (header still valid).
 #[inline]
 pub(crate) unsafe fn header_cross_wake_ctx(ptr: *mut u8) -> *const CrossWakeContext {
-    // SAFETY: cross_wake_ctx is *const CrossWakeContext at offset 64
-    // in repr(C) Task. The field is initialized at spawn and never
-    // mutated afterwards — single-threaded read is sound.
+    // SAFETY: `cross_wake_ctx` is `*const CrossWakeContext` at offset 64
+    // in `repr(C) Task`. The field is initialized exactly once at spawn
+    // time under the spawning thread's exclusive ownership, then made
+    // visible to other threads via Arc/refcount publication (any TaskRef
+    // holder transitively keeps the owning runtime's Arc alive, and the
+    // Arc's atomic-counter publication establishes happens-before for the
+    // read). Immutable after init — concurrent reads from any thread are
+    // sound. dispose_terminal explicitly reads this from foreign threads
+    // when routing terminal drops from cross-thread waker holders.
     unsafe { *(ptr.add(64).cast::<*const CrossWakeContext>()) }
 }
 

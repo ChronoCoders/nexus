@@ -517,10 +517,20 @@ mod tests {
     // =========================================================================
 
     fn make_ctx() -> Arc<CrossWakeContext> {
-        // Real mio waker + queue. Construction is lightweight enough
-        // for unit tests; miri tolerates the mio FFI here because
-        // CrossWakeContext doesn't actually call wake() unless `parked`
-        // is true (we keep it false in these tests).
+        // Real mio Poll + Waker. mio 1.x exposes no public Waker
+        // constructor that bypasses Poll (no `from_raw_fd`, no
+        // `with_eventfd`), so a syscall-free test ctx would require
+        // changing CrossWakeContext to hold `Option<Arc<mio::Waker>>`
+        // — production-code churn whose only motivation is test
+        // ergonomics. Keep the real mio construction here; the tests
+        // never set `parked = true` so `mio_waker.wake()` is never
+        // called.
+        //
+        // Tests pass under `-Zmiri-tree-borrows -Zmiri-ignore-leaks`
+        // today. If a future miri tightens its epoll/eventfd shim and
+        // breaks these tests, revisit by either (a) wrapping mio_waker
+        // in an Option behind a trait abstraction, or (b) skipping
+        // these tests under miri via #[cfg_attr(miri, ignore)].
         let poll = mio::Poll::new().expect("mio::Poll");
         let waker = mio::Waker::new(poll.registry(), mio::Token(0)).expect("mio::Waker");
         Arc::new(CrossWakeContext {
