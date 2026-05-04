@@ -451,8 +451,8 @@ pub(crate) unsafe fn wake_task_cross_thread(task_ptr: *mut u8, ctx: &CrossWakeCo
 //    derefs `task_ptr` (`is_completed`); releasing first risks the deref
 //    hitting freed memory if our release was the terminal ref.
 
-/// Shared wakeslot state values. `pub(crate)` because both
-/// `TaskWakerSlot` and `FallbackWaker` use them.
+/// Shared wakeslot state values. Private to this module — both
+/// `TaskWakerSlot` and `FallbackWaker` (defined below) use them.
 const EMPTY: u8 = 0;
 const STORED: u8 = 1;
 const REGISTERING: u8 = 2;
