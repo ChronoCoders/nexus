@@ -34,6 +34,19 @@
 //! `poll_join` drops `F` in place and writes `T` to the same bytes.
 //! `drop_fn` is overwritten from `drop_fn::<F>` to `drop_output::<T>`
 //! so subsequent cleanup targets the correct type.
+//!
+//! ## `TaskRef` ownership rule
+//!
+//! [`TaskRef`] covers every refcount holder EXCEPT the executor's own
+//! `all_tasks` ref. That single ref uses [`complete_and_unref`] directly
+//! (atomic COMPLETED-set + decrement), bypassing TaskRef's Drop-time
+//! `dispose_terminal` routing. Wrapping `all_tasks` ownership in TaskRef
+//! would route terminal frees through `dispose_terminal` →
+//! `try_defer_free`, double-handling tasks the executor is already
+//! tracking. Subtle regression — don't do it.
+//!
+//! Everything else (local wakers, cross-thread wakers, channel slots,
+//! `JoinHandle`) IS a `TaskRef`.
 
 use std::cell::UnsafeCell;
 use std::future::Future;
@@ -41,6 +54,8 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
+
+use crate::cross_wake::CrossWakeContext;
 
 // =============================================================================
 // Packed state word — constants
@@ -89,32 +104,129 @@ pub(crate) enum FreeAction {
 }
 
 // =============================================================================
+// TaskRef — RAII smart pointer pairing ref_inc with ref_dec
+// =============================================================================
+
+/// Refcounted handle to a task. Pairs `ref_inc` with `ref_dec` at
+/// compile time — Drop calls `ref_dec` and routes terminal results
+/// through `dispose_terminal`.
+///
+/// `TaskRef` is the canonical refcount holder for everything except the
+/// executor's `all_tasks` ref (see the module-level doc-block). Local
+/// wakers, cross-thread wakers, channel slots, and `JoinHandle` all
+/// hold a `TaskRef`.
+///
+/// # Invariants
+///
+/// - Each `TaskRef` owns exactly one refcount unit on the underlying task.
+/// - `Drop` decrements; if terminal, the task is routed via
+///   `crate::cross_wake::dispose_terminal` (defer via `try_defer_free`
+///   on the owning executor thread or for null-ctx test tasks; queue
+///   via the cross-wake queue off-thread).
+pub(crate) struct TaskRef {
+    ptr: *mut u8,
+}
+
+impl TaskRef {
+    /// Acquire a reference. Increments the task's refcount.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a live task with refcount >= 1 at the time of call.
+    #[inline]
+    pub(crate) unsafe fn acquire(ptr: *mut u8) -> Self {
+        unsafe { ref_inc(ptr) };
+        Self { ptr }
+    }
+
+    /// Wrap a pre-incremented pointer (no `ref_inc` here).
+    ///
+    /// Use when the caller has already accounted for the ref (e.g., on
+    /// the boundary of a vtable handoff like `RawWaker::data` →
+    /// `wake_fn` consuming the ref).
+    ///
+    /// # Safety
+    ///
+    /// `ptr` owns one ref. The caller must not also drop it.
+    #[inline]
+    pub(crate) unsafe fn from_owned(ptr: *mut u8) -> Self {
+        Self { ptr }
+    }
+
+    /// The raw task pointer this handle holds.
+    #[inline]
+    pub(crate) fn as_ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+}
+
+impl Drop for TaskRef {
+    #[inline]
+    fn drop(&mut self) {
+        match unsafe { ref_dec(self.ptr) } {
+            FreeAction::Retain => {}
+            FreeAction::FreeBox | FreeAction::FreeSlab => {
+                // SAFETY: terminal state — ref just dropped to 0 with
+                // all lifecycle flags clear. dispose_terminal routes
+                // per the task's header context and current thread:
+                //
+                //   - On-thread (or null-ctx test task): try_defer_free
+                //     pushes to DEFERRED_FREE TLS if a poll cycle is
+                //     active; otherwise the slot leaks until
+                //     Executor::drop reclaims via its all_tasks scan.
+                //   - Off-thread: queues via the cross-wake queue +
+                //     conditional eventfd poke.
+                //
+                // Direct-free is never used — would race
+                // Executor::all_tasks bookkeeping. See dispose_terminal's
+                // doc-comment in `cross_wake.rs` for the full rationale.
+                unsafe { crate::cross_wake::dispose_terminal(self.ptr) };
+            }
+        }
+    }
+}
+
+// SAFETY: TaskRef is a raw pointer + refcount discipline. The underlying
+// task allocation is Send-safe (atomic state, no thread-affine fields
+// in the header). Cross-thread holders (tokio_compat, channel slots)
+// store TaskRef across threads, so it must be Send.
+unsafe impl Send for TaskRef {}
+// Not Sync — only the holder may drop. Cloning a TaskRef means a new
+// ref_inc; aliasing through &TaskRef would let two holders ref_dec
+// the same logical ref.
+
+// =============================================================================
 // Task layout
 // =============================================================================
 
 /// Header size in bytes. Must match the layout of `Task<F>` before the
-/// `future` field.
-pub const TASK_HEADER_SIZE: usize = 64;
+/// `storage` field.
+pub const TASK_HEADER_SIZE: usize = 72;
 
 /// Task header + storage in a contiguous allocation. `repr(C)` for
 /// deterministic layout.
 ///
 /// `S` is the storage type — either just `F` (fire-and-forget) or a union
-/// of `F` and `T` (joinable). The header is always 64 bytes regardless of `S`.
+/// of `F` and `T` (joinable). The header is always 72 bytes regardless of `S`.
 ///
 /// Layout (64-bit):
 /// ```text
-/// offset  0: poll_fn       (8B, fn pointer — polls the future)
-/// offset  8: drop_fn       (8B, fn pointer — drops F or T in place)
-/// offset 16: free_fn       (8B, fn pointer — deallocates the task storage)
-/// offset 24: state         (8B, AtomicUsize — packed flags + refcount)
-/// offset 32: cross_next    (8B, AtomicPtr — intrusive cross-thread wake queue)
-/// offset 40: join_waker    (16B, UnsafeCell<Option<Waker>>)
+/// offset  0: poll_fn        (8B, fn pointer — polls the future)
+/// offset  8: drop_fn        (8B, fn pointer — drops F or T in place)
+/// offset 16: free_fn        (8B, fn pointer — deallocates the task storage)
+/// offset 24: state          (8B, AtomicUsize — packed flags + refcount)
+/// offset 32: cross_next     (8B, AtomicPtr — intrusive cross-thread wake queue)
+/// offset 40: join_waker     (16B, UnsafeCell<Option<Waker>>)
 /// offset 56: storage_offset (2B, u16 — byte offset to storage field)
-/// offset 58: _pad          (2B)
-/// offset 60: tracker_key   (4B, u32 — index in Executor::all_tasks slab)
-/// offset 64: storage       (S bytes — future F or union { F, T })
+/// offset 58: _pad           (2B)
+/// offset 60: tracker_key    (4B, u32 — index in Executor::all_tasks slab)
+/// offset 64: cross_wake_ctx (8B, *const CrossWakeContext — cold; read by dispose_terminal)
+/// offset 72: storage        (S bytes — future F or union { F, T })
 /// ```
+///
+/// `cross_wake_ctx` lives at the end of the header because it's only
+/// touched on terminal Drop (cold path); hot-path reads (state, drop_fn,
+/// poll_fn, free_fn) stay near the cache-line head.
 #[repr(C)]
 pub(crate) struct Task<S> {
     /// Polls the future. Receives the task base pointer.
@@ -136,6 +248,12 @@ pub(crate) struct Task<S> {
     _pad: [u8; 2],
     /// Index into the Executor's `all_tasks` slab.
     tracker_key: u32,
+    /// Pointer to the runtime's [`CrossWakeContext`] (Arc-backed, heap-stable).
+    /// Set at spawn time. Read by `dispose_terminal` on terminal Drop to
+    /// route the task through the owning executor (defer locally) or its
+    /// cross-thread queue (off-thread). Null for tasks not associated
+    /// with any runtime (test-only `Task::new_boxed` path).
+    cross_wake_ctx: *const CrossWakeContext,
     storage: S,
 }
 
@@ -157,14 +275,23 @@ impl<F: Future<Output = ()> + 'static> Task<F> {
     ///
     /// Used internally for tests and low-level task construction.
     /// `ref_count = 1` (executor only), `HAS_JOIN` not set.
+    /// `cross_wake_ctx` is null — test tasks aren't registered with any
+    /// runtime. Terminal frees go through `dispose_terminal`'s on-thread
+    /// defer path (`try_defer_free` if a poll cycle is active, otherwise
+    /// leak until `Executor::drop`'s `all_tasks` scan reclaims them).
+    /// Direct-free is unsafe even for null-ctx tasks because
+    /// `dispose_terminal` doesn't own `all_tasks` bookkeeping — see
+    /// `dispose_terminal`'s doc-comment in `cross_wake.rs` for the full
+    /// rationale.
     ///
     /// # Why `Output = ()` is required
     ///
-    /// This uses `poll_join::<F>` which writes T at offset 64 after dropping F.
-    /// The storage is `F` (not `FutureOrOutput<F, T>`), so it's only sized for F.
-    /// With `T = ()` (ZST), the write is zero-size and the `drop_fn` overwrite
-    /// to `drop_output::<()>` is a no-op. Relaxing this bound to non-ZST T
-    /// would write T into storage not sized for it — UB.
+    /// This uses `poll_join::<F>` which writes T at the storage offset
+    /// after dropping F. The storage is `F` (not `FutureOrOutput<F, T>`),
+    /// so it's only sized for F. With `T = ()` (ZST), the write is
+    /// zero-size and the `drop_fn` overwrite to `drop_output::<()>` is a
+    /// no-op. Relaxing this bound to non-ZST T would write T into
+    /// storage not sized for it — UB.
     #[cfg(test)]
     #[inline]
     pub(crate) fn new_boxed(future: F, tracker_key: u32) -> Self {
@@ -178,6 +305,7 @@ impl<F: Future<Output = ()> + 'static> Task<F> {
             storage_offset: std::mem::offset_of!(Task<F>, storage) as u16,
             tracker_key,
             _pad: [0; 2],
+            cross_wake_ctx: std::ptr::null(),
             storage: future,
         }
     }
@@ -188,7 +316,16 @@ impl<F: Future<Output = ()> + 'static> Task<F> {
 /// The task has `ref_count = 2` (executor + JoinHandle) and `HAS_JOIN` set.
 /// The allocation is sized for `max(size_of::<F>(), size_of::<T>())` via
 /// the `FutureOrOutput<F, T>` union.
-pub(crate) fn box_spawn_joinable<F>(future: F, tracker_key: u32) -> *mut u8
+///
+/// `cross_wake_ctx` should be `Arc::as_ptr(&runtime.cross_wake)` for
+/// real spawns (Arc-backed, heap-stable), or `std::ptr::null()` for
+/// tasks not associated with any runtime (test paths only). Read by
+/// `dispose_terminal` on terminal Drop.
+pub(crate) fn box_spawn_joinable<F>(
+    future: F,
+    tracker_key: u32,
+    cross_wake_ctx: *const CrossWakeContext,
+) -> *mut u8
 where
     F: Future + 'static,
     F::Output: 'static,
@@ -205,6 +342,7 @@ where
         storage_offset: std::mem::offset_of!(Task<Storage<F>>, storage) as u16,
         tracker_key,
         _pad: [0; 2],
+        cross_wake_ctx,
         storage: FutureOrOutput {
             future: std::mem::ManuallyDrop::new(future),
         },
@@ -216,10 +354,13 @@ where
 ///
 /// Returns the task struct to be copied into a slab slot. Uses the
 /// `FutureOrOutput<F, T>` union so the allocation fits both.
+///
+/// See `box_spawn_joinable` for the `cross_wake_ctx` contract.
 pub(crate) fn new_joinable_slab<F>(
     future: F,
     tracker_key: u32,
     free_fn: unsafe fn(*mut u8),
+    cross_wake_ctx: *const CrossWakeContext,
 ) -> Task<FutureOrOutput<F, F::Output>>
 where
     F: Future + 'static,
@@ -235,6 +376,7 @@ where
         storage_offset: std::mem::offset_of!(Task<FutureOrOutput<F, F::Output>>, storage) as u16,
         tracker_key,
         _pad: [0; 2],
+        cross_wake_ctx,
         storage: FutureOrOutput {
             future: std::mem::ManuallyDrop::new(future),
         },
@@ -354,24 +496,16 @@ impl<T> Drop for JoinHandle<T> {
         unsafe { clear_has_join(ptr) };
         let _ = unsafe { take_join_waker(ptr) };
 
-        // Release our reference. If terminal, push to deferred free.
-        match unsafe { ref_dec(ptr) } {
-            FreeAction::Retain => {}
-            FreeAction::FreeBox | FreeAction::FreeSlab => {
-                // Executor thread — slab TLS available. Free via deferred path.
-                unsafe { defer_free_slot(ptr) };
-            }
-        }
+        // Release our reference via TaskRef. Drop routes terminal state
+        // through dispose_terminal — defers via DEFERRED_FREE TLS on the
+        // executor thread (so all_tasks bookkeeping stays consistent),
+        // queues cross-thread otherwise, frees directly for null-ctx
+        // (test) tasks. JoinHandle is !Send so we're always on the
+        // executor thread here, but the routing handles all cases.
+        // SAFETY: JoinHandle owned exactly one ref on `ptr`; we hand
+        // it off to TaskRef which will ref_dec on Drop.
+        drop(unsafe { TaskRef::from_owned(ptr) });
     }
-}
-
-/// Push a task to the deferred free list, or free immediately if outside poll.
-///
-/// # Safety
-///
-/// `ptr` must point to a completed task in TERMINAL state.
-unsafe fn defer_free_slot(ptr: *mut u8) {
-    unsafe { crate::waker::defer_free(ptr) };
 }
 
 // =============================================================================
@@ -662,6 +796,29 @@ pub(crate) unsafe fn storage_offset(ptr: *mut u8) -> usize {
     unsafe { *(ptr.add(56).cast::<u16>()) as usize }
 }
 
+/// Read the `cross_wake_ctx` pointer from the task header.
+///
+/// Returns the runtime's [`CrossWakeContext`] pointer (Arc-backed,
+/// heap-stable) set at spawn time, or null for tasks not associated
+/// with any runtime (test path).
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<S>` (header still valid).
+#[inline]
+pub(crate) unsafe fn header_cross_wake_ctx(ptr: *mut u8) -> *const CrossWakeContext {
+    // SAFETY: `cross_wake_ctx` is `*const CrossWakeContext` at offset 64
+    // in `repr(C) Task`. The field is initialized exactly once at spawn
+    // time under the spawning thread's exclusive ownership, then made
+    // visible to other threads via Arc/refcount publication (any TaskRef
+    // holder transitively keeps the owning runtime's Arc alive, and the
+    // Arc's atomic-counter publication establishes happens-before for the
+    // read). Immutable after init — concurrent reads from any thread are
+    // sound. dispose_terminal explicitly reads this from foreign threads
+    // when routing terminal drops from cross-thread waker holders.
+    unsafe { *(ptr.add(64).cast::<*const CrossWakeContext>()) }
+}
+
 /// Store a waker for the JoinHandle awaiter.
 ///
 /// # Safety
@@ -834,8 +991,8 @@ mod tests {
 
     #[test]
     fn task_header_size() {
-        assert_eq!(TASK_HEADER_SIZE, 64);
-        assert_eq!(std::mem::size_of::<Task<()>>(), 64);
+        assert_eq!(TASK_HEADER_SIZE, 72);
+        assert_eq!(std::mem::size_of::<Task<()>>(), 72);
     }
 
     #[test]
@@ -849,7 +1006,8 @@ mod tests {
         assert_eq!(std::mem::offset_of!(Task<()>, storage_offset), 56);
         assert_eq!(std::mem::offset_of!(Task<()>, _pad), 58);
         assert_eq!(std::mem::offset_of!(Task<()>, tracker_key), 60);
-        assert_eq!(std::mem::offset_of!(Task<()>, storage), 64);
+        assert_eq!(std::mem::offset_of!(Task<()>, cross_wake_ctx), 64);
+        assert_eq!(std::mem::offset_of!(Task<()>, storage), 72);
     }
 
     #[test]
@@ -863,7 +1021,7 @@ mod tests {
             }
         }
 
-        // 64 byte header + 24 byte future = 88 bytes
+        // 72 byte header + 24 byte future = 96 bytes
         assert_eq!(
             std::mem::size_of::<Task<SmallFuture>>(),
             TASK_HEADER_SIZE + 24
@@ -916,7 +1074,7 @@ mod tests {
             }
         }
 
-        let ptr = box_spawn_joinable(Noop, 7);
+        let ptr = box_spawn_joinable(Noop, 7, std::ptr::null());
         unsafe {
             assert!(has_join(ptr));
             assert!(!is_aborted(ptr));
@@ -947,7 +1105,7 @@ mod tests {
             }
         }
 
-        let ptr = box_spawn_joinable(Noop, 0);
+        let ptr = box_spawn_joinable(Noop, 0, std::ptr::null());
         unsafe {
             // complete_and_unref with 2 refs → not terminal
             drop_task_future(ptr);
@@ -974,7 +1132,7 @@ mod tests {
             }
         }
 
-        let ptr = box_spawn_joinable(Noop, 0);
+        let ptr = box_spawn_joinable(Noop, 0, std::ptr::null());
         unsafe {
             // Waker clone: ref_inc
             ref_inc(ptr);
@@ -1035,6 +1193,7 @@ mod tests {
                 drop_count: &raw mut drop_count,
             },
             0,
+            std::ptr::null(),
         );
 
         // poll_join completes the future, then drops F — which panics.
@@ -1087,7 +1246,7 @@ mod tests {
             }
         }
 
-        let ptr = box_spawn_joinable(ProduceTracked, 0);
+        let ptr = box_spawn_joinable(ProduceTracked, 0, std::ptr::null());
 
         // Poll to completion — F dropped, T written, drop_fn → drop_output.
         let result = unsafe { poll_task(ptr, &mut cx) };
@@ -1166,7 +1325,7 @@ mod tests {
             std::alloc::dealloc(ptr, layout);
         }
 
-        let task = new_joinable_slab(Noop, 0, slab_free);
+        let task = new_joinable_slab(Noop, 0, slab_free, std::ptr::null());
         let ptr = Box::into_raw(Box::new(task)) as *mut u8;
 
         unsafe {
@@ -1209,7 +1368,7 @@ mod tests {
             }
         }
 
-        let ptr = box_spawn_joinable(Noop, 0);
+        let ptr = box_spawn_joinable(Noop, 0, std::ptr::null());
         unsafe {
             assert_eq!(ref_count(ptr), 2);
             assert!(has_join(ptr));
@@ -1242,7 +1401,7 @@ mod tests {
             }
         }
 
-        let ptr = box_spawn_joinable(Noop, 0);
+        let ptr = box_spawn_joinable(Noop, 0, std::ptr::null());
         unsafe {
             // complete_and_unref: sets COMPLETED, dec ref → 1 ref remains
             drop_task_future(ptr);
@@ -1273,7 +1432,7 @@ mod tests {
             }
         }
 
-        let ptr = box_spawn_joinable(Noop, 0);
+        let ptr = box_spawn_joinable(Noop, 0, std::ptr::null());
         unsafe {
             // Waker clone: ref_inc
             ref_inc(ptr);
@@ -1311,7 +1470,7 @@ mod tests {
             }
         }
 
-        let ptr = box_spawn_joinable(Noop, 0);
+        let ptr = box_spawn_joinable(Noop, 0, std::ptr::null());
         unsafe {
             // complete_and_unref with 2 refs → Retain
             drop_task_future(ptr);
@@ -1338,6 +1497,84 @@ mod tests {
         }
     }
 
+    // =========================================================================
+    // TaskRef — RAII inc/dec discipline
+    // =========================================================================
+
+    #[test]
+    fn taskref_acquire_drop_balances_refcount() {
+        // Acquire a TaskRef on a task with rc=1; rc goes to 2. Drop the
+        // TaskRef; rc goes back to 1. Verifies acquire(ref_inc) is paired
+        // with Drop(ref_dec).
+        let task = Box::new(Task::new_boxed(async {}, 0));
+        let ptr = Box::into_raw(task) as *mut u8;
+
+        unsafe {
+            assert_eq!(ref_count(ptr), 1);
+            let task_ref = TaskRef::acquire(ptr);
+            assert_eq!(ref_count(ptr), 2);
+            drop(task_ref); // Not terminal — rc 2 → 1
+            assert_eq!(ref_count(ptr), 1);
+
+            // Cleanup: complete and free directly (no TaskRef path).
+            drop_task_future(ptr);
+            assert!(matches!(complete_and_unref(ptr), FreeAction::FreeBox));
+            free_task(ptr);
+        }
+    }
+
+    #[test]
+    fn taskref_from_owned_drop_balances_refcount() {
+        // Manually ref_inc, then wrap with from_owned (no extra inc).
+        // Drop releases the manual ref. Verifies from_owned's "wrap a
+        // pre-incremented pointer" contract.
+        let task = Box::new(Task::new_boxed(async {}, 0));
+        let ptr = Box::into_raw(task) as *mut u8;
+
+        unsafe {
+            assert_eq!(ref_count(ptr), 1);
+            ref_inc(ptr); // simulate handoff (e.g. RawWaker::data ownership)
+            assert_eq!(ref_count(ptr), 2);
+            let task_ref = TaskRef::from_owned(ptr);
+            // No additional ref_inc — TaskRef takes the existing ref.
+            assert_eq!(ref_count(ptr), 2);
+            drop(task_ref); // releases the manual ref
+            assert_eq!(ref_count(ptr), 1);
+
+            // Cleanup.
+            drop_task_future(ptr);
+            assert!(matches!(complete_and_unref(ptr), FreeAction::FreeBox));
+            free_task(ptr);
+        }
+    }
+
+    #[test]
+    fn taskref_drop_non_terminal_no_dispose() {
+        // Drop a TaskRef when refcount > 1 — should NOT invoke
+        // dispose_terminal. Verifies Drop's terminal gate (Retain branch
+        // returns immediately).
+        let task = Box::new(Task::new_boxed(async {}, 0));
+        let ptr = Box::into_raw(task) as *mut u8;
+
+        unsafe {
+            // rc=1, acquire to rc=2, drop to rc=1. Not terminal (no
+            // COMPLETED, lifecycle flags clear). Drop hits the Retain
+            // branch — no dispose_terminal call. If dispose_terminal
+            // were called with a non-terminal task it would assert (or
+            // worse, free a live task).
+            let task_ref = TaskRef::acquire(ptr);
+            assert_eq!(ref_count(ptr), 2);
+            drop(task_ref);
+            assert_eq!(ref_count(ptr), 1);
+            assert!(!is_completed(ptr));
+
+            // Cleanup.
+            drop_task_future(ptr);
+            assert!(matches!(complete_and_unref(ptr), FreeAction::FreeBox));
+            free_task(ptr);
+        }
+    }
+
     #[test]
     fn packed_state_many_refs_converge() {
         // Clone waker 10 times (ref_inc 10x), complete, then ref_dec 10x.
@@ -1350,7 +1587,7 @@ mod tests {
             }
         }
 
-        let ptr = box_spawn_joinable(Noop, 0);
+        let ptr = box_spawn_joinable(Noop, 0, std::ptr::null());
         unsafe {
             // 10 waker clones: ref 2 → 12
             for _ in 0..10 {
