@@ -296,9 +296,15 @@ mod tests {
         let mut s2c = MemPipe::new();
 
         // Client writes ClientHello.
-        let mut cursor = Cursor::new(Vec::new());
-        client.write_tls_to(&mut cursor).unwrap();
-        c2s.write_to(cursor.get_ref());
+        // Loop `while wants_write()` (mirroring the server side below)
+        // for defense-in-depth — if a future rustls or cert config splits
+        // the ClientHello across multiple write batches, a single
+        // write_tls_to call would leave bytes pending in the codec.
+        while client.wants_write() {
+            let mut cursor = Cursor::new(Vec::new());
+            client.write_tls_to(&mut cursor).unwrap();
+            c2s.write_to(cursor.get_ref());
+        }
 
         // Server consumes ClientHello.
         let mut tmp = vec![0u8; 16384];
