@@ -1,27 +1,30 @@
-//! Hermetic TLS + WebSocket echo test.
+//! Hermetic TLS + WebSocket echo test (sync `nexus-net` stack).
 //!
 //! Drives a real TLS handshake + WebSocket upgrade + frame echo
 //! between two `nexus_net::ws::Client`s — one acting as server (via
-//! `Client::accept`), one as client (via `ClientBuilder::connect_with`).
-//! Both halves run in the same process; the test connects over loopback
-//! TCP. No external network dependencies, runs in `cargo test`.
+//! `Client::accept`), one as client (via `ClientBuilder::connect`,
+//! which handles the TLS + HTTP-upgrade plumbing internally for the
+//! `wss://` scheme). Both halves run in the same process; the test
+//! connects over loopback TCP. No external network dependencies,
+//! runs in `cargo test`.
 //!
 //! **What this proves:**
 //!
-//! - The full TLS + HTTP-upgrade + WebSocket-frame stack works
+//! - The sync TLS + HTTP-upgrade + WebSocket-frame stack works
 //!   end-to-end against a real server (not just in-memory codec
-//!   tests).
-//! - Issue #200 specifically: the server's handshake burst is >
-//!   rustls's `READ_SIZE = 4096` per-call cap, so the client's
-//!   `TlsCodec::read_and_process_tls` must iterate its internal
-//!   loop multiple times to consume the entire burst. Pre-fix
-//!   (without the helper's loop), the handshake stalls and the
-//!   server times out closing the connection.
+//!   tests). The sync `TlsStream::handshake()` path uses
+//!   `read_tls_from(&mut socket)` (rustls drives its own loop), so
+//!   this test does NOT exercise the issue #200 multi-iteration
+//!   surface — that lives in the async paths and is covered by
+//!   `nexus-async-net/tests/ws_nexus_tls_loopback.rs`. This test
+//!   provides broad regression coverage for the sync stack
+//!   (handshake, upgrade, frame I/O).
 //!
-//! The handshake burst is forced over 4096 bytes by using a 3-cert
-//! RSA 4096 chain (root → intermediate → leaf) — same shape as the
-//! in-process codec test, but here exercised across a real TCP
-//! socket through the full client-side machinery.
+//! The handshake burst is forced over 4096 bytes by using a 10-cert
+//! ECDSA-P256 chain — same shape as the in-process codec test in
+//! `tls/codec.rs::tests::read_and_process_tls_handles_oversize_burst`.
+//! The chain depth produces > 4KB of cert bytes; ECDSA keygen is
+//! microseconds so the test stays fast.
 //!
 //! **Why localhost, not public servers:** public WSS echo servers are
 //! unreliable for tests (geoblocks, Cloudflare bot mitigation,
@@ -38,43 +41,56 @@ use nexus_net::tls::TlsConfig;
 use nexus_net::ws::{Client, CloseCode, Message};
 
 // ============================================================================
-// RSA 4096 chain — matches the in-process codec test. Forces the server's
-// first handshake burst past rustls's READ_SIZE = 4096.
+// 10-cert ECDSA-P256 chain — matches the in-process codec test. Forces
+// the server's first handshake burst past rustls's READ_SIZE = 4096
+// via chain depth (~5KB of cert bytes), not key size. ECDSA keygen is
+// microseconds vs RSA-4096's seconds, so the test stays fast.
 // ============================================================================
 
-fn generate_rsa_4096_chain() -> (Vec<rustls::pki_types::CertificateDer<'static>>, Vec<u8>) {
-    use rcgen::{
-        BasicConstraints, CertificateParams, IsCa, KeyPair, RsaKeySize,
-        PKCS_RSA_SHA256,
-    };
+fn generate_oversize_ecdsa_chain() -> (Vec<rustls::pki_types::CertificateDer<'static>>, Vec<u8>) {
+    use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
 
-    let root_key = KeyPair::generate_rsa_for(&PKCS_RSA_SHA256, RsaKeySize::_4096)
-        .expect("root key");
+    const CHAIN_DEPTH: usize = 10;
+
+    let mut keys: Vec<KeyPair> = Vec::with_capacity(CHAIN_DEPTH);
+    let mut certs: Vec<rcgen::Certificate> = Vec::with_capacity(CHAIN_DEPTH);
+
+    let root_key = KeyPair::generate().expect("root key");
     let mut root_params = CertificateParams::new(Vec::<String>::new()).expect("root params");
     root_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     let root_cert = root_params.self_signed(&root_key).expect("root self-sign");
+    keys.push(root_key);
+    certs.push(root_cert);
 
-    let int_key = KeyPair::generate_rsa_for(&PKCS_RSA_SHA256, RsaKeySize::_4096)
-        .expect("intermediate key");
-    let mut int_params = CertificateParams::new(Vec::<String>::new()).expect("int params");
-    int_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    let int_cert = int_params
-        .signed_by(&int_key, &root_cert, &root_key)
-        .expect("intermediate signed");
+    for _ in 0..(CHAIN_DEPTH - 2) {
+        let key = KeyPair::generate().expect("int key");
+        let mut params = CertificateParams::new(Vec::<String>::new()).expect("int params");
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let parent_cert = certs.last().expect("parent");
+        let parent_key = keys.last().expect("parent key");
+        let cert = params
+            .signed_by(&key, parent_cert, parent_key)
+            .expect("int signed");
+        keys.push(key);
+        certs.push(cert);
+    }
 
-    let leaf_key = KeyPair::generate_rsa_for(&PKCS_RSA_SHA256, RsaKeySize::_4096)
-        .expect("leaf key");
-    let leaf_params = CertificateParams::new(vec!["localhost".to_string()])
-        .expect("leaf params");
+    let leaf_key = KeyPair::generate().expect("leaf key");
+    let leaf_params = CertificateParams::new(vec!["localhost".to_string()]).expect("leaf params");
+    let parent_cert = certs.last().expect("parent");
+    let parent_key = keys.last().expect("parent key");
     let leaf_cert = leaf_params
-        .signed_by(&leaf_key, &int_cert, &int_key)
+        .signed_by(&leaf_key, parent_cert, parent_key)
         .expect("leaf signed");
 
-    let chain = vec![
-        rustls::pki_types::CertificateDer::from(leaf_cert.der().to_vec()),
-        rustls::pki_types::CertificateDer::from(int_cert.der().to_vec()),
-        rustls::pki_types::CertificateDer::from(root_cert.der().to_vec()),
-    ];
+    let mut chain: Vec<rustls::pki_types::CertificateDer<'static>> =
+        Vec::with_capacity(CHAIN_DEPTH);
+    chain.push(rustls::pki_types::CertificateDer::from(
+        leaf_cert.der().to_vec(),
+    ));
+    for cert in certs.iter().rev() {
+        chain.push(rustls::pki_types::CertificateDer::from(cert.der().to_vec()));
+    }
     (chain, leaf_key.serialize_der())
 }
 
@@ -84,10 +100,10 @@ fn generate_rsa_4096_chain() -> (Vec<rustls::pki_types::CertificateDer<'static>>
 // the WebSocket upgrade and frame echo.
 // ============================================================================
 
-fn run_echo_server(
-    listener: TcpListener,
-    server_config: std::sync::Arc<rustls::ServerConfig>,
-) {
+// Pass-by-value gives this function ownership so the listener drops
+// when the server thread exits — that's the desired teardown.
+#[allow(clippy::needless_pass_by_value)]
+fn run_echo_server(listener: TcpListener, server_config: std::sync::Arc<rustls::ServerConfig>) {
     let (tcp, _addr) = listener.accept().expect("accept");
     tcp.set_nodelay(true).ok();
     tcp.set_read_timeout(Some(Duration::from_secs(10))).ok();
@@ -123,8 +139,8 @@ fn run_echo_server(
 // ============================================================================
 
 fn smoke_check_simple_cert() {
-    let cert_kp = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-        .expect("simple cert");
+    let cert_kp =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("simple cert");
     let chain = vec![rustls::pki_types::CertificateDer::from(
         cert_kp.cert.der().to_vec(),
     )];
@@ -141,7 +157,10 @@ fn smoke_check_simple_cert() {
     let port = listener.local_addr().expect("smoke local_addr").port();
     let server_handle = thread::spawn(move || run_echo_server(listener, server_config));
 
-    let tls_config = TlsConfig::builder().danger_no_verify().build().expect("smoke tls");
+    let tls_config = TlsConfig::builder()
+        .danger_no_verify()
+        .build()
+        .expect("smoke tls");
     let mut ws = nexus_net::ws::ClientBuilder::new()
         .tls(&tls_config)
         .connect_timeout(Duration::from_secs(10))
@@ -166,11 +185,10 @@ fn local_wss_echo_with_oversize_handshake_burst() {
     // infrastructure works at all.
     smoke_check_simple_cert();
 
-    // Generate the cert chain up-front (slow: ~5s for 3 RSA 4096 keys)
+    // Generate the cert chain up-front (fast: ECDSA chain ~10ms total)
     // so the server thread can signal ready immediately on spawn.
-    let (chain, key_der) = generate_rsa_4096_chain();
-    let key = rustls::pki_types::PrivateKeyDer::try_from(key_der)
-        .expect("server key");
+    let (chain, key_der) = generate_oversize_ecdsa_chain();
+    let key = rustls::pki_types::PrivateKeyDer::try_from(key_der).expect("server key");
     let server_config = std::sync::Arc::new(
         rustls::ServerConfig::builder()
             .with_no_client_auth()
@@ -204,7 +222,11 @@ fn local_wss_echo_with_oversize_handshake_burst() {
     // Text echo round-trip.
     let probe = "hello-from-#200-regression-test";
     ws.send_text(probe).expect("client send");
-    match ws.recv().expect("client recv").expect("close before message") {
+    match ws
+        .recv()
+        .expect("client recv")
+        .expect("close before message")
+    {
         Message::Text(s) => assert_eq!(s, probe, "echo must match"),
         other => panic!("expected Text echo, got {other:?}"),
     }
@@ -212,7 +234,11 @@ fn local_wss_echo_with_oversize_handshake_burst() {
     // Larger payload to keep the data path honest.
     let big = "x".repeat(8192);
     ws.send_text(&big).expect("client send big");
-    match ws.recv().expect("client recv big").expect("close before message") {
+    match ws
+        .recv()
+        .expect("client recv big")
+        .expect("close before message")
+    {
         Message::Text(s) => assert_eq!(s.len(), 8192, "big echo length must match"),
         other => panic!("expected Text echo, got {other:?}"),
     }

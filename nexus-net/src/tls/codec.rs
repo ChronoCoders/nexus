@@ -243,57 +243,82 @@ mod tests {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .expect("cert generation");
         (
-            vec![rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec())],
+            vec![rustls::pki_types::CertificateDer::from(
+                cert.cert.der().to_vec(),
+            )],
             cert.key_pair.serialize_der(),
         )
     }
 
-    /// Generate a 3-cert chain (root → intermediate → leaf) with RSA 4096
-    /// keys. Real production-shape chain — chain has 3 certs each ~1.5KB
-    /// of DER, so the TLS 1.3 server's Certificate message alone exceeds
-    /// 4500 bytes. Combined with ServerHello + EncryptedExtensions +
-    /// CertVerify (RSA 4096 signature is 512 bytes) + Finished, the
-    /// server's first burst easily clears rustls's `READ_SIZE = 4096`
-    /// per-call deframer cap — exactly the partial-consumption surface
-    /// birch hit against polymarket.
-    fn generate_rsa_4096_chain() -> (Vec<rustls::pki_types::CertificateDer<'static>>, Vec<u8>) {
-        use rcgen::{
-            BasicConstraints, CertificateParams, IsCa, KeyPair, RsaKeySize,
-            PKCS_RSA_SHA256,
-        };
+    /// Generate an N-cert ECDSA-P256 chain whose serialized DER pushes
+    /// the TLS 1.3 server's first handshake burst past rustls's
+    /// `READ_SIZE = 4096` per-call deframer cap. ECDSA keygen is
+    /// microseconds (vs RSA-4096's ~1.5s per key) so this stays cheap
+    /// even at chain depth 10.
+    ///
+    /// Why a deep chain instead of one big RSA cert: chain depth scales
+    /// the Certificate message linearly without paying for slow RSA
+    /// keygen. 10 P-256 certs ≈ 5KB of cert bytes, comfortably over
+    /// 4096. Each link is signed by its parent — a real CA-style chain.
+    ///
+    /// Returns `(chain_in_send_order, leaf_key_der)`. The chain is
+    /// `[leaf, intermediate_n, ..., intermediate_1, root]` — the order
+    /// rustls sends in the Certificate message.
+    fn generate_oversize_ecdsa_chain() -> (Vec<rustls::pki_types::CertificateDer<'static>>, Vec<u8>)
+    {
+        use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
 
-        // Root CA (RSA 4096, self-signed, CA-flagged).
-        let root_key = KeyPair::generate_rsa_for(&PKCS_RSA_SHA256, RsaKeySize::_4096)
-            .expect("root key");
+        const CHAIN_DEPTH: usize = 10;
+
+        // Generate the root + intermediates + leaf. Each non-leaf is a
+        // CA-flagged cert that signs the next link.
+        let mut keys: Vec<KeyPair> = Vec::with_capacity(CHAIN_DEPTH);
+        let mut certs: Vec<rcgen::Certificate> = Vec::with_capacity(CHAIN_DEPTH);
+
+        // Root.
+        let root_key = KeyPair::generate().expect("root key");
         let mut root_params = CertificateParams::new(Vec::<String>::new()).expect("root params");
         root_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         let root_cert = root_params.self_signed(&root_key).expect("root self-sign");
+        keys.push(root_key);
+        certs.push(root_cert);
 
-        // Intermediate (RSA 4096, signed by root, CA-flagged).
-        let int_key = KeyPair::generate_rsa_for(&PKCS_RSA_SHA256, RsaKeySize::_4096)
-            .expect("intermediate key");
-        let mut int_params = CertificateParams::new(Vec::<String>::new()).expect("intermediate params");
-        int_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        let int_cert = int_params
-            .signed_by(&int_key, &root_cert, &root_key)
-            .expect("intermediate signed by root");
+        // Intermediates (CHAIN_DEPTH - 2 of them, all CA-flagged).
+        for _ in 0..(CHAIN_DEPTH - 2) {
+            let key = KeyPair::generate().expect("int key");
+            let mut params = CertificateParams::new(Vec::<String>::new()).expect("int params");
+            params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+            let parent_cert = certs.last().expect("parent");
+            let parent_key = keys.last().expect("parent key");
+            let cert = params
+                .signed_by(&key, parent_cert, parent_key)
+                .expect("int signed");
+            keys.push(key);
+            certs.push(cert);
+        }
 
-        // Leaf (RSA 4096, signed by intermediate, SAN=localhost).
-        let leaf_key = KeyPair::generate_rsa_for(&PKCS_RSA_SHA256, RsaKeySize::_4096)
-            .expect("leaf key");
-        let leaf_params = CertificateParams::new(vec!["localhost".to_string()])
-            .expect("leaf params");
+        // Leaf (signed by the deepest intermediate, SAN=localhost).
+        let leaf_key = KeyPair::generate().expect("leaf key");
+        let leaf_params =
+            CertificateParams::new(vec!["localhost".to_string()]).expect("leaf params");
+        let parent_cert = certs.last().expect("parent");
+        let parent_key = keys.last().expect("parent key");
         let leaf_cert = leaf_params
-            .signed_by(&leaf_key, &int_cert, &int_key)
-            .expect("leaf signed by intermediate");
+            .signed_by(&leaf_key, parent_cert, parent_key)
+            .expect("leaf signed");
 
-        // Server sends [leaf, intermediate, root] in the Certificate
-        // message. Three RSA 4096 certs ≈ 4.5KB chain.
-        let chain = vec![
-            rustls::pki_types::CertificateDer::from(leaf_cert.der().to_vec()),
-            rustls::pki_types::CertificateDer::from(int_cert.der().to_vec()),
-            rustls::pki_types::CertificateDer::from(root_cert.der().to_vec()),
-        ];
+        // Server sends [leaf, intermediates_descending, root] in the
+        // Certificate message. We built `certs` as [root, int_1, ...,
+        // int_n], so reverse + prepend leaf.
+        let mut chain: Vec<rustls::pki_types::CertificateDer<'static>> =
+            Vec::with_capacity(CHAIN_DEPTH);
+        chain.push(rustls::pki_types::CertificateDer::from(
+            leaf_cert.der().to_vec(),
+        ));
+        for cert in certs.iter().rev() {
+            chain.push(rustls::pki_types::CertificateDer::from(cert.der().to_vec()));
+        }
+
         (chain, leaf_key.serialize_der())
     }
 
@@ -444,25 +469,26 @@ mod tests {
     /// or test only rustls's contract without exercising our helper
     /// (`bare_read_tls_partially_consumes_large_slice`).
     ///
-    /// This test uses a 3-cert RSA 4096 chain to push the server's first
-    /// handshake burst past rustls's `READ_SIZE = 4096` per-call cap. The
-    /// helper is fed the whole burst in ONE call; its internal loop must
-    /// iterate multiple times to consume everything. This is exactly the
-    /// shape birch hit against polymarket.
+    /// This test uses a 10-cert ECDSA-P256 chain to push the server's
+    /// first handshake burst past rustls's `READ_SIZE = 4096` per-call
+    /// cap. Chain depth (not key size) provides the bytes — keeps
+    /// keygen fast. The helper is fed the whole burst in ONE call; its
+    /// internal loop must iterate multiple times to consume everything.
+    /// This is exactly the shape birch hit against polymarket.
     #[test]
     fn read_and_process_tls_handles_oversize_burst() {
-        let (chain, key) = generate_rsa_4096_chain();
+        let (chain, key) = generate_oversize_ecdsa_chain();
         let (mut client, _server, server_out) = setup_and_capture_server_burst(chain, key);
 
         // Confirm the test is actually exercising the partial-consumption
         // path. If this assertion fails, future contributors investigating
         // know the burst-size assumption broke (e.g., rustls raised
         // READ_SIZE, or the cert chain shrank). Bump the chain size or
-        // the key size in `generate_rsa_4096_chain` to restore.
+        // the key size in `generate_oversize_ecdsa_chain` to restore.
         assert!(
             server_out.len() > 4096,
             "burst must exceed READ_SIZE to exercise multi-iteration loop, \
-             got {} bytes — bump cert chain in generate_rsa_4096_chain",
+             got {} bytes — bump cert chain in generate_oversize_ecdsa_chain",
             server_out.len()
         );
 
