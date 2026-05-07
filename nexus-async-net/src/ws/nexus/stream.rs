@@ -38,6 +38,7 @@ async fn write_all_async<S: AsyncWrite + Unpin>(s: &mut S, mut buf: &[u8]) -> io
 // TLS handshake (sans-IO codec driven over async transport)
 // =============================================================================
 
+/// Drive the TLS handshake to completion.
 #[cfg(feature = "tls")]
 #[allow(clippy::future_not_send)]
 async fn handshake_tls(
@@ -454,6 +455,10 @@ pub struct WsStreamBuilder {
     max_read_size: Option<usize>,
     #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
+    #[cfg(feature = "tls")]
+    tls_pending_read_capacity: Option<usize>,
+    #[cfg(feature = "tls")]
+    tls_pending_write_capacity: Option<usize>,
     nodelay: bool,
     connect_timeout: Option<std::time::Duration>,
     #[cfg(feature = "socket-opts")]
@@ -477,6 +482,10 @@ impl WsStreamBuilder {
             max_read_size: None,
             #[cfg(feature = "tls")]
             tls_config: None,
+            #[cfg(feature = "tls")]
+            tls_pending_read_capacity: None,
+            #[cfg(feature = "tls")]
+            tls_pending_write_capacity: None,
             nodelay: false,
             connect_timeout: None,
             #[cfg(feature = "socket-opts")]
@@ -553,6 +562,34 @@ impl WsStreamBuilder {
     #[must_use]
     pub fn tls(mut self, config: &TlsConfig) -> Self {
         self.tls_config = Some(config.clone());
+        self
+    }
+
+    /// Override the TLS adapter's per-connection ciphertext buffer
+    /// capacities. Only applies when the connection is `wss://`.
+    ///
+    /// `pending_read_cap` holds ciphertext read from the transport
+    /// but not yet accepted by rustls. Must be at least
+    /// [`crate::maybe_tls::TlsInner::TMP_SIZE`] (8 KiB).
+    /// Default: 8 KiB.
+    ///
+    /// `pending_write_cap` holds ciphertext rustls has produced but
+    /// not yet flushed. Smaller capacities mean more drain/refill
+    /// cycles for big writes; larger capacities cost per-connection
+    /// memory. Default: 64 KiB.
+    ///
+    /// # Panics
+    /// Panics during [`connect`](Self::connect) if
+    /// `pending_read_cap < TlsInner::TMP_SIZE`.
+    #[cfg(feature = "tls")]
+    #[must_use]
+    pub fn tls_buffer_capacities(
+        mut self,
+        pending_read_cap: usize,
+        pending_write_cap: usize,
+    ) -> Self {
+        self.tls_pending_read_capacity = Some(pending_read_cap);
+        self.tls_pending_write_capacity = Some(pending_write_cap);
         self
     }
 
@@ -649,7 +686,14 @@ impl WsStreamBuilder {
 
                 handshake_tls(&mut tcp, &mut codec).await?;
 
-                let tls_inner = crate::maybe_tls::TlsInner::new(tcp, codec);
+                let tls_inner = crate::maybe_tls::TlsInner::with_capacities(
+                    tcp,
+                    codec,
+                    self.tls_pending_read_capacity
+                        .unwrap_or(crate::maybe_tls::TlsInner::TMP_SIZE),
+                    self.tls_pending_write_capacity
+                        .unwrap_or(crate::maybe_tls::TlsInner::DEFAULT_PENDING_WRITE_CAPACITY),
+                );
                 MaybeTls::Tls(Box::new(tls_inner))
             }
             #[cfg(not(feature = "tls"))]

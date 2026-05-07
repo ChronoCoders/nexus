@@ -209,9 +209,13 @@ impl<S: Read + Write> Connecting<S> {
                     if let Some(tls) = &mut self.tls {
                         // TLS path: encrypt ALL remaining plaintext at once,
                         // then flush ciphertext. encrypt() consumes everything;
-                        // write_tls_to may partially flush.
+                        // write_tls_to may partially flush. The HTTP upgrade
+                        // request is small (always under rustls's plaintext
+                        // queue cap), so the all-or-nothing `encrypt` shape
+                        // is correct here — async streaming uses try_encrypt.
                         if self.req_offset < self.req_buf.len() {
                             let data = &self.req_buf[self.req_offset..];
+                            #[allow(deprecated)]
                             tls.encrypt(data)?;
                             self.req_offset = self.req_buf.len(); // all plaintext consumed
                         }
