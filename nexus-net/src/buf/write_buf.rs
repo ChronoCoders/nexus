@@ -16,6 +16,22 @@
 ///
 /// After [`clear()`](WriteBuf::clear): `head = headroom`, `tail = headroom`.
 ///
+/// # Modes
+///
+/// **One-shot message** (sk_buff style):
+/// [`prepend()`](WriteBuf::prepend) / [`append()`](WriteBuf::append) to
+/// build a single frame, [`data()`](WriteBuf::data) to send,
+/// [`clear()`](WriteBuf::clear) between frames. This is what most
+/// protocol-frame builders want.
+///
+/// **Cursor FIFO**: [`spare()`](WriteBuf::spare) /
+/// [`filled()`](WriteBuf::filled) to stage bytes (e.g. from a sans-IO
+/// codec writing into the tail region), [`data()`](WriteBuf::data) to
+/// send, [`advance(n)`](WriteBuf::advance) after partial writes.
+/// Auto-reset on full drain means the buffer is reusable across cycles
+/// without an explicit `clear()`. This is what TLS adapters use for
+/// ciphertext staging.
+///
 /// # Examples
 ///
 /// ```
@@ -126,15 +142,53 @@ impl WriteBuf {
         &mut self.buf[self.head..self.tail]
     }
 
+    /// Writable tail region for direct in-place writes.
+    ///
+    /// Pair with [`filled()`](Self::filled) to commit bytes after a
+    /// successful write. Used by sans-IO codecs that produce bytes
+    /// directly (e.g. `TlsCodec::write_tls_to(&mut buf.spare())`).
+    ///
+    /// Returns `buf[tail .. buf.len()]`. May be empty if tail has
+    /// reached the buffer boundary.
+    #[inline]
+    pub fn spare(&mut self) -> &mut [u8] {
+        &mut self.buf[self.tail..]
+    }
+
+    /// Commit `n` bytes written into [`spare()`](Self::spare).
+    ///
+    /// # Panics
+    /// Panics if `n` would push tail past the buffer boundary.
+    #[inline]
+    pub fn filled(&mut self, n: usize) {
+        let new_tail = self.tail + n;
+        if new_tail > self.buf.len() {
+            Self::panic_filled(n, self.tail, self.buf.len());
+        }
+        self.tail = new_tail;
+    }
+
     /// Consume `n` bytes from front after a partial write.
+    ///
+    /// If the buffer becomes empty after advance, resets head and tail
+    /// to `reset_offset` (free — no memmove, just cursor reset). This
+    /// makes WriteBuf usable as a cursor FIFO: encrypt → drain partial →
+    /// encrypt more → drain more, with auto-reclaim when fully drained.
+    /// Calling [`clear()`](Self::clear) after a fully-drained
+    /// `advance()` is now redundant.
     ///
     /// # Panics
     /// Panics if `n > self.len()`.
+    #[inline]
     pub fn advance(&mut self, n: usize) {
         if n > self.len() {
             Self::panic_advance(n, self.len());
         }
         self.head += n;
+        if self.head == self.tail {
+            self.head = self.reset_offset;
+            self.tail = self.reset_offset;
+        }
     }
 
     // =========================================================================
@@ -205,6 +259,12 @@ impl WriteBuf {
     #[inline(never)]
     fn panic_shrink(n: usize, len: usize) -> ! {
         panic!("shrink_tail({n}) exceeds data length ({len})")
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn panic_filled(n: usize, tail: usize, end: usize) -> ! {
+        panic!("filled({n}) would exceed buffer (tail={tail}, end={end})")
     }
 }
 
@@ -377,15 +437,66 @@ mod tests {
     }
 
     #[test]
-    fn advance_full_then_reuse() {
+    fn advance_auto_resets_on_empty() {
         let mut buf = WriteBuf::new(64, 10);
         buf.append(b"Hello");
         buf.advance(5);
         assert!(buf.is_empty());
-        // After full advance, head moved but headroom is consumed
-        assert_eq!(buf.headroom(), 15); // original 10 + consumed 5
-        // clear() restores headroom
-        buf.clear();
+        // Auto-reset: headroom returns to its initial value, no clear() needed.
         assert_eq!(buf.headroom(), 10);
+        assert_eq!(buf.tailroom(), 54);
+    }
+
+    #[test]
+    fn advance_partial_does_not_reset() {
+        let mut buf = WriteBuf::new(64, 10);
+        buf.append(b"Hello");
+        buf.advance(2);
+        // Still has data — no reset.
+        assert_eq!(buf.data(), b"llo");
+        assert_eq!(buf.headroom(), 12);
+    }
+
+    #[test]
+    fn cursor_fifo_cycle() {
+        // Demonstrates the cursor-FIFO use case: write into spare,
+        // commit with filled, partially drain via advance, repeat.
+        // Ciphertext-style cycling without per-step memmove.
+        let mut buf = WriteBuf::new(32, 0);
+
+        buf.spare()[..10].copy_from_slice(b"0123456789");
+        buf.filled(10);
+        assert_eq!(buf.data(), b"0123456789");
+
+        buf.advance(4);
+        assert_eq!(buf.data(), b"456789");
+
+        // Spare reflects the post-tail region — head is mid-buffer.
+        assert_eq!(buf.spare().len(), 22);
+        buf.spare()[..3].copy_from_slice(b"ABC");
+        buf.filled(3);
+        assert_eq!(buf.data(), b"456789ABC");
+
+        buf.advance(9);
+        assert!(buf.is_empty());
+        // Auto-reset gave us full tailroom back.
+        assert_eq!(buf.tailroom(), 32);
+    }
+
+    #[test]
+    fn spare_is_post_tail_region() {
+        let mut buf = WriteBuf::new(32, 8);
+        // tail starts at headroom offset → spare is buf[8..32]
+        assert_eq!(buf.spare().len(), 24);
+        buf.append(b"hi");
+        // tail advanced by 2 → spare shrinks by 2
+        assert_eq!(buf.spare().len(), 22);
+    }
+
+    #[test]
+    #[should_panic(expected = "filled")]
+    fn filled_exceeds_buffer() {
+        let mut buf = WriteBuf::new(16, 0);
+        buf.filled(32);
     }
 }

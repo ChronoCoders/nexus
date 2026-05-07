@@ -57,25 +57,108 @@ impl TlsCodec {
     /// Returns the number of bytes consumed. **May be less than
     /// `src.len()`** — rustls's deframer can require a
     /// [`process_new_packets`](Self::process_new_packets) call before
-    /// accepting more bytes. Most callers want
-    /// [`read_and_process_tls`](Self::read_and_process_tls), which
-    /// loops until the entire slice is consumed and is the correct
-    /// primitive when bytes have already been read into a buffer
-    /// (async paths, sans-IO pipelines).
+    /// accepting more bytes.
+    ///
+    /// For an overview of when to use each input primitive, see the
+    /// [module-level docs](crate::tls). Most callers want
+    /// [`read_tls_step`](Self::read_tls_step) (streaming app-data) or
+    /// [`read_and_process_tls`](Self::read_and_process_tls) (bounded
+    /// handshake input). Reach for `read_tls` directly only when
+    /// implementing a new adapter shape that none of those fit.
+    #[deprecated(
+        since = "0.6.2",
+        note = "use `read_tls_step` (streaming) or `read_and_process_tls` \
+                (bounded handshake) — these encode rustls's partial-consumption \
+                failure mode that bare `read_tls` does not"
+    )]
     pub fn read_tls(&mut self, src: &[u8]) -> Result<usize, TlsError> {
         let mut cursor = io::Cursor::new(src);
         Ok(self.inner.read_tls(&mut cursor)?)
     }
 
+    /// Advance the codec by a single TLS packet step: one
+    /// [`read_tls`](Self::read_tls) + [`process_new_packets`](Self::process_new_packets)
+    /// pair.
+    ///
+    /// Returns the number of ciphertext bytes consumed from `src`. The
+    /// caller must drain any plaintext (via
+    /// [`read_plaintext`](Self::read_plaintext) or
+    /// [`process_into`](Self::process_into)) before calling again —
+    /// feeding more ciphertext while plaintext is queued can overflow
+    /// rustls's internal plaintext buffer.
+    ///
+    /// Use this for streaming application data where the caller
+    /// interleaves ciphertext input with plaintext output (the standard
+    /// async TLS adapter shape: poll socket → step codec → drain
+    /// plaintext → repeat). For bounded input where the caller can
+    /// tolerate plaintext staying inside rustls until the full slice is
+    /// consumed (TLS handshakes, in-memory tests), use
+    /// [`read_and_process_tls`](Self::read_and_process_tls) instead.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(0)` if `src` is empty. Otherwise `Ok(n)` where `n > 0` is the
+    /// number of bytes consumed (always `<= src.len()`; rustls's
+    /// deframer caps each call at its internal `READ_SIZE`).
+    ///
+    /// # Errors
+    ///
+    /// Two distinct error sources:
+    ///
+    /// - **Propagated from rustls** via `?`: any error from
+    ///   [`read_tls`](Self::read_tls) (including
+    ///   `received plaintext buffer full` when the caller hasn't
+    ///   drained plaintext between steps) or
+    ///   [`process_new_packets`](Self::process_new_packets) (alerts,
+    ///   decryption failures, protocol violations).
+    /// - **`TlsError::Io(InvalidData)` from this method**: rustls's
+    ///   deframer accepted 0 bytes from a non-empty input slice
+    ///   without erroring — meaning it cannot complete a record from
+    ///   the bytes provided alone (partial record, or the caller
+    ///   misused the API by passing zero-byte progress repeatedly).
+    #[inline]
+    pub fn read_tls_step(&mut self, src: &[u8]) -> Result<usize, TlsError> {
+        if src.is_empty() {
+            return Ok(0);
+        }
+        // Internal use of the deprecated primitive. The deprecation
+        // warns external callers; we know the failure mode and are
+        // wrapping it correctly here.
+        #[allow(deprecated)]
+        let consumed = self.read_tls(src)?;
+        if consumed == 0 {
+            return Err(TlsError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "TLS codec made no progress on non-empty input \
+                 (deframer cannot complete a record from the provided bytes)",
+            )));
+        }
+        self.process_new_packets()?;
+        Ok(consumed)
+    }
+
     /// Feed buffered TLS bytes through rustls, looping until the entire
     /// slice is consumed.
     ///
-    /// Use this anywhere code reads bytes into a buffer first (async
-    /// paths, IO drivers that don't expose a `Read` trait, sans-IO
-    /// pipelines) and then needs to push them into the codec. Sync paths
-    /// reading directly from a [`Read`](std::io::Read) trait should use
-    /// [`read_tls_from`](Self::read_tls_from) instead — rustls handles
-    /// the consume-loop internally there.
+    /// **Use only for bounded input** where the caller can tolerate
+    /// plaintext staying queued inside rustls until the helper returns
+    /// — TLS handshakes (the original motivation, see issue #200) and
+    /// in-memory tests. Do **not** use for streaming application data:
+    /// rustls's internal plaintext buffer has a cap, and feeding a
+    /// large ciphertext slice without giving the caller a chance to
+    /// drain plaintext between steps will overflow it
+    /// (`received plaintext buffer full`). For streaming adapters, use
+    /// [`read_tls_step`](Self::read_tls_step) instead — feed at most
+    /// one accepted prefix, return plaintext to the caller, then feed
+    /// more.
+    ///
+    /// Sync paths reading directly from a [`Read`](std::io::Read)
+    /// source should use [`read_tls_from`](Self::read_tls_from)
+    /// instead. Each call reads up to rustls's internal `READ_SIZE`
+    /// (4 KiB) from the source and buffers it; the caller pairs it
+    /// with [`process_new_packets`](Self::process_new_packets) and
+    /// re-drives in their own loop, pulling more bytes from the
+    /// transport as available.
     ///
     /// # Why a loop is required
     ///
@@ -104,6 +187,9 @@ impl TlsCodec {
     pub fn read_and_process_tls(&mut self, src: &[u8]) -> Result<usize, TlsError> {
         let mut consumed = 0;
         while consumed < src.len() {
+            // Internal use of the deprecated primitive — the loop here
+            // is what makes it safe to call.
+            #[allow(deprecated)]
             let n = self.read_tls(&src[consumed..])?;
             if n == 0 {
                 return Err(TlsError::Io(io::Error::new(
@@ -171,6 +257,7 @@ impl TlsCodec {
     ///
     /// For users who want to feed bytes into FrameReader manually
     /// or use a different parser.
+    #[inline]
     pub fn read_plaintext(&mut self, dst: &mut [u8]) -> Result<usize, TlsError> {
         match self.inner.reader().read(dst) {
             Ok(n) => Ok(n),
@@ -183,13 +270,93 @@ impl TlsCodec {
     // Outbound (FrameWriter → TLS → socket)
     // =========================================================================
 
-    /// Encrypt plaintext for sending.
+    /// Encrypt plaintext for sending (all-or-nothing).
     ///
     /// The encrypted bytes are buffered internally. Call
     /// [`write_tls_to`](Self::write_tls_to) to flush them to a socket.
+    ///
+    /// **Errors with `WriteZero` if `plaintext.len()` exceeds rustls's
+    /// outbound plaintext queue limit** (default 64 KiB; see
+    /// [`set_buffer_limit`](Self::set_buffer_limit)). For streaming
+    /// adapters where the caller may pass arbitrarily-large buffers
+    /// (the standard `AsyncWrite::poll_write` shape), use the chunked
+    /// [`try_encrypt`](Self::try_encrypt) instead and let the caller
+    /// chunk via `write_all`.
+    #[deprecated(
+        since = "0.6.2",
+        note = "use `try_encrypt` — it returns the accepted byte count instead \
+                of erroring when rustls's plaintext queue is full, and is the \
+                correct primitive for `AsyncWrite::poll_write`"
+    )]
+    #[inline]
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<(), TlsError> {
         self.inner.writer().write_all(plaintext)?;
         Ok(())
+    }
+
+    /// Encrypt up to `plaintext.len()` bytes, returning the number of
+    /// bytes actually accepted by rustls's outbound plaintext queue.
+    ///
+    /// This is the chunked variant of [`encrypt`](Self::encrypt). Use
+    /// it when the caller may pass more bytes than rustls's queue
+    /// limit (default `DEFAULT_BUFFER_LIMIT = 64 KiB`; tune with
+    /// [`set_buffer_limit`](Self::set_buffer_limit)). Returning the
+    /// accepted count lets the caller chunk subsequent writes — the
+    /// standard `AsyncWrite::poll_write` contract. Paired with
+    /// [`encrypt`](Self::encrypt) for all-or-nothing semantics on
+    /// known-small plaintexts.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(0)` if rustls's queue is full and cannot accept any bytes
+    /// (caller should drain ciphertext to the socket and retry).
+    /// Otherwise `Ok(n)` where `n > 0` is the number of plaintext
+    /// bytes queued for encryption. `n` may be less than
+    /// `plaintext.len()`.
+    ///
+    /// # Errors
+    ///
+    /// Any error from rustls's writer other than `WriteZero` (which
+    /// is translated to `Ok(0)` so the caller treats it as
+    /// backpressure rather than a hard failure).
+    #[inline]
+    pub fn try_encrypt(&mut self, plaintext: &[u8]) -> Result<usize, TlsError> {
+        match self.inner.writer().write(plaintext) {
+            Ok(n) => Ok(n),
+            Err(e) if e.kind() == io::ErrorKind::WriteZero => Ok(0),
+            Err(e) => Err(TlsError::Io(e)),
+        }
+    }
+
+    /// Set rustls's outbound plaintext queue limit. `None` for
+    /// unlimited (rustls accepts as much plaintext as memory allows;
+    /// pair with a caller-side bound).
+    ///
+    /// Default is rustls's `DEFAULT_BUFFER_LIMIT = 64 KiB`. Trading
+    /// workloads with small messages typically don't need to change
+    /// this. Bulk-transfer workloads (large snapshots, file uploads
+    /// over TLS) may benefit from raising it to reduce drain/refill
+    /// cycles in [`try_encrypt`](Self::try_encrypt).
+    pub fn set_buffer_limit(&mut self, limit: Option<usize>) {
+        self.inner.set_buffer_limit(limit);
+    }
+
+    /// Queue a TLS `close_notify` alert.
+    ///
+    /// Subsequent calls to [`wants_write`](Self::wants_write) will
+    /// return true until the alert ciphertext has been written via
+    /// [`write_tls_to`](Self::write_tls_to).
+    ///
+    /// Idempotent: rustls tracks whether close_notify has been sent
+    /// and no-ops on duplicate calls.
+    ///
+    /// Use in `AsyncWrite::poll_shutdown` (or equivalent) before
+    /// closing the underlying transport. Without close_notify, the
+    /// peer sees TCP FIN as a potential truncation and may error its
+    /// read loop mid-stream.
+    #[inline]
+    pub fn send_close_notify(&mut self) {
+        self.inner.send_close_notify();
     }
 
     /// Flush encrypted bytes to a socket.
@@ -205,16 +372,19 @@ impl TlsCodec {
     // =========================================================================
 
     /// Whether the TLS handshake is still in progress.
+    #[inline]
     pub fn is_handshaking(&self) -> bool {
         self.inner.is_handshaking()
     }
 
     /// Whether the codec has buffered TLS data to read.
+    #[inline]
     pub fn wants_read(&self) -> bool {
         self.inner.wants_read()
     }
 
     /// Whether the codec has encrypted data to write.
+    #[inline]
     pub fn wants_write(&self) -> bool {
         self.inner.wants_write()
     }
@@ -232,6 +402,8 @@ impl std::fmt::Debug for TlsCodec {
 mod tests {
     use std::io::Cursor;
     use std::sync::Arc;
+
+    use crate::buf::ReadBuf;
 
     use super::*;
 
@@ -509,6 +681,309 @@ mod tests {
         );
     }
 
+    /// Drive an in-memory TLS 1.3 handshake to completion.
+    /// Returns the connected client codec + server connection ready for
+    /// app-data exchange. Used by `read_tls_step` tests that need a
+    /// post-handshake codec.
+    fn connected_pair() -> (TlsCodec, rustls::ServerConnection) {
+        let (cert_chain, key_der) = generate_self_signed();
+        let key = rustls::pki_types::PrivateKeyDer::try_from(key_der).unwrap();
+        let server_config = Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(cert_chain, key)
+                .unwrap(),
+        );
+        let mut server = rustls::ServerConnection::new(server_config).unwrap();
+
+        let client_config = TlsConfig::builder().danger_no_verify().build().unwrap();
+        let mut client = TlsCodec::new(&client_config, "localhost").unwrap();
+
+        let mut c2s = Vec::new();
+        let mut s2c = Vec::new();
+
+        for _ in 0..64 {
+            while client.wants_write() {
+                client.write_tls_to(&mut c2s).unwrap();
+            }
+            if !c2s.is_empty() {
+                server.read_tls(&mut Cursor::new(&c2s)).unwrap();
+                server.process_new_packets().unwrap();
+                c2s.clear();
+            }
+            while server.wants_write() {
+                server.write_tls(&mut s2c).unwrap();
+            }
+            if !s2c.is_empty() {
+                client.read_and_process_tls(&s2c).unwrap();
+                s2c.clear();
+            }
+            if !client.is_handshaking() && !server.is_handshaking() {
+                return (client, server);
+            }
+        }
+        panic!("TLS handshake did not complete");
+    }
+
+    /// Encrypt `payload` from the server side and capture the resulting
+    /// ciphertext.
+    fn encrypt_server_payload(server: &mut rustls::ServerConnection, payload: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        server.writer().write_all(payload).unwrap();
+        let mut ciphertext = Vec::new();
+        while server.wants_write() {
+            server.write_tls(&mut ciphertext).unwrap();
+        }
+        ciphertext
+    }
+
+    /// Empty input should be a cheap no-op, not an error.
+    #[test]
+    fn read_tls_step_empty_input_returns_zero() {
+        let client_config = TlsConfig::builder().danger_no_verify().build().unwrap();
+        let mut client = TlsCodec::new(&client_config, "localhost").unwrap();
+
+        let n = client
+            .read_tls_step(&[])
+            .expect("empty input must not error");
+        assert_eq!(n, 0);
+    }
+
+    /// Happy path: feed a small ciphertext prefix, get a non-zero
+    /// consumed count back, drain the resulting plaintext.
+    #[test]
+    fn read_tls_step_normal_step() {
+        let (mut client, mut server) = connected_pair();
+        let payload = b"hello, world";
+        let ciphertext = encrypt_server_payload(&mut server, payload);
+        assert!(!ciphertext.is_empty());
+
+        let consumed = client
+            .read_tls_step(&ciphertext)
+            .expect("step must succeed on fresh ciphertext");
+        assert!(consumed > 0, "must consume at least one byte");
+        assert!(consumed <= ciphertext.len());
+
+        let mut dst = vec![0u8; payload.len()];
+        let n = client.read_plaintext(&mut dst).unwrap();
+        assert_eq!(n, payload.len());
+        assert_eq!(&dst[..n], payload);
+    }
+
+    /// `read_tls_step` itself never overflows the plaintext buffer
+    /// because it consumes one accepted prefix per call. The error
+    /// surfaces on `read_and_process_tls` (the bounded helper) when
+    /// fed a large slice without an interleaved drain. This test is
+    /// the moved-from-nexus-async-net pin documenting the constraint
+    /// that motivates `read_tls_step`'s existence.
+    ///
+    /// Named for what the body actually exercises (the failing
+    /// helper), not for the helper it advocates against.
+    #[test]
+    fn read_and_process_tls_rejects_when_plaintext_buffer_full() {
+        let (mut client, mut server) = connected_pair();
+        let payload = vec![b'x'; 64 * 1024];
+        let ciphertext = encrypt_server_payload(&mut server, &payload);
+
+        let error = client
+            .read_and_process_tls(&ciphertext)
+            .expect_err("full-slice processing should overfill rustls plaintext");
+
+        assert!(
+            error.to_string().contains("received plaintext buffer full"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// `try_encrypt` returns the partial accepted count when rustls's
+    /// outbound plaintext queue can't hold the full input. Lower the
+    /// queue limit explicitly so the test doesn't depend on rustls's
+    /// internal default.
+    #[test]
+    fn try_encrypt_returns_partial_when_queue_fills() {
+        let (mut client, _server) = connected_pair();
+        client.set_buffer_limit(Some(4096));
+
+        // First 4 KiB fits.
+        let n1 = client.try_encrypt(&[b'a'; 4096]).unwrap();
+        assert_eq!(n1, 4096);
+
+        // Next chunk: queue is full. try_encrypt accepts 0.
+        let n2 = client.try_encrypt(&[b'b'; 4096]).unwrap();
+        assert_eq!(n2, 0, "queue full → try_encrypt must report 0 accepted");
+    }
+
+    /// `set_buffer_limit(None)` lifts the cap entirely — `try_encrypt`
+    /// accepts everything in one shot.
+    #[test]
+    fn set_buffer_limit_none_unlimits_queue() {
+        let (mut client, _server) = connected_pair();
+        client.set_buffer_limit(None);
+
+        let n = client.try_encrypt(&[b'x'; 256 * 1024]).unwrap();
+        assert_eq!(
+            n,
+            256 * 1024,
+            "unlimited queue must accept the entire payload"
+        );
+    }
+
+    /// The original `encrypt` is all-or-nothing: it errors with
+    /// `WriteZero` if the input doesn't fit. This test pins that
+    /// shape so the migration to `try_encrypt` in adapters stays
+    /// motivated.
+    #[test]
+    #[allow(deprecated)] // exercising the deprecated primitive on purpose
+    fn encrypt_errors_when_payload_exceeds_queue_limit() {
+        let (mut client, _server) = connected_pair();
+        client.set_buffer_limit(Some(4096));
+
+        let err = client
+            .encrypt(&[b'x'; 8192])
+            .expect_err("encrypt must error when input > queue limit");
+        let TlsError::Io(io_err) = err else {
+            panic!("expected TlsError::Io, got {err:?}");
+        };
+        assert_eq!(io_err.kind(), io::ErrorKind::WriteZero);
+    }
+
+    // -------------------------------------------------------------------------
+    // Side-by-side adapter-pattern demonstrators
+    //
+    // These two tests are the strong pin for why `read_tls_step` exists.
+    // They mimic the EXACT shape of an async adapter loop: pull a chunk of
+    // ciphertext, drain plaintext between chunks, repeat.
+    //
+    // The negative test fixes the chunk size at 32 KiB — the size a future
+    // adapter optimisation might use to amortise syscall cost (the
+    // current 8 KiB tmp accidentally hides the bug). At that size,
+    // `read_and_process_tls` overflows rustls's 16 KiB plaintext queue
+    // mid-chunk: the helper's internal loop iterates until the slice is
+    // consumed, so it processes ~5 records back-to-back before yielding,
+    // and the inter-chunk plaintext drain doesn't help.
+    //
+    // The positive test runs the same shape with the same chunk size
+    // through `read_tls_step` + a `pending_read` spillover. It recovers
+    // the full payload because each `read_tls_step` advances by exactly
+    // one accepted prefix, which lets the caller drain plaintext between
+    // packet steps — never letting rustls's queue fill.
+    //
+    // Together they pin: the bug is real, the fix solves it, and the
+    // chunk-size headroom that would otherwise be a latent foot-gun for
+    // future adapter authors is closed.
+    // -------------------------------------------------------------------------
+
+    /// **Negative side**: feeding 32 KiB ciphertext chunks through
+    /// `read_and_process_tls` overflows rustls's plaintext queue
+    /// mid-chunk, even with proper inter-chunk plaintext draining.
+    #[test]
+    fn adapter_pattern_with_read_and_process_tls_overflows_on_oversize_chunks() {
+        let (mut client, mut server) = connected_pair();
+        let payload = vec![b'x'; 64 * 1024];
+        let ciphertext = encrypt_server_payload(&mut server, &payload);
+
+        // 32 KiB > 16 KiB plaintext queue cap. The helper's internal
+        // loop processes ~5 records back-to-back per chunk; queue
+        // overflows on the ~5th record.
+        let chunk_size = 32 * 1024;
+        let mut cursor = 0;
+        let mut dst = [0u8; 4096];
+
+        let result = loop {
+            // Drain plaintext between chunks (proper adapter etiquette).
+            let n = client
+                .read_plaintext(&mut dst)
+                .expect("read_plaintext must not error here");
+            if n > 0 {
+                continue;
+            }
+
+            if cursor >= ciphertext.len() {
+                break Ok(());
+            }
+
+            let end = (cursor + chunk_size).min(ciphertext.len());
+            match client.read_and_process_tls(&ciphertext[cursor..end]) {
+                Ok(consumed) => cursor += consumed,
+                Err(e) => break Err(e),
+            }
+        };
+
+        let err = result.expect_err(
+            "32 KiB ciphertext chunks via read_and_process_tls must overflow \
+             rustls's plaintext queue mid-chunk",
+        );
+        assert!(
+            err.to_string().contains("received plaintext buffer full"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// **Positive side**: the same 64 KiB payload, same 32 KiB chunk
+    /// size, but consumed via `read_tls_step` + a `pending_read`
+    /// spillover. The step-and-drain pattern recovers the entire
+    /// payload without overflowing.
+    #[test]
+    fn adapter_pattern_with_read_tls_step_handles_oversize_chunks() {
+        let (mut client, mut server) = connected_pair();
+        let payload = vec![b'x'; 64 * 1024];
+        let ciphertext = encrypt_server_payload(&mut server, &payload);
+
+        let chunk_size = 32 * 1024;
+        let mut pending = ReadBuf::with_capacity(chunk_size);
+        let mut plaintext = Vec::with_capacity(payload.len());
+        let mut cursor = 0;
+        let mut dst = [0u8; 4096];
+
+        // Cap iterations so a regression doesn't loop forever.
+        for _ in 0..1_000_000 {
+            // 1. Drain rustls's plaintext queue.
+            let n = client.read_plaintext(&mut dst).unwrap();
+            if n > 0 {
+                plaintext.extend_from_slice(&dst[..n]);
+                if plaintext.len() == payload.len() {
+                    break;
+                }
+                continue;
+            }
+
+            // 2. Step buffered ciphertext one packet at a time.
+            if !pending.is_empty() {
+                let consumed = client
+                    .read_tls_step(pending.data())
+                    .expect("step must succeed against buffered ciphertext");
+                pending.advance(consumed);
+                continue;
+            }
+
+            // 3. Pull the next 32 KiB chunk.
+            if cursor < ciphertext.len() {
+                let end = (cursor + chunk_size).min(ciphertext.len());
+                let chunk = &ciphertext[cursor..end];
+                let consumed = client
+                    .read_tls_step(chunk)
+                    .expect("step must succeed on fresh chunk");
+                if consumed < chunk.len() {
+                    let rem = &chunk[consumed..];
+                    let spare = pending.spare();
+                    spare[..rem.len()].copy_from_slice(rem);
+                    pending.filled(rem.len());
+                }
+                cursor = end;
+                continue;
+            }
+
+            break;
+        }
+
+        assert_eq!(
+            plaintext, payload,
+            "step + drain must recover the entire payload"
+        );
+        assert_eq!(cursor, ciphertext.len(), "must consume entire ciphertext");
+        assert!(pending.is_empty(), "no leftover ciphertext");
+    }
+
     /// Demonstrates the contract difference between `read_tls` and
     /// `read_and_process_tls` (issue #200).
     ///
@@ -535,6 +1010,7 @@ mod tests {
     /// correct — partial consumption is the documented contract of
     /// `Connection::read_tls`, not an implementation accident.
     #[test]
+    #[allow(deprecated)] // exercising the deprecated primitive on purpose
     fn bare_read_tls_partially_consumes_large_slice() {
         let client_config = TlsConfig::builder().danger_no_verify().build().unwrap();
         let mut client = TlsCodec::new(&client_config, "localhost").unwrap();

@@ -69,5 +69,9 @@ required-features = ["tokio-rt"]
 name = "httpbin"
 required-features = ["tokio-rt"]
 
+[[test]]
+name = "maybe_tls_nexus_backpressure"
+required-features = ["nexus", "tls"]
+
 [lints]
 workspace = true
