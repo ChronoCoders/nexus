@@ -5,7 +5,7 @@ All notable changes to nexus-async-net are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.7.0]
+## [0.7.0] — 2026-05-08
 
 The "TLS adapter architectural refactor" release. Companion to
 [nexus-net 0.7.0](../nexus-net/CHANGELOG.md). The `MaybeTls` /
