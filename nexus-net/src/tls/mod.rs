@@ -32,8 +32,9 @@
 //! - [`TlsCodec::read_and_process_tls`] loops over a bounded buffer
 //!   (use for in-memory tests or custom adapters that pre-buffer
 //!   known-bounded ciphertext; no production callers in this crate).
-//! - [`TlsCodec::read_plaintext`] / [`TlsCodec::read_plaintext_into`]
-//!   drain decrypted plaintext.
+//! - [`TlsCodec::read_plaintext`] / [`TlsCodec::drain_plaintext_into`]
+//!   drain decrypted plaintext (the latter feeds a [`ParserSink`]
+//!   directly, zero-copy).
 //! - [`TlsCodec::encrypt`] / [`TlsCodec::write_tls_to`] handle the
 //!   outbound side.
 

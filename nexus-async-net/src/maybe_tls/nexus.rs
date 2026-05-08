@@ -28,9 +28,10 @@ use nexus_net::tls::{TlsBufferCapacities, TlsCodec, TlsError};
 ///
 /// Implements [`nexus_net::WireStream`] in addition to
 /// [`AsyncRead`] / [`AsyncWrite`]. The `WireStream` impl fast-paths
-/// the TLS variant by feeding rustls's plaintext queue directly
-/// into a [`ParserSink`](nexus_net::ParserSink) — one fewer memcpy
-/// per recv than the AsyncRead path. `WsStream` and
+/// the TLS variant by copying bytes from rustls's plaintext queue
+/// straight into a [`ParserSink`](nexus_net::ParserSink)'s spare
+/// region — one memcpy per recv instead of two on the AsyncRead path
+/// (which mandates a `&mut [u8]` intermediate). `WsStream` and
 /// `HttpConnection` consume `MaybeTls` through `WireStream` to pick
 /// up the fast path automatically.
 ///
@@ -51,20 +52,23 @@ use nexus_net::tls::{TlsBufferCapacities, TlsCodec, TlsError};
 ///
 /// # Memory (TLS variant)
 ///
-/// Each TLS-wrapped connection allocates approximately 33 KiB of
-/// heap-resident buffers:
+/// Steady-state per connection: approximately 35 KiB of heap-resident
+/// buffers. Worst-case under bursty inbound: up to ~99 KiB if rustls's
+/// outbound plaintext queue fills to its default 64 KiB cap.
 ///
 /// | Buffer | Default size | Purpose |
 /// |---|---|---|
-/// | `pending_read` | 16 KiB | Inbound ciphertext FIFO (transport read target + codec input) |
+/// | `pending_read` | 18 KiB | Inbound ciphertext FIFO (transport read target + codec input). 18 KiB covers max TLS 1.3 record (16,384 plaintext + AEAD overhead). |
 /// | `pending_write` | 16 KiB | Outbound ciphertext FIFO (drains to socket) |
 /// | rustls state | ~1 KiB | Crypto state + small fixed buffers |
+/// | rustls plaintext queue | up to 64 KiB | Outbound plaintext awaiting encryption; cap is rustls's `DEFAULT_BUFFER_LIMIT`, configurable via `TlsBufferCapacities::rustls_plaintext_limit`. |
 ///
-/// 16 KiB inbound matches rustls's max plaintext record size — a
-/// single record fits in one transport read. Bulk-transfer workloads
-/// (large snapshots, file uploads) can raise `pending_write` via the
-/// connection builder's `tls_buffer_capacities` setter (takes a
-/// [`TlsBufferCapacities`]) to reduce drain/refill cycles.
+/// Trading workloads with strict per-connection memory budgets can
+/// drop the rustls plaintext cap to 8–16 KiB and reduce
+/// `pending_write` similarly. Bulk-transfer workloads (large
+/// snapshots, file uploads) can raise both via the connection
+/// builder's `tls_buffer_capacities` setter (takes a
+/// [`TlsBufferCapacities`]).
 pub enum MaybeTls {
     /// Plain TCP (ws://, http://).
     Plain(TcpStream),
@@ -111,9 +115,14 @@ impl TlsInner {
     #[allow(clippy::future_not_send)]
     pub async fn connect(
         stream: TcpStream,
-        codec: TlsCodec,
+        mut codec: TlsCodec,
         capacities: TlsBufferCapacities,
     ) -> Result<Self, TlsError> {
+        // Apply the rustls plaintext queue cap (if specified) before
+        // any encrypts can happen. None keeps rustls's default.
+        if let Some(limit) = capacities.rustls_plaintext_limit() {
+            codec.set_buffer_limit(Some(limit));
+        }
         let mut inner = Self {
             stream,
             codec,
@@ -206,8 +215,13 @@ impl TlsInner {
             }
         }
 
-        // Final flush: server may have queued the client Finished
-        // we haven't actually written yet.
+        // Final flush: covers the case where `is_handshaking()`
+        // flipped false mid-burst with one extra record (typically
+        // the client Finished) still queued in the codec. The inner
+        // loop above drains between writes, so this block is rarely
+        // reached and usually does zero work — but the rustls API
+        // doesn't promise wants_write is empty just because handshake
+        // completed.
         while self.codec.wants_write() {
             if self.pending_write.spare().is_empty() {
                 handshake_drain_pending(self).await?;
@@ -334,6 +348,13 @@ impl AsyncWrite for MaybeTls {
             MaybeTls::Plain(s) => Pin::new(s).poll_write(cx, buf),
             #[cfg(feature = "tls")]
             MaybeTls::Tls(inner) => {
+                // Empty-buffer write is a no-op: AsyncWrite allows it,
+                // and skipping the drain/encrypt cycle avoids the
+                // defensive `wake_by_ref` busy-spin path below firing
+                // on `try_encrypt(b"")` returning 0.
+                if buf.is_empty() {
+                    return Poll::Ready(Ok(0));
+                }
                 // 1. Drain pending ciphertext to free pending_write space.
                 drain_pending(inner, cx)?;
                 if !inner.pending_write.is_empty() {
@@ -350,16 +371,24 @@ impl AsyncWrite for MaybeTls {
                 }
 
                 // 3. Encrypt as much of buf as rustls's queue can accept.
-                //    Chunked: returns Ok(0) if the queue is full and the
-                //    caller must come back later.
                 let consumed = inner.codec.encrypt(buf).map_err(tls_to_io)?;
                 if consumed == 0 {
-                    // Defensive: rustls should not return 0 here after
-                    // we've drained both its outbound queue and the
-                    // socket. wake_by_ref ensures the runtime re-polls
-                    // us instead of stalling indefinitely.
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
+                    // Steps 1-3 above just drained both pending_write
+                    // and rustls's outbound plaintext queue. If encrypt
+                    // STILL returns 0, `buf.len()` exceeds the rustls
+                    // plaintext queue limit (default 64 KiB). A
+                    // wake_by_ref + Pending here would busy-spin
+                    // forever (next poll repeats the same path with
+                    // the same buf, same result). Mirror sync
+                    // TlsStream::write — surface as WriteZero so the
+                    // caller sees a hard, actionable failure.
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "rustls plaintext queue limit smaller than \
+                         remaining input — raise via \
+                         TlsBufferCapacities::rustls_plaintext_limit \
+                         or chunk the write into smaller pieces",
+                    )));
                 }
 
                 // 4. Best-effort flush of what we just produced.
@@ -526,6 +555,9 @@ impl<P: nexus_net::ParserSink> nexus_net::ParserSink for LimitedSink<'_, P> {
     }
     fn filled(&mut self, n: usize) {
         self.inner.filled(n);
+        // saturating_sub is defensive — by contract `n <= spare().len()`
+        // and our `spare()` caps at `remaining`, so `n <= remaining`
+        // always. Saturation is unreachable but cheap.
         self.remaining = self.remaining.saturating_sub(n);
     }
 }

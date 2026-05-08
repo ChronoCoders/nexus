@@ -11,9 +11,9 @@
 //!
 //! The split lets implementations skip the `&mut [u8]` intermediate
 //! that `AsyncRead`'s contract requires when a faster path is
-//! available — notably, the nexus-async-rt TLS adapter feeds rustls's
-//! plaintext queue directly into the parser's spare region (one
-//! fewer memcpy per recv).
+//! available — notably, the nexus-async-rt TLS adapter copies bytes
+//! from rustls's plaintext queue straight into the parser's spare
+//! region (one memcpy instead of two per recv).
 
 use std::io;
 use std::pin::Pin;

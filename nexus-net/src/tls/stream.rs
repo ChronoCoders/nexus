@@ -134,13 +134,32 @@ impl<S: Read + Write> Write for TlsStream<S> {
         while written < buf.len() {
             let n = self.codec.encrypt(&buf[written..]).map_err(tls_to_io)?;
             if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "rustls plaintext queue full — raise via \
-                     set_buffer_limit or shrink the write",
-                ));
+                // rustls's plaintext queue is full. Drain it to the
+                // socket — that produces ciphertext from the queued
+                // plaintext, freeing space for more `encrypt` calls.
+                // Without this, retrying would just hit the same wall.
+                while self.codec.wants_write() {
+                    self.codec.write_tls_to(&mut self.stream)?;
+                }
+                // Queue should now be drained; retry encrypt. If still
+                // zero, the queue limit is genuinely smaller than the
+                // remaining input — surface explicitly.
+                let n2 = self.codec.encrypt(&buf[written..]).map_err(tls_to_io)?;
+                if n2 == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "rustls plaintext queue limit is smaller than \
+                         the remaining input — the buffer-limit may \
+                         have been set too low (raise via \
+                         TlsCodec::set_buffer_limit or \
+                         TlsBufferCapacities::rustls_plaintext_limit), \
+                         or chunk the write into smaller pieces",
+                    ));
+                }
+                written += n2;
+            } else {
+                written += n;
             }
-            written += n;
         }
         while self.codec.wants_write() {
             self.codec.write_tls_to(&mut self.stream)?;

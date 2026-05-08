@@ -329,24 +329,32 @@ impl<S: WireStream + Unpin> HttpConnection<S> {
             return Err(RestError::ConnectionPoisoned);
         }
 
+        // Cancel-safety: assume failure for the entire body of `send`.
+        // Cleared only on the success-return path. If this future is
+        // dropped at any `.await` (timeout, runtime cancel, select!
+        // arm not chosen), poison stays set — pool eviction prevents
+        // a mid-stream connection from corrupting the next request's
+        // bytes. The explicit `self.poisoned = true` on each error
+        // path below is now redundant but kept as documentation.
+        self.poisoned = true;
+
         // Send request bytes
         if let Err(e) = write_all_async(&mut self.stream, req.as_bytes()).await {
-            self.poisoned = true;
             return Err(RestError::Io(e));
         }
         if let Err(e) = flush_async(&mut self.stream).await {
-            self.poisoned = true;
             return Err(RestError::Io(e));
         }
 
-        // Read response -- poison on any error, diagnose timeouts.
-        match self.read_response(reader).await {
-            Ok(resp) => Ok(resp),
-            Err(e) => {
-                self.poisoned = true;
-                Err(self.diagnose_error(e))
-            }
-        }
+        // Read response.
+        let resp = match self.read_response(reader).await {
+            Ok(resp) => resp,
+            Err(e) => return Err(self.diagnose_error(e)),
+        };
+
+        // Full success — clear poison so the slot returns clean to the pool.
+        self.poisoned = false;
+        Ok(resp)
     }
 
     /// Whether the connection is poisoned.
@@ -398,6 +406,16 @@ impl<S: WireStream + Unpin> HttpConnection<S> {
                     self.poisoned = true;
                     return Err(e.into());
                 }
+            }
+            // Pre-check the WireStream::poll_fill_into precondition
+            // (sink.spare() non-empty). If full without a parsed
+            // response head, the head exceeds the reader's capacity —
+            // surface as a parse error, not as I/O.
+            if reader.spare().is_empty() {
+                self.poisoned = true;
+                return Err(RestError::Http(HttpError::Malformed(
+                    "response head exceeds reader capacity",
+                )));
             }
             match fill_async(&mut self.stream, reader, 4096).await {
                 Ok(0) => {
@@ -454,6 +472,17 @@ impl<S: WireStream + Unpin> HttpConnection<S> {
 
         // Read remaining body bytes (Content-Length delimited).
         while reader.body_remaining() < content_length {
+            // Pre-check WireStream's spare-non-empty precondition.
+            // If the body needs more bytes than the reader can hold,
+            // surface as BufferFull rather than I/O.
+            if reader.spare().is_empty() {
+                self.poisoned = true;
+                let needed = content_length - reader.body_remaining();
+                return Err(RestError::Http(HttpError::BufferFull {
+                    needed,
+                    available: 0,
+                }));
+            }
             match fill_async(&mut self.stream, reader, 4096).await {
                 Ok(0) => {
                     self.poisoned = true;

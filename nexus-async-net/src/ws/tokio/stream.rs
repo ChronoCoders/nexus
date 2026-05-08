@@ -236,6 +236,12 @@ impl<S: WireStream + Unpin> WsStream<S> {
 
         let mut resp_reader = nexus_net::http::ResponseReader::new(4096);
         loop {
+            // Pre-check the WireStream::poll_fill_into precondition
+            // (sink.spare() non-empty). If full without a parsed
+            // response, the head exceeds capacity — treat as malformed.
+            if resp_reader.spare().is_empty() {
+                return Err(HandshakeError::MalformedHttp.into());
+            }
             let n = fill_async(&mut stream, &mut resp_reader, 4096).await?;
             if n == 0 {
                 return Err(HandshakeError::MalformedHttp.into());
@@ -304,6 +310,12 @@ impl<S: WireStream + Unpin> WsStream<S> {
 
         let ws_key;
         loop {
+            // Pre-check the WireStream::poll_fill_into precondition
+            // (sink.spare() non-empty). If full without a parsed
+            // request, the head exceeds capacity — treat as malformed.
+            if req_reader.spare().is_empty() {
+                return Err(HandshakeError::MalformedHttp.into());
+            }
             let n = fill_async(&mut stream, &mut req_reader, 4096).await?;
             if n == 0 {
                 return Err(HandshakeError::MalformedHttp.into());
