@@ -148,6 +148,16 @@ mod tests {
     nexus_rt::new_resource!(Out(u64));
 
     #[test]
+    #[should_panic(expected = "called outside Runtime::block_on")]
+    fn current_panics_outside_runtime() {
+        // Pins the documented panic contract for `WorldCtx::current()`.
+        // The happy path is exercised transitively by the runtime tests
+        // (every `with_world(...)` call inside a task goes through
+        // `WorldCtx::current()`). This is the direct contract test.
+        let _ = WorldCtx::current();
+    }
+
+    #[test]
     fn with_world_raw_access() {
         let mut wb = WorldBuilder::new();
         wb.register(Val(42));

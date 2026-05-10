@@ -260,6 +260,16 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "called outside Runtime::block_on")]
+    fn shutdown_signal_current_panics_outside_runtime() {
+        // Pins the documented panic contract for
+        // `ShutdownSignal::current()`. Symmetric to
+        // `IoHandle::current_panics_outside_runtime` and
+        // `WorldCtx::current_panics_outside_runtime`.
+        let _ = ShutdownSignal::current();
+    }
+
+    #[test]
     fn shutdown_signal_current_resolves_after_trigger() {
         // Sister test to `shutdown_signal_resolves_after_trigger`, but
         // exercises the TLS-fetcher path (`ShutdownSignal::current()`)

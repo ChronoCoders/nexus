@@ -351,3 +351,17 @@ impl IoHandle {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "called outside Runtime::block_on")]
+    fn current_panics_outside_runtime() {
+        // Pins the documented panic contract. Most tests exercise
+        // `current()` transitively (via `TcpStream::connect`, etc.)
+        // inside `block_on`; this is the direct contract test.
+        let _ = IoHandle::current();
+    }
+}

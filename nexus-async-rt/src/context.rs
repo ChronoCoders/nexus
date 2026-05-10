@@ -61,8 +61,10 @@ thread_local! {
 // Install / clear (called by Runtime::block_on)
 // =============================================================================
 
-/// Install runtime context into TLS. Called by RuntimeBuilder::build().
-/// The context stays installed until the guard is dropped (Runtime::drop).
+/// Install runtime context into TLS. Called by both `Runtime::block_on`
+/// (root execution path) and `Runtime::shutdown_quiesce` (so cross-thread
+/// wakes that fire during quiesce still find a runtime context).
+/// The context stays installed until the returned guard is dropped.
 pub(crate) fn install(
     world: *mut nexus_rt::World,
     io: *mut IoDriver,
