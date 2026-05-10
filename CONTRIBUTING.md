@@ -175,18 +175,16 @@ Code must be **correct on all architectures**. Performance can vary, correctness
 Manual prefetching can hurt — sometimes substantially — when:
 
 - The working set already fits in cache after warmup (no DRAM latency to hide)
-- Both branches are prefetched but only one is followed (50%+ wasted bandwidth)
+- Both branches are prefetched but only one is followed (wasted bandwidth)
 - The access pattern is already predictable to the hardware prefetcher
 - Tree depth or call rate causes the per-call hint cost to compound
-
-Removing 6 prefetch sites from rbtree tree-walks restored a 25-27% regression on `get(hit)` and `entry(occupied)` at 10K populations. Removing similar sites from btree tree-walks and rbtree iterators showed neutral to slight wins.
 
 **If you genuinely need a prefetch:**
 
 1. Bench the proposed site at realistic populations (small / fits-cache / exceeds-cache).
 2. Measure prefetch ON vs OFF at each population.
-3. Only ship the prefetch if it shows ≥10% improvement at *some* population AND no regression at *any*.
-4. Land the bench evidence in the PR body or a `.claude/scratch/` doc so future audits don't re-litigate the same question.
+3. Only ship the prefetch if it shows a meaningful improvement at *some* population AND no regression at *any*.
+4. Land the bench evidence in the PR body so future audits don't re-litigate the same question.
 
 Same discipline as `#[inline]`: measure first, only add when you can prove it earns its place.
 

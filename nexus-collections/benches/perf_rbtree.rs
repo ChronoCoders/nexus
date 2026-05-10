@@ -469,7 +469,7 @@ fn main() {
         map.clear(&slab);
     }
 
-    // iter full scan (per-element cycles, exercises iterator prefetch sites)
+    // iter full scan (per-element cycles, in-order successor traversal cost)
     {
         let mut map = RbTree::new();
         for i in 0..STEADY_SIZE {
