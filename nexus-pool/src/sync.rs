@@ -8,8 +8,8 @@
 use std::cell::UnsafeCell;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
 
 const NONE: usize = usize::MAX;
 
@@ -118,10 +118,15 @@ impl<T> Inner<T> {
 
 impl<T> Drop for Inner<T> {
     fn drop(&mut self) {
-        // Only drop values that are currently in the free list.
-        // Values that are "out" (held by Pooled) have been moved
-        // out of the slot, and the guard's Drop impl will handle them
-        // (either returning to pool, or dropping directly if pool is gone).
+        // Inner::drop runs only when the last Arc dies — which means
+        // no `Pooled` guards are alive (each guard holds a strong
+        // Arc). So every slot that was ever acquired has been pushed
+        // back via `Pooled::drop`, and the free list now contains
+        // every slot we own. Drop them all here. The only way a slot
+        // can be missing from the free list at this point is if a
+        // reset closure panicked during a guard's drop — that path
+        // leaks the value (documented in caveats.md §1) and is the
+        // same as the 1.0.x behavior.
         let mut idx = *self.free_head.get_mut();
         while idx != NONE {
             // SAFETY: Slots in the free list contain valid values (written by new()
@@ -147,8 +152,11 @@ impl<T> Drop for Inner<T> {
 /// Only one `Pool` exists per pool. It cannot be cloned or shared
 /// across threads (it is `Send` but not `Sync` or `Clone`).
 ///
-/// When the `Pool` is dropped, outstanding `Pooled` guards
-/// will drop their values directly instead of returning them to the pool.
+/// When the `Pool` is dropped while `Pooled` guards are still alive,
+/// the guards keep `Inner` alive via a strong `Arc`. Each guard, on
+/// drop, returns its value to the (now-orphaned) free list; the last
+/// guard to drop releases `Inner`, which drops every in-pool slot.
+/// See `docs/caveats.md` §2.
 ///
 /// # Example
 ///
@@ -236,7 +244,7 @@ impl<T> Pool<T> {
             Pooled {
                 value: ManuallyDrop::new(value),
                 idx,
-                inner: Arc::downgrade(&self.inner),
+                inner: Arc::clone(&self.inner),
             }
         })
     }
@@ -259,21 +267,24 @@ impl<T> Pool<T> {
 /// RAII guard that returns the object to the pool on drop.
 ///
 /// This guard can be sent to other threads. When dropped, the object
-/// is automatically returned to the pool (if the pool still exists).
+/// is automatically returned to the pool's storage. If the pool was
+/// already dropped, the value goes back into the orphaned `Inner`,
+/// which finally dies (along with every in-pool value) when the last
+/// `Pooled` exits. See `docs/caveats.md` §2.
 #[must_use = "dropping the guard immediately returns the object to the pool"]
 pub struct Pooled<T> {
     value: ManuallyDrop<T>,
     idx: usize,
-    inner: Weak<Inner<T>>,
+    inner: Arc<Inner<T>>,
 }
 
-// SAFETY: Pooled owns its value exclusively (ManuallyDrop<T>). The Weak<Inner<T>>
+// SAFETY: Pooled owns its value exclusively (ManuallyDrop<T>). The Arc<Inner<T>>
 // is only used during drop to push the slot back via atomic CAS. T: Send ensures
-// the value can cross threads.
+// the value can cross threads. Arc<T: Send> is itself Send (same as Weak was).
 #[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl<T: Send> Send for Pooled<T> {}
 // SAFETY: Pooled's &self access goes through Deref to &T, which requires T: Sync.
-// The Weak and idx fields are not mutated through &self.
+// The Arc and idx fields are not mutated through &self.
 unsafe impl<T: Send + Sync> Sync for Pooled<T> {}
 
 impl<T> Deref for Pooled<T> {
@@ -294,16 +305,20 @@ impl<T> DerefMut for Pooled<T> {
 
 impl<T> Drop for Pooled<T> {
     fn drop(&mut self) {
-        if let Some(inner) = self.inner.upgrade() {
-            // SAFETY: Value is valid (ManuallyDrop preserves it until explicit take/drop).
-            // After take, self.value is consumed; inner.push writes it back to the slot.
-            let value = unsafe { ManuallyDrop::take(&mut self.value) };
-            inner.push(self.idx, value);
-        } else {
-            // SAFETY: Pool is gone. Value is valid and must be dropped to avoid a leak.
-            // After drop, we never touch self.value again.
-            unsafe { ManuallyDrop::drop(&mut self.value) };
-        }
+        // SAFETY: self.inner is a strong Arc — Inner is alive by
+        // construction. Value is valid (ManuallyDrop preserves it
+        // until explicit take/drop). After take, self.value is
+        // consumed; inner.push writes it back to the slot.
+        let value = unsafe { ManuallyDrop::take(&mut self.value) };
+        self.inner.push(self.idx, value);
+        // self.inner Arc drops here: one strong fetch_sub. If we were
+        // the last reference, Inner::drop walks the free list and
+        // assume_init_drops every in-pool slot (including the one we
+        // just pushed). Arc's fetch_sub(Release) + last-drop
+        // fence(Acquire) is the canonical "single-writer drops after
+        // all readers" pattern — sufficient for the refcount alone;
+        // the value transfer is independently ordered by the Release
+        // CAS in `Inner::push`.
     }
 }
 
@@ -365,11 +380,14 @@ mod tests {
         {
             let acquirer = Pool::new(1, || String::from("test"), String::clear);
             item = acquirer.try_acquire().unwrap();
-            // acquirer drops here
+            // acquirer drops here — its Arc decrements but the item
+            // still holds a strong Arc, so Inner survives.
         }
-        // item still valid - we can access it
+        // item still valid — we can access it.
         assert_eq!(&*item, "test");
-        // item drops here - should not panic
+        // item drops here: returns slot to the orphan free list, Arc
+        // hits zero, Inner::drop walks the free list and drops every
+        // in-pool slot. No leak, no UAF.
     }
 
     #[test]
