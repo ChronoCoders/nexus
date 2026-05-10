@@ -242,9 +242,15 @@ impl<T: Pod> SharedReader<T> {
     }
 
     /// Returns `true` if the writer has been dropped.
+    ///
+    /// Best-effort signal — the `Relaxed` load is sufficient because no
+    /// data depends on the disconnect flag's ordering relative to other
+    /// loads. A reader observing `false` racy with a writer drop simply
+    /// gets a stale "not yet disconnected" answer, which the next call
+    /// will correct.
     #[inline]
     pub fn is_disconnected(&self) -> bool {
-        !self.inner.writer_alive.load(Ordering::Acquire)
+        !self.inner.writer_alive.load(Ordering::Relaxed)
     }
 }
 
