@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-05-11
+
 ### Changed
 
 - **Crate marked experimental.** README updated with status banner;
