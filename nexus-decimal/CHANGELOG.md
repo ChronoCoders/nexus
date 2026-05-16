@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   with opposite signs near the rails — `|MIN - MAX|` exceeds `MAX` on
   every signed type). Named `checked_*` to match the crate's convention
   for `Option`-returning operations; there is no bare `abs_diff`.
+- `BASIS_POINT` constant (requires `D >= 4`, compile-time enforced)
+- Basis-point operations: `bps_of`, `shift_bps`, `bps_diff`, `bps_diff_by`
+- Percentage operations: `pct_of`, `shift_pct`, `pct_diff`, `pct_diff_by`
+- Tick operations: `add_ticks`, `tick_diff`, `is_tick_aligned`
+- Proximity guards: `within_bps`, `within_ticks`
+- Bps rounding: `round_bps`, `floor_bps`, `ceil_bps`
 
 ## [1.1.0] — 2026-04-23
 

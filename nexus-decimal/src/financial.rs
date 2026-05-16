@@ -212,6 +212,85 @@ macro_rules! impl_decimal_financial {
                     self
                 }
             }
+
+            // ========================================================
+            // Tick alignment and bps rounding
+            // ========================================================
+
+            /// Returns `true` if `self` is aligned to the given tick size.
+            ///
+            /// Panics if `tick` is not positive.
+            #[inline(always)]
+            pub const fn is_tick_aligned(self, tick: Self) -> bool {
+                assert!(tick.value > 0, "tick must be positive");
+                self.value % tick.value == 0
+            }
+
+            /// Round to nearest N basis points.
+            ///
+            /// Returns `None` if `n == 0` or the tick computation overflows.
+            /// Panics if `D < 4`.
+            #[inline(always)]
+            pub const fn round_bps(self, n: u32) -> Option<Self> {
+                assert!(D >= 4, "round_bps requires D >= 4");
+                if n == 0 {
+                    return None;
+                }
+                let bp_raw = Self::SCALE / 10000;
+                let Some(tick_wide) = (bp_raw as i128).checked_mul(n as i128) else {
+                    return None;
+                };
+                if tick_wide > <$backing>::MAX as i128 || tick_wide <= 0 {
+                    return None;
+                }
+                self.round_to_tick(Self {
+                    value: tick_wide as $backing,
+                })
+            }
+
+            /// Floor to N basis points.
+            ///
+            /// Returns `None` if `n == 0` or the tick computation overflows.
+            /// Panics if `D < 4`.
+            #[inline(always)]
+            pub const fn floor_bps(self, n: u32) -> Option<Self> {
+                assert!(D >= 4, "floor_bps requires D >= 4");
+                if n == 0 {
+                    return None;
+                }
+                let bp_raw = Self::SCALE / 10000;
+                let Some(tick_wide) = (bp_raw as i128).checked_mul(n as i128) else {
+                    return None;
+                };
+                if tick_wide > <$backing>::MAX as i128 || tick_wide <= 0 {
+                    return None;
+                }
+                self.floor_to_tick(Self {
+                    value: tick_wide as $backing,
+                })
+            }
+
+            /// Ceil to N basis points.
+            ///
+            /// Returns `None` if `n == 0` or the tick computation overflows.
+            /// Panics if `D < 4`.
+            #[inline(always)]
+            pub const fn ceil_bps(self, n: u32) -> Option<Self> {
+                assert!(D >= 4, "ceil_bps requires D >= 4");
+                if n == 0 {
+                    return None;
+                }
+                let bp_raw = Self::SCALE / 10000;
+                let Some(tick_wide) = (bp_raw as i128).checked_mul(n as i128) else {
+                    return None;
+                };
+                if tick_wide > <$backing>::MAX as i128 || tick_wide <= 0 {
+                    return None;
+                }
+                self.ceil_to_tick(Self {
+                    value: tick_wide as $backing,
+                })
+            }
         }
     };
 }
@@ -342,6 +421,216 @@ impl<const D: u8> Decimal<i64, D> {
     }
 }
 
+// ============================================================================
+// Bps/pct/tick operations (per-backing, widening)
+// ============================================================================
+
+macro_rules! impl_financial_widening {
+    ($backing:ty, $wider:ty) => {
+        impl<const D: u8> Decimal<$backing, D> {
+            /// N basis points of self: `self * bps / 10000`.
+            #[inline]
+            pub const fn bps_of(self, bps: i32) -> Option<Self> {
+                let product = (self.value as $wider) * (bps as $wider);
+                let result = product / 10000;
+                if result > <$backing>::MAX as $wider || result < <$backing>::MIN as $wider {
+                    None
+                } else {
+                    Some(Self {
+                        value: result as $backing,
+                    })
+                }
+            }
+
+            /// N percent of self: `self * pct / 100`.
+            #[inline]
+            pub const fn pct_of(self, pct: i32) -> Option<Self> {
+                let product = (self.value as $wider) * (pct as $wider);
+                let result = product / 100;
+                if result > <$backing>::MAX as $wider || result < <$backing>::MIN as $wider {
+                    None
+                } else {
+                    Some(Self {
+                        value: result as $backing,
+                    })
+                }
+            }
+
+            /// Adjust self by N basis points: `self * (10000 + bps) / 10000`.
+            #[inline]
+            pub const fn shift_bps(self, bps: i32) -> Option<Self> {
+                let factor = 10000_i64 + bps as i64;
+                let product = (self.value as $wider) * (factor as $wider);
+                let result = product / 10000;
+                if result > <$backing>::MAX as $wider || result < <$backing>::MIN as $wider {
+                    None
+                } else {
+                    Some(Self {
+                        value: result as $backing,
+                    })
+                }
+            }
+
+            /// Adjust self by N percent: `self * (100 + pct) / 100`.
+            #[inline]
+            pub const fn shift_pct(self, pct: i32) -> Option<Self> {
+                let factor = 100_i64 + pct as i64;
+                let product = (self.value as $wider) * (factor as $wider);
+                let result = product / 100;
+                if result > <$backing>::MAX as $wider || result < <$backing>::MIN as $wider {
+                    None
+                } else {
+                    Some(Self {
+                        value: result as $backing,
+                    })
+                }
+            }
+
+            /// Difference in bps relative to divisor:
+            /// `(self - other) / divisor * 10000`, returned as a Decimal.
+            ///
+            /// Uses multiply-before-divide: `diff * SCALE / divisor * 10000`
+            /// to preserve precision through the fixed-point division.
+            #[inline]
+            pub const fn bps_diff_by(self, other: Self, divisor: Self) -> Option<Self> {
+                if divisor.value == 0 {
+                    return None;
+                }
+                let diff = (self.value as $wider) - (other.value as $wider);
+                let diff_scaled = diff * (Self::SCALE as $wider);
+                let divisor_w = divisor.value as $wider;
+                let q = diff_scaled / divisor_w;
+                let r = diff_scaled % divisor_w;
+                let Some(main) = q.checked_mul(10000) else {
+                    return None;
+                };
+                let frac = r * 10000 / divisor_w;
+                let Some(result) = main.checked_add(frac) else {
+                    return None;
+                };
+                if result > <$backing>::MAX as $wider || result < <$backing>::MIN as $wider {
+                    None
+                } else {
+                    Some(Self {
+                        value: result as $backing,
+                    })
+                }
+            }
+
+            /// Difference in bps: `(self - other) * 10000 / other`.
+            #[inline]
+            pub const fn bps_diff(self, other: Self) -> Option<Self> {
+                self.bps_diff_by(other, other)
+            }
+
+            /// Percentage difference relative to divisor:
+            /// `(self - other) / divisor * 100`, returned as a Decimal.
+            #[inline]
+            pub const fn pct_diff_by(self, other: Self, divisor: Self) -> Option<Self> {
+                if divisor.value == 0 {
+                    return None;
+                }
+                let diff = (self.value as $wider) - (other.value as $wider);
+                let diff_scaled = diff * (Self::SCALE as $wider);
+                let divisor_w = divisor.value as $wider;
+                let q = diff_scaled / divisor_w;
+                let r = diff_scaled % divisor_w;
+                let Some(main) = q.checked_mul(100) else {
+                    return None;
+                };
+                let frac = r * 100 / divisor_w;
+                let Some(result) = main.checked_add(frac) else {
+                    return None;
+                };
+                if result > <$backing>::MAX as $wider || result < <$backing>::MIN as $wider {
+                    None
+                } else {
+                    Some(Self {
+                        value: result as $backing,
+                    })
+                }
+            }
+
+            /// Percentage difference: `(self - other) * 100 / other`.
+            #[inline]
+            pub const fn pct_diff(self, other: Self) -> Option<Self> {
+                self.pct_diff_by(other, other)
+            }
+
+            /// Returns `true` if `|self - other| <= |other| * bps / 10000`.
+            #[inline]
+            pub const fn within_bps(self, other: Self, bps: i32) -> bool {
+                let diff = if self.value >= other.value {
+                    (self.value as $wider) - (other.value as $wider)
+                } else {
+                    (other.value as $wider) - (self.value as $wider)
+                };
+                let other_abs = (other.value as $wider).abs();
+                let threshold = other_abs * (bps as $wider) / 10000;
+                diff <= threshold
+            }
+
+            /// Returns `true` if `|self - other| <= n * tick`.
+            ///
+            /// Panics if `tick` is not positive.
+            #[inline]
+            pub const fn within_ticks(self, other: Self, n: i64, tick: Self) -> bool {
+                assert!(tick.value > 0, "tick must be positive");
+                let diff = if self.value >= other.value {
+                    (self.value as $wider) - (other.value as $wider)
+                } else {
+                    (other.value as $wider) - (self.value as $wider)
+                };
+                let Some(threshold) = (n as $wider).checked_mul(tick.value as $wider) else {
+                    return n > 0;
+                };
+                diff <= threshold
+            }
+
+            /// `self + n * tick`. Returns `None` on overflow.
+            ///
+            /// Panics if `tick` is not positive.
+            #[inline]
+            pub const fn add_ticks(self, n: i64, tick: Self) -> Option<Self> {
+                assert!(tick.value > 0, "tick must be positive");
+                let Some(offset) = (n as $wider).checked_mul(tick.value as $wider) else {
+                    return None;
+                };
+                let Some(result) = (self.value as $wider).checked_add(offset) else {
+                    return None;
+                };
+                if result > <$backing>::MAX as $wider || result < <$backing>::MIN as $wider {
+                    None
+                } else {
+                    Some(Self {
+                        value: result as $backing,
+                    })
+                }
+            }
+
+            /// `(self - other) / tick` as an integer tick count.
+            ///
+            /// Returns `None` if `tick` is zero or the result exceeds `i64`.
+            #[inline]
+            pub const fn tick_diff(self, other: Self, tick: Self) -> Option<i64> {
+                if tick.value == 0 {
+                    return None;
+                }
+                let diff = (self.value as $wider) - (other.value as $wider);
+                let ticks = diff / (tick.value as $wider);
+                if ticks > i64::MAX as $wider || ticks < i64::MIN as $wider {
+                    None
+                } else {
+                    Some(ticks as i64)
+                }
+            }
+        }
+    };
+}
+
+impl_financial_widening!(i32, i64);
+impl_financial_widening!(i64, i128);
+
 // --- i128: uses wide arithmetic for percent/bps ---
 
 impl<const D: u8> Decimal<i128, D> {
@@ -374,5 +663,266 @@ impl<const D: u8> Decimal<i128, D> {
         }
         let product = self.checked_mul(mul)?;
         product.checked_div(div)
+    }
+
+    /// N basis points of self: `self * bps / 10000`.
+    ///
+    /// Uses decomposition to avoid intermediate overflow.
+    #[inline]
+    pub const fn bps_of(self, bps: i32) -> Option<Self> {
+        let q = self.value / 10000;
+        let r = self.value % 10000;
+        let Some(main) = q.checked_mul(bps as i128) else {
+            return None;
+        };
+        let frac = r * (bps as i128) / 10000;
+        match main.checked_add(frac) {
+            Some(v) => Some(Self { value: v }),
+            None => None,
+        }
+    }
+
+    /// N percent of self: `self * pct / 100`.
+    ///
+    /// Uses decomposition to avoid intermediate overflow.
+    #[inline]
+    pub const fn pct_of(self, pct: i32) -> Option<Self> {
+        let q = self.value / 100;
+        let r = self.value % 100;
+        let Some(main) = q.checked_mul(pct as i128) else {
+            return None;
+        };
+        let frac = r * (pct as i128) / 100;
+        match main.checked_add(frac) {
+            Some(v) => Some(Self { value: v }),
+            None => None,
+        }
+    }
+
+    /// Adjust self by N basis points: `self * (10000 + bps) / 10000`.
+    #[inline]
+    pub const fn shift_bps(self, bps: i32) -> Option<Self> {
+        let factor = 10000_i64 + bps as i64;
+        let q = self.value / 10000;
+        let r = self.value % 10000;
+        let Some(main) = q.checked_mul(factor as i128) else {
+            return None;
+        };
+        let frac = r * (factor as i128) / 10000;
+        match main.checked_add(frac) {
+            Some(v) => Some(Self { value: v }),
+            None => None,
+        }
+    }
+
+    /// Adjust self by N percent: `self * (100 + pct) / 100`.
+    #[inline]
+    pub const fn shift_pct(self, pct: i32) -> Option<Self> {
+        let factor = 100_i64 + pct as i64;
+        let q = self.value / 100;
+        let r = self.value % 100;
+        let Some(main) = q.checked_mul(factor as i128) else {
+            return None;
+        };
+        let frac = r * (factor as i128) / 100;
+        match main.checked_add(frac) {
+            Some(v) => Some(Self { value: v }),
+            None => None,
+        }
+    }
+
+    /// Difference in bps relative to divisor:
+    /// `(self - other) / divisor * 10000`, returned as a Decimal.
+    ///
+    /// Decomposes diff = q*divisor + r, then computes
+    /// `q * SCALE * 10000 + r * SCALE * 10000 / divisor`
+    /// to avoid intermediate overflow on i128.
+    #[inline]
+    pub const fn bps_diff_by(self, other: Self, divisor: Self) -> Option<Self> {
+        if divisor.value == 0 {
+            return None;
+        }
+        let Some(diff) = self.value.checked_sub(other.value) else {
+            return None;
+        };
+        let q = diff / divisor.value;
+        let r = diff % divisor.value;
+
+        let main = if q == 0 {
+            0
+        } else {
+            let Some(qs) = q.checked_mul(Self::SCALE) else {
+                return None;
+            };
+            let Some(qs10k) = qs.checked_mul(10000) else {
+                return None;
+            };
+            qs10k
+        };
+
+        let Some(rs) = r.checked_mul(Self::SCALE) else {
+            return None;
+        };
+        let rs_q = rs / divisor.value;
+        let rs_r = rs % divisor.value;
+        let Some(frac_main) = rs_q.checked_mul(10000) else {
+            return None;
+        };
+        let frac_sub = match rs_r.checked_mul(10000) {
+            Some(v) => v / divisor.value,
+            None => 0,
+        };
+        let Some(frac) = frac_main.checked_add(frac_sub) else {
+            return None;
+        };
+
+        match main.checked_add(frac) {
+            Some(v) => Some(Self { value: v }),
+            None => None,
+        }
+    }
+
+    /// Difference in bps: `(self - other) * 10000 / other`.
+    #[inline]
+    pub const fn bps_diff(self, other: Self) -> Option<Self> {
+        self.bps_diff_by(other, other)
+    }
+
+    /// Percentage difference relative to divisor:
+    /// `(self - other) / divisor * 100`, returned as a Decimal.
+    #[inline]
+    pub const fn pct_diff_by(self, other: Self, divisor: Self) -> Option<Self> {
+        if divisor.value == 0 {
+            return None;
+        }
+        let Some(diff) = self.value.checked_sub(other.value) else {
+            return None;
+        };
+        let q = diff / divisor.value;
+        let r = diff % divisor.value;
+
+        let main = if q == 0 {
+            0
+        } else {
+            let Some(qs) = q.checked_mul(Self::SCALE) else {
+                return None;
+            };
+            let Some(qs100) = qs.checked_mul(100) else {
+                return None;
+            };
+            qs100
+        };
+
+        let Some(rs) = r.checked_mul(Self::SCALE) else {
+            return None;
+        };
+        let rs_q = rs / divisor.value;
+        let rs_r = rs % divisor.value;
+        let Some(frac_main) = rs_q.checked_mul(100) else {
+            return None;
+        };
+        let frac_sub = match rs_r.checked_mul(100) {
+            Some(v) => v / divisor.value,
+            None => 0,
+        };
+        let Some(frac) = frac_main.checked_add(frac_sub) else {
+            return None;
+        };
+
+        match main.checked_add(frac) {
+            Some(v) => Some(Self { value: v }),
+            None => None,
+        }
+    }
+
+    /// Percentage difference: `(self - other) * 100 / other`.
+    #[inline]
+    pub const fn pct_diff(self, other: Self) -> Option<Self> {
+        self.pct_diff_by(other, other)
+    }
+
+    /// Returns `true` if `|self - other| <= |other| * bps / 10000`.
+    #[inline]
+    pub const fn within_bps(self, other: Self, bps: i32) -> bool {
+        if bps < 0 {
+            return false;
+        }
+        let abs_diff = if self.value >= other.value {
+            self.value.checked_sub(other.value)
+        } else {
+            other.value.checked_sub(self.value)
+        };
+        let Some(diff) = abs_diff else {
+            return false;
+        };
+        let other_abs = if other.value >= 0 {
+            Some(other.value)
+        } else {
+            other.value.checked_neg()
+        };
+        let Some(other_abs) = other_abs else {
+            return false;
+        };
+        match other_abs.checked_mul(bps as i128) {
+            Some(product) => diff <= product / 10000,
+            None => true,
+        }
+    }
+
+    /// Returns `true` if `|self - other| <= n * tick`.
+    ///
+    /// Panics if `tick` is not positive.
+    #[inline]
+    pub const fn within_ticks(self, other: Self, n: i64, tick: Self) -> bool {
+        assert!(tick.value > 0, "tick must be positive");
+        let abs_diff = if self.value >= other.value {
+            self.value.checked_sub(other.value)
+        } else {
+            other.value.checked_sub(self.value)
+        };
+        let Some(diff) = abs_diff else {
+            return false;
+        };
+        if n <= 0 {
+            return diff == 0 && n == 0;
+        }
+        match (n as i128).checked_mul(tick.value) {
+            Some(threshold) => diff <= threshold,
+            None => true,
+        }
+    }
+
+    /// `self + n * tick`. Returns `None` on overflow.
+    ///
+    /// Panics if `tick` is not positive.
+    #[inline]
+    pub const fn add_ticks(self, n: i64, tick: Self) -> Option<Self> {
+        assert!(tick.value > 0, "tick must be positive");
+        let Some(offset) = (n as i128).checked_mul(tick.value) else {
+            return None;
+        };
+        match self.value.checked_add(offset) {
+            Some(v) => Some(Self { value: v }),
+            None => None,
+        }
+    }
+
+    /// `(self - other) / tick` as an integer tick count.
+    ///
+    /// Returns `None` if `tick` is zero or the result exceeds `i64`.
+    #[inline]
+    pub const fn tick_diff(self, other: Self, tick: Self) -> Option<i64> {
+        if tick.value == 0 {
+            return None;
+        }
+        let Some(diff) = self.value.checked_sub(other.value) else {
+            return None;
+        };
+        let ticks = diff / tick.value;
+        if ticks > i64::MAX as i128 || ticks < i64::MIN as i128 {
+            None
+        } else {
+            Some(ticks as i64)
+        }
     }
 }

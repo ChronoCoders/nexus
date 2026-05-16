@@ -52,6 +52,22 @@ macro_rules! impl_decimal_constants {
                 }
             };
 
+            /// One basis point (`0.0001`).
+            ///
+            /// # Compile-time constraint
+            ///
+            /// Requires `D >= 4`. Referencing `BASIS_POINT` on a `Decimal`
+            /// with fewer than 4 fractional digits is a compile error.
+            pub const BASIS_POINT: Self = {
+                assert!(
+                    D >= 4,
+                    "BASIS_POINT requires D >= 4: 0.0001 is not representable with fewer than 4 fractional digits"
+                );
+                Self {
+                    value: Self::SCALE / 10000,
+                }
+            };
+
             /// Two (`2.0`).
             ///
             /// # Compile-time constraint
