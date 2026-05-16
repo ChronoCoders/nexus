@@ -39,7 +39,7 @@ macro_rules! impl_decimal_constants {
             ///
             /// # Compile-time constraint
             ///
-            /// Requires `D >= 1`. Instantiating `HALF` on a `Decimal` with
+            /// Requires `D >= 1`. Referencing `HALF` on a `Decimal` with
             /// `D = 0` is a compile error — the value 0.5 is not
             /// representable with zero fractional digits.
             pub const HALF: Self = {

@@ -106,12 +106,9 @@ fn constants_cross_backing() {
 }
 
 #[test]
-fn half_d0_is_not_representable() {
-    // Decimal<i64, 0>::HALF would fail to compile — 0.5 is not
-    // representable with zero fractional digits.
-    // Verified by: const assert in HALF definition.
+fn d0_scale_is_integer_only() {
     type D0 = Decimal<i64, 0>;
-    assert_eq!(D0::SCALE, 1); // confirms D=0 means integer-only
+    assert_eq!(D0::SCALE, 1);
 }
 
 #[test]
