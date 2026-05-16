@@ -592,3 +592,340 @@ fn div100_negative() {
     let d = D64::new(-100, 0);
     assert_eq!(d.div100(), D64::new(-1, 0));
 }
+
+// ============================================================================
+// BASIS_POINT constant
+// ============================================================================
+
+#[test]
+fn basis_point_value() {
+    assert_eq!(D64::BASIS_POINT.to_raw(), 10_000); // 10^8 / 10000
+    assert_eq!(D64::BASIS_POINT, D64::from_raw(10_000));
+}
+
+#[test]
+fn basis_point_cross_backing() {
+    type X32 = Decimal<i32, 4>;
+    type X64 = Decimal<i64, 4>;
+    type X128 = Decimal<i128, 4>;
+
+    assert_eq!(X32::BASIS_POINT.to_raw() as i64, X64::BASIS_POINT.to_raw());
+    assert_eq!(
+        X64::BASIS_POINT.to_raw() as i128,
+        X128::BASIS_POINT.to_raw()
+    );
+}
+
+// ============================================================================
+// bps_of / pct_of
+// ============================================================================
+
+#[test]
+fn bps_of_basic() {
+    let price = D64::new(100, 0);
+    // 5 bps of 100 = 100 * 5 / 10000 = 0.05
+    assert_eq!(price.bps_of(5), Some(D64::new(0, 5_000_000)));
+    // negative bps
+    assert_eq!(price.bps_of(-5), Some(D64::from_raw(-5_000_000)));
+    // zero bps
+    assert_eq!(price.bps_of(0), Some(D64::ZERO));
+}
+
+#[test]
+fn pct_of_basic() {
+    let price = D64::new(100, 0);
+    assert_eq!(price.pct_of(50), Some(D64::new(50, 0)));
+    assert_eq!(price.pct_of(1), Some(D64::new(1, 0)));
+    assert_eq!(price.pct_of(-10), Some(D64::new(-10, 0)));
+}
+
+#[test]
+fn bps_of_i32() {
+    type D32 = Decimal<i32, 4>;
+    let price = D32::new(100, 0);
+    assert_eq!(price.bps_of(5), Some(D32::new(0, 500)));
+}
+
+#[test]
+fn bps_of_i128() {
+    let price = D96::new(100, 0);
+    let result = price.bps_of(5).unwrap();
+    assert_eq!(result.to_raw(), 100_i128 * 1_000_000_000_000 * 5 / 10000);
+}
+
+// ============================================================================
+// shift_bps / shift_pct
+// ============================================================================
+
+#[test]
+fn shift_bps_basic() {
+    let price = D64::new(100, 0);
+    // shift by +5 bps: 100 * (10000 + 5) / 10000 = 100.05
+    assert_eq!(price.shift_bps(5), Some(D64::new(100, 5_000_000)));
+    // shift by 0 bps = identity
+    assert_eq!(price.shift_bps(0), Some(price));
+}
+
+#[test]
+fn shift_pct_basic() {
+    let price = D64::new(100, 0);
+    assert_eq!(price.shift_pct(10), Some(D64::new(110, 0)));
+    assert_eq!(price.shift_pct(-10), Some(D64::new(90, 0)));
+    assert_eq!(price.shift_pct(0), Some(price));
+}
+
+#[test]
+fn shift_bps_overflow() {
+    assert!(D64::MAX.shift_bps(10000).is_none());
+}
+
+// ============================================================================
+// bps_diff / pct_diff
+// ============================================================================
+
+#[test]
+fn bps_diff_basic() {
+    let a = D64::new(100, 50_000_000); // 100.50
+    let b = D64::new(100, 0); // 100.00
+    // (100.50 - 100.00) * 10000 / 100.00 = 50 bps
+    assert_eq!(a.bps_diff(b), Some(D64::new(50, 0)));
+}
+
+#[test]
+fn bps_diff_zero_divisor() {
+    assert!(D64::ONE.bps_diff(D64::ZERO).is_none());
+}
+
+#[test]
+fn bps_diff_by_custom_divisor() {
+    let ask = D64::new(101, 0);
+    let bid = D64::new(100, 0);
+    let mid = D64::new(100, 50_000_000);
+    let result = ask.bps_diff_by(bid, mid).unwrap();
+    // (101 - 100) * 10000 / 100.5 ≈ 99.50 bps
+    assert!(result.to_raw() > 0);
+}
+
+#[test]
+fn pct_diff_basic() {
+    let a = D64::new(110, 0);
+    let b = D64::new(100, 0);
+    // (110 - 100) * 100 / 100 = 10%
+    assert_eq!(a.pct_diff(b), Some(D64::new(10, 0)));
+}
+
+// ============================================================================
+// tick_diff / add_ticks / is_tick_aligned
+// ============================================================================
+
+#[test]
+fn tick_diff_basic() {
+    let tick = D64::new(0, 1_000_000); // 0.01
+    assert_eq!(
+        D64::new(100, 50_000_000).tick_diff(D64::new(100, 0), tick),
+        Some(50)
+    );
+}
+
+#[test]
+fn tick_diff_self() {
+    let tick = D64::new(0, 1_000_000);
+    assert_eq!(D64::ONE.tick_diff(D64::ONE, tick), Some(0));
+}
+
+#[test]
+#[should_panic(expected = "tick must be positive")]
+fn tick_diff_zero_tick() {
+    let _ = D64::ONE.tick_diff(D64::ZERO, D64::ZERO);
+}
+
+#[test]
+fn add_ticks_basic() {
+    let tick = D64::new(0, 1_000_000); // 0.01
+    assert_eq!(
+        D64::new(100, 0).add_ticks(5, tick),
+        Some(D64::new(100, 5_000_000))
+    );
+    assert_eq!(
+        D64::new(100, 0).add_ticks(-3, tick),
+        Some(D64::new(99, 97_000_000))
+    );
+}
+
+#[test]
+fn add_ticks_zero() {
+    let tick = D64::new(0, 1_000_000);
+    assert_eq!(D64::new(100, 0).add_ticks(0, tick), Some(D64::new(100, 0)));
+}
+
+#[test]
+fn is_tick_aligned_basic() {
+    let tick = D64::new(0, 1_000_000); // 0.01
+    assert!(D64::new(100, 50_000_000).is_tick_aligned(tick));
+    assert!(!D64::new(100, 5_500_000).is_tick_aligned(tick)); // 100.055 not on 0.01 grid
+}
+
+#[test]
+fn is_tick_aligned_zero() {
+    let tick = D64::new(0, 1_000_000);
+    assert!(D64::ZERO.is_tick_aligned(tick));
+}
+
+// ============================================================================
+// within_bps / within_ticks
+// ============================================================================
+
+#[test]
+fn within_bps_basic() {
+    let a = D64::new(100, 5_000_000); // 100.05
+    let b = D64::new(100, 0); // 100.00
+    // |100.05 - 100| = 0.05. |100| * 10 / 10000 = 0.10. 0.05 <= 0.10 → true
+    assert!(a.within_bps(b, 10));
+    // |101 - 100| = 1. |100| * 10 / 10000 = 0.10. 1 > 0.10 → false
+    assert!(!D64::new(101, 0).within_bps(b, 10));
+}
+
+#[test]
+fn within_bps_zero_tolerance() {
+    assert!(D64::ONE.within_bps(D64::ONE, 0)); // same value, 0 tolerance
+    assert!(!D64::TWO.within_bps(D64::ONE, 0)); // different, 0 tolerance
+}
+
+#[test]
+fn within_bps_zero_reference() {
+    // |self| <= |0| * bps / 10000 = 0, so only self == 0 passes
+    assert!(D64::ZERO.within_bps(D64::ZERO, 100));
+    assert!(!D64::ONE.within_bps(D64::ZERO, 100));
+}
+
+#[test]
+fn within_ticks_basic() {
+    let tick = D64::new(0, 1_000_000); // 0.01
+    // 3 ticks away, tolerance = 5
+    assert!(D64::new(100, 3_000_000).within_ticks(D64::new(100, 0), 5, tick));
+    // 7 ticks away, tolerance = 5
+    assert!(!D64::new(100, 7_000_000).within_ticks(D64::new(100, 0), 5, tick));
+}
+
+// ============================================================================
+// round_bps / floor_bps / ceil_bps
+// ============================================================================
+
+#[test]
+fn round_bps_basic() {
+    let price = D64::new(1, 23_460_000); // 1.2346
+    // Round to nearest 5 bps = 0.0005
+    let tick_5bps = D64::new(0, 50_000); // 0.0005
+    // Expected: same as round_to_tick with 5bps tick
+    assert_eq!(price.round_bps(5), price.round_to_tick(tick_5bps));
+}
+
+#[test]
+fn floor_bps_basic() {
+    let price = D64::new(1, 23_460_000); // 1.2346
+    let tick_5bps = D64::new(0, 50_000);
+    assert_eq!(price.floor_bps(5), price.floor_to_tick(tick_5bps));
+}
+
+#[test]
+fn ceil_bps_basic() {
+    let price = D64::new(1, 23_460_000); // 1.2346
+    let tick_5bps = D64::new(0, 50_000);
+    assert_eq!(price.ceil_bps(5), price.ceil_to_tick(tick_5bps));
+}
+
+#[test]
+fn round_bps_zero_returns_none() {
+    assert!(D64::ONE.round_bps(0).is_none());
+}
+
+#[test]
+fn round_bps_one() {
+    let price = D64::new(1, 23_460_000); // 1.2346
+    let tick_1bp = D64::new(0, 10_000); // 0.0001
+    assert_eq!(price.round_bps(1), price.round_to_tick(tick_1bp));
+}
+
+// ============================================================================
+// Cross-backing: i32
+// ============================================================================
+
+mod i32_financial {
+    use nexus_decimal::Decimal;
+    type D32 = Decimal<i32, 4>;
+
+    #[test]
+    fn shift_bps() {
+        let price = D32::new(100, 0);
+        assert_eq!(price.shift_bps(5), Some(D32::new(100, 500)));
+    }
+
+    #[test]
+    fn add_ticks() {
+        let tick = D32::new(0, 1); // 0.0001
+        assert_eq!(D32::new(1, 0).add_ticks(5, tick), Some(D32::new(1, 5)));
+    }
+
+    #[test]
+    fn tick_diff() {
+        let tick = D32::new(0, 1);
+        assert_eq!(D32::new(1, 5).tick_diff(D32::new(1, 0), tick), Some(5));
+    }
+
+    #[test]
+    fn within_bps() {
+        let a = D32::new(100, 5);
+        let b = D32::new(100, 0);
+        assert!(a.within_bps(b, 10));
+    }
+}
+
+// ============================================================================
+// Cross-backing: i128
+// ============================================================================
+
+mod i128_financial {
+    use nexus_decimal::Decimal;
+    type D128 = Decimal<i128, 18>;
+
+    #[test]
+    fn bps_of() {
+        let price = D128::new(100, 0);
+        let result = price.bps_of(5).unwrap();
+        // 100 * 5 / 10000 = 0.05
+        let expected = D128::new(0, 50_000_000_000_000_000);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn shift_bps() {
+        let price = D128::new(100, 0);
+        let result = price.shift_bps(5).unwrap();
+        let expected = D128::new(100, 50_000_000_000_000_000);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn bps_diff() {
+        let a = D128::new(100, 500_000_000_000_000_000);
+        let b = D128::new(100, 0);
+        let result = a.bps_diff(b).unwrap();
+        assert_eq!(result, D128::new(50, 0));
+    }
+
+    #[test]
+    fn add_ticks() {
+        let tick = D128::new(0, 10_000_000_000_000_000); // 0.01
+        assert_eq!(
+            D128::new(100, 0).add_ticks(5, tick),
+            Some(D128::new(100, 50_000_000_000_000_000))
+        );
+    }
+
+    #[test]
+    fn within_bps() {
+        let a = D128::new(100, 50_000_000_000_000_000);
+        let b = D128::new(100, 0);
+        assert!(a.within_bps(b, 10));
+    }
+}
