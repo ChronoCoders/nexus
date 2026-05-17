@@ -271,6 +271,91 @@ macro_rules! impl_into_step {
 all_tuples!(impl_into_step);
 
 // =============================================================================
+// No-event Step — IntoStep<(), Out, _> without passing `()` to the function
+// =============================================================================
+
+use crate::handler::NoEvent;
+
+// Arity 0: fn() -> Out
+impl<Out, F: FnMut() -> Out + 'static> StepCall<()> for Step<NoEvent<F>, ()> {
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, _world: &mut World, _input: ()) -> Out {
+        (self.f.0)()
+    }
+}
+
+impl<Out, F: FnMut() -> Out + 'static> IntoStep<(), Out, NoEvent<F>> for F {
+    type Step = Step<NoEvent<F>, ()>;
+
+    fn into_step(self, registry: &Registry) -> Self::Step {
+        Step {
+            f: NoEvent(self),
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+macro_rules! impl_into_step_no_event {
+    ($($P:ident),+) => {
+        impl<Out, F: 'static, $($P: Param + 'static),+>
+            StepCall<()> for Step<NoEvent<F>, ($($P,)+)>
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+) -> Out +
+                FnMut($($P::Item<'a>,)+) -> Out,
+        {
+            type Out = Out;
+            #[inline(always)]
+            #[allow(non_snake_case)]
+            fn call(&mut self, world: &mut World, _input: ()) -> Out {
+                fn call_inner<$($P,)+ Output>(
+                    mut f: impl FnMut($($P,)+) -> Output,
+                    $($P: $P,)+
+                ) -> Output {
+                    f($($P,)+)
+                }
+
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f.0, $($P,)+)
+            }
+        }
+
+        impl<Out, F: 'static, $($P: Param + 'static),+>
+            IntoStep<(), Out, ($($P,)+)> for NoEvent<F>
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+) -> Out +
+                FnMut($($P::Item<'a>,)+) -> Out,
+        {
+            type Step = Step<NoEvent<F>, ($($P,)+)>;
+
+            fn into_step(self, registry: &Registry) -> Self::Step {
+                let state = <($($P,)+) as Param>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as Param>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
+                }
+                Step { f: self, state, name: std::any::type_name::<F>() }
+            }
+        }
+    };
+}
+
+all_tuples!(impl_into_step_no_event);
+
+// =============================================================================
 // OpaqueStep — wrapper for opaque closures as steps
 // =============================================================================
 
@@ -429,6 +514,89 @@ macro_rules! impl_into_ref_step {
 }
 
 all_tuples!(impl_into_ref_step);
+
+// =============================================================================
+// No-event RefStep — IntoRefStep<(), Out, _> without passing `&()` to function
+// =============================================================================
+
+// Arity 0: fn() -> Out
+impl<Out, F: FnMut() -> Out + 'static> RefStepCall<()> for Step<NoEvent<F>, ()> {
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, _world: &mut World, _input: &()) -> Out {
+        (self.f.0)()
+    }
+}
+
+impl<Out, F: FnMut() -> Out + 'static> IntoRefStep<(), Out, NoEvent<F>> for F {
+    type Step = Step<NoEvent<F>, ()>;
+
+    fn into_ref_step(self, registry: &Registry) -> Self::Step {
+        Step {
+            f: NoEvent(self),
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+macro_rules! impl_into_ref_step_no_event {
+    ($($P:ident),+) => {
+        impl<Out, F: 'static, $($P: Param + 'static),+>
+            RefStepCall<()> for Step<NoEvent<F>, ($($P,)+)>
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+) -> Out +
+                FnMut($($P::Item<'a>,)+) -> Out,
+        {
+            type Out = Out;
+            #[inline(always)]
+            #[allow(non_snake_case)]
+            fn call(&mut self, world: &mut World, _input: &()) -> Out {
+                fn call_inner<$($P,)+ Output>(
+                    mut f: impl FnMut($($P,)+) -> Output,
+                    $($P: $P,)+
+                ) -> Output {
+                    f($($P,)+)
+                }
+
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f.0, $($P,)+)
+            }
+        }
+
+        impl<Out, F: 'static, $($P: Param + 'static),+>
+            IntoRefStep<(), Out, ($($P,)+)> for NoEvent<F>
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+) -> Out +
+                FnMut($($P::Item<'a>,)+) -> Out,
+        {
+            type Step = Step<NoEvent<F>, ($($P,)+)>;
+
+            fn into_ref_step(self, registry: &Registry) -> Self::Step {
+                let state = <($($P,)+) as Param>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as Param>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
+                }
+                Step { f: self, state, name: std::any::type_name::<F>() }
+            }
+        }
+    };
+}
+
+all_tuples!(impl_into_ref_step_no_event);
 
 // -- Opaque: FnMut(&mut World, &In) -> Out ---------------------------------
 
@@ -771,6 +939,90 @@ macro_rules! impl_into_scan_step {
 
 all_tuples!(impl_into_scan_step);
 
+// =============================================================================
+// No-event ScanStep — IntoScanStep<Acc, (), Out, _> without passing `()` input
+// =============================================================================
+
+// Arity 0: fn(&mut Acc) -> Out
+impl<Acc, Out, F: FnMut(&mut Acc) -> Out + 'static> ScanStepCall<Acc, ()> for Step<NoEvent<F>, ()> {
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, _world: &mut World, acc: &mut Acc, _input: ()) -> Out {
+        (self.f.0)(acc)
+    }
+}
+
+impl<Acc, Out, F: FnMut(&mut Acc) -> Out + 'static> IntoScanStep<Acc, (), Out, NoEvent<F>> for F {
+    type Step = Step<NoEvent<F>, ()>;
+
+    fn into_scan_step(self, registry: &Registry) -> Self::Step {
+        Step {
+            f: NoEvent(self),
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+macro_rules! impl_into_scan_step_no_event {
+    ($($P:ident),+) => {
+        impl<Acc, Out, F: 'static, $($P: Param + 'static),+>
+            ScanStepCall<Acc, ()> for Step<NoEvent<F>, ($($P,)+)>
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+ &mut Acc) -> Out +
+                FnMut($($P::Item<'a>,)+ &mut Acc) -> Out,
+        {
+            type Out = Out;
+            #[inline(always)]
+            #[allow(non_snake_case)]
+            fn call(&mut self, world: &mut World, acc: &mut Acc, _input: ()) -> Out {
+                fn call_inner<$($P,)+ Accumulator, Output>(
+                    mut f: impl FnMut($($P,)+ &mut Accumulator) -> Output,
+                    $($P: $P,)+
+                    acc: &mut Accumulator,
+                ) -> Output {
+                    f($($P,)+ acc)
+                }
+
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f.0, $($P,)+ acc)
+            }
+        }
+
+        impl<Acc, Out, F: 'static, $($P: Param + 'static),+>
+            IntoScanStep<Acc, (), Out, ($($P,)+)> for NoEvent<F>
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+ &mut Acc) -> Out +
+                FnMut($($P::Item<'a>,)+ &mut Acc) -> Out,
+        {
+            type Step = Step<NoEvent<F>, ($($P,)+)>;
+
+            fn into_scan_step(self, registry: &Registry) -> Self::Step {
+                let state = <($($P,)+) as Param>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as Param>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
+                }
+                Step { f: self, state, name: std::any::type_name::<F>() }
+            }
+        }
+    };
+}
+
+all_tuples!(impl_into_scan_step_no_event);
+
 // -- Opaque: FnMut(&mut World, &mut Acc, In) -> Out --------------------------
 
 /// Internal: wrapper for opaque closures used as scan steps.
@@ -948,6 +1200,94 @@ macro_rules! impl_into_ref_scan_step {
 }
 
 all_tuples!(impl_into_ref_scan_step);
+
+// =============================================================================
+// No-event RefScanStep — IntoRefScanStep<Acc, (), Out, _> without `&()` input
+// =============================================================================
+
+// Arity 0: fn(&mut Acc) -> Out
+impl<Acc, Out, F: FnMut(&mut Acc) -> Out + 'static> RefScanStepCall<Acc, ()>
+    for Step<NoEvent<F>, ()>
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, _world: &mut World, acc: &mut Acc, _input: &()) -> Out {
+        (self.f.0)(acc)
+    }
+}
+
+impl<Acc, Out, F: FnMut(&mut Acc) -> Out + 'static> IntoRefScanStep<Acc, (), Out, NoEvent<F>>
+    for F
+{
+    type Step = Step<NoEvent<F>, ()>;
+
+    fn into_ref_scan_step(self, registry: &Registry) -> Self::Step {
+        Step {
+            f: NoEvent(self),
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+macro_rules! impl_into_ref_scan_step_no_event {
+    ($($P:ident),+) => {
+        impl<Acc, Out, F: 'static, $($P: Param + 'static),+>
+            RefScanStepCall<Acc, ()> for Step<NoEvent<F>, ($($P,)+)>
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+ &mut Acc) -> Out +
+                FnMut($($P::Item<'a>,)+ &mut Acc) -> Out,
+        {
+            type Out = Out;
+            #[inline(always)]
+            #[allow(non_snake_case)]
+            fn call(&mut self, world: &mut World, acc: &mut Acc, _input: &()) -> Out {
+                fn call_inner<$($P,)+ Accumulator, Output>(
+                    mut f: impl FnMut($($P,)+ &mut Accumulator) -> Output,
+                    $($P: $P,)+
+                    acc: &mut Accumulator,
+                ) -> Output {
+                    f($($P,)+ acc)
+                }
+
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f.0, $($P,)+ acc)
+            }
+        }
+
+        impl<Acc, Out, F: 'static, $($P: Param + 'static),+>
+            IntoRefScanStep<Acc, (), Out, ($($P,)+)> for NoEvent<F>
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+ &mut Acc) -> Out +
+                FnMut($($P::Item<'a>,)+ &mut Acc) -> Out,
+        {
+            type Step = Step<NoEvent<F>, ($($P,)+)>;
+
+            fn into_ref_scan_step(self, registry: &Registry) -> Self::Step {
+                let state = <($($P,)+) as Param>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as Param>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
+                }
+                Step { f: self, state, name: std::any::type_name::<F>() }
+            }
+        }
+    };
+}
+
+all_tuples!(impl_into_ref_scan_step_no_event);
 
 // -- Opaque: FnMut(&mut World, &mut Acc, &In) -> Out ------------------------
 
@@ -5461,5 +5801,75 @@ mod tests {
         assert_eq!(*world.resource::<u64>(), 0);
         p.run(&mut world, &data); // Some(3)
         assert_eq!(*world.resource::<u64>(), 3);
+    }
+
+    // =========================================================================
+    // NoEvent — pipeline steps with In = () that omit the input parameter
+    // =========================================================================
+
+    #[test]
+    fn no_event_step_arity_0() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineBuilder::<()>::new().then(|| 42u64, r);
+        assert_eq!(p.run(&mut world, ()), 42);
+    }
+
+    #[test]
+    fn no_event_step_arity_1() {
+        use crate::no_event;
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u32>(10);
+        let mut world = wb.build();
+
+        fn read_config(config: Res<u32>) -> u64 {
+            *config as u64
+        }
+
+        let r = world.registry_mut();
+        let mut p = PipelineBuilder::<()>::new().then(no_event(read_config), r);
+        assert_eq!(p.run(&mut world, ()), 10);
+    }
+
+    #[test]
+    fn no_event_step_chained() {
+        use crate::no_event;
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u32>(5);
+        let mut world = wb.build();
+
+        fn read_val(val: Res<u32>) -> u64 {
+            *val as u64
+        }
+
+        let r = world.registry_mut();
+        let mut p = PipelineBuilder::<()>::new()
+            .then(no_event(read_val), r)
+            .then(|x: u64| x * 2, r);
+        assert_eq!(p.run(&mut world, ()), 10);
+    }
+
+    #[test]
+    fn no_event_step_as_handler() {
+        use crate::no_event;
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn write_val(mut out: ResMut<u64>) {
+            *out += 1;
+        }
+
+        let r = world.registry_mut();
+        let mut p = PipelineBuilder::<()>::new()
+            .then(no_event(write_val), r)
+            .build();
+
+        p.run(&mut world, ());
+        p.run(&mut world, ());
+        assert_eq!(*world.resource::<u64>(), 2);
     }
 }

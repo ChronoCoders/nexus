@@ -9,6 +9,15 @@ error[E0277]: this function cannot be used as a pipeline step for this input typ
    = note: if the pipeline output is `Option<T>`, use `.map()` to operate on the inner `T`
    = note: if the pipeline output is `Result<T, E>`, use `.map()` for `Ok` or `.catch()` for `Err`
    = note: if using a closure with resource params (Res<T>, ResMut<T>), that isn't supported — use a named `fn`
+   = help: the following other types implement trait `IntoStep<In, Out, Params>`:
+             `NoEvent<F>` implements `IntoStep<(), Out, (P0, P1)>`
+             `NoEvent<F>` implements `IntoStep<(), Out, (P0, P1, P2)>`
+             `NoEvent<F>` implements `IntoStep<(), Out, (P0, P1, P2, P3)>`
+             `NoEvent<F>` implements `IntoStep<(), Out, (P0, P1, P2, P3, P4)>`
+             `NoEvent<F>` implements `IntoStep<(), Out, (P0, P1, P2, P3, P4, P5)>`
+             `NoEvent<F>` implements `IntoStep<(), Out, (P0, P1, P2, P3, P4, P5, P6)>`
+             `NoEvent<F>` implements `IntoStep<(), Out, (P0, P1, P2, P3, P4, P5, P6, P7)>`
+             `NoEvent<F>` implements `IntoStep<(), Out, (P0,)>`
 note: required by a bound in `PipelineChain::<In, Out, Chain>::then`
   --> src/pipeline.rs
    |

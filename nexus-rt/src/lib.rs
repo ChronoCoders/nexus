@@ -192,8 +192,8 @@ pub use combinator::{Broadcast, FanOut};
 pub use dag::{BatchDag, Dag, DagBuilder, resolve_arm};
 pub use driver::Installer;
 pub use handler::{
-    CtxFree, Handler, HandlerFn, IntoHandler, Local, Opaque, OpaqueHandler, Param, RegistryRef,
-    Resolved,
+    CtxFree, Handler, HandlerFn, IntoHandler, Local, NoEvent, Opaque, OpaqueHandler, Param,
+    RegistryRef, Resolved, no_event,
 };
 #[cfg(feature = "reactors")]
 pub use reactor::{
