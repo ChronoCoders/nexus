@@ -104,7 +104,7 @@ assert_eq!(world.resource::<Counter>().0, 1);
 ### In handlers (hot path -- pre-resolved pointer)
 
 ```rust
-use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler, Resource};
+use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler, Resource, no_event};
 
 #[derive(Resource)]
 struct Config { threshold: u64 }
@@ -115,7 +115,6 @@ struct State { count: u64 }
 fn my_handler(
     config: Res<Config>,         // shared read -- single deref
     mut state: ResMut<State>,    // exclusive write -- single deref
-    _event: (),
 ) {
     if state.count < config.threshold {
         state.count += 1;
@@ -127,7 +126,7 @@ wb.register(Config { threshold: 100 });
 wb.register(State { count: 0 });
 let mut world = wb.build();
 
-let mut handler = my_handler.into_handler(world.registry());
+let mut handler = no_event(my_handler).into_handler(world.registry());
 handler.run(&mut world, ());
 assert_eq!(world.resource::<State>().count, 1);
 ```
@@ -252,7 +251,7 @@ use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Resource};
 struct Data(u64);
 
 // This would panic at build time:
-// fn bad(a: Res<Data>, b: ResMut<Data>, _e: ()) {}
+// fn bad(a: Res<Data>, b: ResMut<Data>) {}
 // let _ = bad.into_handler(registry);
 // -> "conflicting access: resource borrowed by ResMut<Data> conflicts with Res<Data>"
 ```

@@ -195,7 +195,7 @@ shutdown:
 use nexus_rt::shutdown::Shutdown;
 
 // Handler triggers shutdown when done
-fn check_done(counter: Res<u64>, shutdown: Res<Shutdown>, _event: ()) {
+fn check_done(counter: Res<u64>, shutdown: Res<Shutdown>) {
     if *counter >= 100 {
         shutdown.shutdown();
     }
@@ -696,12 +696,12 @@ first, `Param`-resolved resources in the middle, event last.
 ```rust
 struct TimerCtx { order_id: u64, fires: u64 }
 
-fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>, _event: ()) {
+fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>) {
     ctx.fires += 1;
     *counter += ctx.order_id;
 }
 
-let mut cb = on_timeout.into_callback(
+let mut cb = no_event(on_timeout).into_callback(
     TimerCtx { order_id: 42, fires: 0 },
     registry,
 );
@@ -769,7 +769,7 @@ impl CallbackBlueprint for OnTimeout {
     type Context = TimerCtx;
 }
 
-fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>, _event: ()) {
+fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>) {
     *counter += ctx.order_id;
 }
 
@@ -777,7 +777,7 @@ let mut builder = WorldBuilder::new();
 builder.register::<u64>(0);
 let mut world = builder.build();
 
-let cb_template = CallbackTemplate::<OnTimeout>::new(on_timeout, world.registry());
+let cb_template = CallbackTemplate::<OnTimeout>::new(no_event(on_timeout), world.registry());
 let mut cb = cb_template.generate(TimerCtx { order_id: 42 });
 cb.run(&mut world, ());
 assert_eq!(*world.resource::<u64>(), 42);
@@ -821,7 +821,7 @@ handlers at runtime via `IntoHandler::into_handler` or
 `IntoCallback::into_callback`.
 
 ```rust
-fn spawner(reg: RegistryRef, _event: ()) {
+fn spawner(reg: RegistryRef) {
     let handler = some_fn.into_handler(&reg);
     // store handler somewhere...
 }
@@ -1000,7 +1000,7 @@ use nexus_rt::{Res, WorldBuilder};
 use nexus_rt::shutdown::Shutdown;
 
 // Handler side
-fn on_fatal(shutdown: Res<Shutdown>, _event: ()) {
+fn on_fatal(shutdown: Res<Shutdown>) {
     shutdown.shutdown();
 }
 

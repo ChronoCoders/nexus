@@ -95,7 +95,7 @@ internal state (resolved ResourceIds, Local storage) handles the rest.
 Handlers can access up to 8 resources simultaneously:
 
 ```rust
-use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler, Resource};
+use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler, Resource, no_event};
 
 #[derive(Resource)]
 struct Prices { best_bid: f64, best_ask: f64 }
@@ -108,7 +108,6 @@ fn check_risk(
     prices: Res<Prices>,
     position: Res<Position>,
     limits: Res<RiskLimits>,
-    _event: (),
 ) {
     let exposure = position.qty.abs() as f64 * prices.best_ask;
     if position.qty.abs() > limits.max_position {
@@ -122,7 +121,7 @@ wb.register(Position { qty: 50 });
 wb.register(RiskLimits { max_position: 100 });
 let mut world = wb.build();
 
-let mut handler = check_risk.into_handler(world.registry());
+let mut handler = no_event(check_risk).into_handler(world.registry());
 handler.run(&mut world, ());
 ```
 
@@ -197,12 +196,12 @@ assert_eq!(world.resource::<Total>().0, 30);
 useful for stamping outbound messages with monotonic sequence numbers.
 
 ```rust
-use nexus_rt::{WorldBuilder, IntoHandler, Handler, Seq, SeqMut, Resource, ResMut};
+use nexus_rt::{WorldBuilder, IntoHandler, Handler, Seq, SeqMut, Resource, ResMut, no_event};
 
 #[derive(Resource)]
 struct LastSeq(i64);
 
-fn stamp_outbound(seq: Seq, mut last: ResMut<LastSeq>, _event: ()) {
+fn stamp_outbound(seq: Seq, mut last: ResMut<LastSeq>) {
     last.0 = seq.get().as_i64();
 }
 
@@ -213,7 +212,7 @@ let mut world = wb.build();
 // Advance the sequence (normally done by the driver)
 world.next_sequence();
 
-let mut handler = stamp_outbound.into_handler(world.registry());
+let mut handler = no_event(stamp_outbound).into_handler(world.registry());
 handler.run(&mut world, ());
 assert_eq!(world.resource::<LastSeq>().0, 1);
 ```
@@ -224,17 +223,17 @@ assert_eq!(world.resource::<LastSeq>().0, 1);
 shutdown; the poll loop checks it each iteration.
 
 ```rust
-use nexus_rt::{WorldBuilder, IntoHandler, Handler};
+use nexus_rt::{WorldBuilder, IntoHandler, Handler, no_event};
 use nexus_rt::shutdown::Shutdown;
 
-fn on_fatal(shutdown: Shutdown, _event: ()) {
+fn on_fatal(shutdown: Shutdown) {
     shutdown.trigger();
 }
 
 let mut world = WorldBuilder::new().build();
 let shutdown_handle = world.shutdown_handle();
 
-let mut handler = on_fatal.into_handler(world.registry());
+let mut handler = no_event(on_fatal).into_handler(world.registry());
 handler.run(&mut world, ());
 
 assert!(shutdown_handle.is_shutdown());

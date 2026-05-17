@@ -65,20 +65,20 @@ The `ctx` field on `Callback` is `pub`. Drivers can read or mutate it
 between dispatches -- for example, to update a deadline or check a counter:
 
 ```rust
-use nexus_rt::{WorldBuilder, IntoCallback, Handler};
+use nexus_rt::{WorldBuilder, IntoCallback, Handler, no_event};
 
 struct RetryCtx {
     attempts: u32,
     max_retries: u32,
 }
 
-fn on_retry(ctx: &mut RetryCtx, _event: ()) {
+fn on_retry(ctx: &mut RetryCtx) {
     ctx.attempts += 1;
 }
 
 let mut world = WorldBuilder::new().build();
 
-let mut cb = on_retry.into_callback(
+let mut cb = no_event(on_retry).into_callback(
     RetryCtx { attempts: 0, max_retries: 3 },
     world.registry(),
 );
@@ -261,18 +261,18 @@ When a factory function takes `&Registry` and returns `impl Handler<E>`,
 Rust 2024 captures the registry borrow. Use `+ use<...>` to exclude it:
 
 ```rust
-use nexus_rt::{Handler, IntoCallback, ResMut, Resource};
+use nexus_rt::{Handler, IntoCallback, ResMut, Resource, no_event};
 use nexus_rt::world::Registry;
 
 #[derive(Resource)]
 struct State(u64);
 
-fn on_event(ctx: &mut u64, mut s: ResMut<State>, _e: ()) {
+fn on_event(ctx: &mut u64, mut s: ResMut<State>) {
     s.0 += *ctx;
 }
 
 fn build_callback(ctx: u64, reg: &Registry) -> impl Handler<()> + use<> {
-    on_event.into_callback(ctx, reg)
+    no_event(on_event).into_callback(ctx, reg)
 }
 ```
 

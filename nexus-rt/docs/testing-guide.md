@@ -14,13 +14,13 @@ number, mimicking what a real event loop does.
 
 ```rust
 use nexus_rt::{
-    Handler, IntoHandler, Res, ResMut, Resource, TestHarness, WorldBuilder,
+    Handler, IntoHandler, Res, ResMut, Resource, TestHarness, WorldBuilder, no_event,
 };
 
 #[derive(Resource, Default)]
 struct Counter(u64);
 
-fn increment(mut c: ResMut<Counter>, _event: ()) {
+fn increment(mut c: ResMut<Counter>) {
     c.0 += 1;
 }
 
@@ -30,7 +30,7 @@ fn handler_increments_counter() {
     wb.register(Counter::default());
 
     let mut harness = TestHarness::new(wb);
-    let mut handler = increment.into_handler(harness.registry());
+    let mut handler = no_event(increment).into_handler(harness.registry());
 
     harness.dispatch(&mut handler, ());
     harness.dispatch(&mut handler, ());
@@ -140,7 +140,7 @@ Handlers using `Seq` or `SeqMut` need to see realistic sequence
 progression. `TestHarness` handles this automatically:
 
 ```rust
-fn record_seq(seq: Seq, mut log: ResMut<Vec<i64>>, _event: ()) {
+fn record_seq(seq: Seq, mut log: ResMut<Vec<i64>>) {
     log.push(seq.get().as_i64());
 }
 
@@ -150,7 +150,7 @@ fn handler_sees_advancing_sequence() {
     wb.register(Vec::<i64>::new());
 
     let mut harness = TestHarness::new(wb);
-    let mut h = record_seq.into_handler(harness.registry());
+    let mut h = no_event(record_seq).into_handler(harness.registry());
 
     harness.dispatch(&mut h, ());
     harness.dispatch(&mut h, ());
