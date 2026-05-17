@@ -63,11 +63,11 @@
 //! h2.join().unwrap();
 //! ```
 
-use std::cell::{Cell, UnsafeCell};
+use std::cell::Cell;
 use std::fmt;
 use std::mem::MaybeUninit;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::loom_impl::{Arc, AtomicUsize, Ordering, UnsafeCell};
 
 use crossbeam_utils::CachePadded;
 
@@ -181,7 +181,8 @@ impl<T> Drop for Shared<T> {
             // Only drop if the slot was actually written (turn is odd = consumer-ready)
             if slot.turn.load(Ordering::Relaxed) == turn * 2 + 1 {
                 // SAFETY: Slot contains initialized data at this turn.
-                unsafe { (*slot.data.get()).assume_init_drop() };
+                slot.data
+                    .with_mut(|ptr| unsafe { (*ptr).assume_init_drop() });
             }
             i = i.wrapping_add(1);
         }
@@ -284,7 +285,7 @@ impl<T> Producer<T> {
                     .is_ok()
                 {
                     // SAFETY: We own this slot via successful CAS.
-                    unsafe { (*slot.data.get()).write(value) };
+                    slot.data.with_mut(|ptr| unsafe { (*ptr).write(value) });
 
                     // Signal ready for consumer: turn * 2 + 1
                     slot.turn.store(turn * 2 + 1, Ordering::Release);
@@ -372,7 +373,9 @@ impl<T> Consumer<T> {
         }
 
         // SAFETY: Turn counter confirms producer has written to this slot.
-        let value = unsafe { (*slot.data.get()).assume_init_read() };
+        let value = slot
+            .data
+            .with_mut(|ptr| unsafe { (*ptr).assume_init_read() });
 
         // Signal slot is free for next lap: (turn + 1) * 2
         slot.turn.store((turn + 1) * 2, Ordering::Release);
