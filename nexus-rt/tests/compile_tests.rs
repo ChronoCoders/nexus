@@ -3515,14 +3515,14 @@ fn run_startup_bool_returning_also_works() {
 
 #[test]
 fn resolved_res_param() {
-    fn read_val(val: Res<ResU32>, mut out: ResMut<ResU64>, _e: ()) {
+    fn read_val(val: Res<ResU32>, mut out: ResMut<ResU64>) {
         **out = **val as u64;
     }
     let mut wb = WorldBuilder::new();
     wb.register(ResU32(42));
     wb.register(ResU64(0));
     let mut world = wb.build();
-    let mut h = read_val
+    let mut h = nexus_rt::no_event(read_val)
         .into_handler(world.registry())
         .into_handler(world.registry());
     h.run(&mut world, ());
@@ -3561,7 +3561,7 @@ fn resolved_seq_mut_param() {
 
 #[test]
 fn resolved_optional_res() {
-    fn maybe(v: Option<Res<ResU32>>, mut out: ResMut<ResU64>, _e: ()) {
+    fn maybe(v: Option<Res<ResU32>>, mut out: ResMut<ResU64>) {
         if let Some(v) = v {
             **out = **v as u64;
         }
@@ -3570,7 +3570,7 @@ fn resolved_optional_res() {
     wb.register(ResU32(55));
     wb.register(ResU64(0));
     let mut world = wb.build();
-    let mut h = maybe
+    let mut h = nexus_rt::no_event(maybe)
         .into_handler(world.registry())
         .into_handler(world.registry());
     h.run(&mut world, ());
@@ -3596,14 +3596,14 @@ fn resolved_optional_resmut() {
 
 #[test]
 fn resolved_local_preserves_state() {
-    fn counter(mut l: Local<u64>, mut out: ResMut<ResU64>, _e: ()) {
+    fn counter(mut l: Local<u64>, mut out: ResMut<ResU64>) {
         *l += 1;
         **out = *l;
     }
     let mut wb = WorldBuilder::new();
     wb.register(ResU64(0));
     let mut world = wb.build();
-    let mut h = counter
+    let mut h = nexus_rt::no_event(counter)
         .into_handler(world.registry())
         .into_handler(world.registry());
     h.run(&mut world, ());
@@ -5414,7 +5414,6 @@ mod reactors {
             mut notify: ResMut<ReactorNotify>,
             sources: Res<SourceRegistry>,
             reg: RegistryRef<'_>,
-            _event: (),
         ) {
             let md = sources.get(&"BTC").expect("BTC not listed");
             notify
@@ -5431,7 +5430,7 @@ mod reactors {
 
         // Build the handler (compile test: RegistryRef works as Param alongside
         // ResMut<ReactorNotify> and Res<SourceRegistry>)
-        let mut handler = on_admin_add_twap.into_handler(world.registry());
+        let mut handler = nexus_rt::no_event(on_admin_add_twap).into_handler(world.registry());
 
         // Simulate admin command arriving — handler registers the reactor
         handler.run(&mut world, ());
@@ -5471,7 +5470,7 @@ mod reactors {
             multiplier: u64,
         }
 
-        fn read(_ctx: &mut Ctx, counter: Res<Counter>, _: ()) -> u64 {
+        fn read(_ctx: &mut Ctx, counter: Res<Counter>) -> u64 {
             counter.0
         }
 
@@ -5490,7 +5489,7 @@ mod reactors {
         let token = world.resource_mut::<ReactorNotify>().create_reactor();
         let reg = world.registry();
         let pipeline = CtxPipelineBuilder::<Ctx, ()>::new()
-            .then(read, reg)
+            .then(nexus_rt::no_event(read), reg)
             .then(multiply, reg)
             .then(store, reg)
             .build();
@@ -5532,7 +5531,7 @@ mod reactors {
             _rereactor_id: Token,
         }
 
-        fn double(_ctx: &mut Ctx, counter: Res<Counter>, _: ()) -> u64 {
+        fn double(_ctx: &mut Ctx, counter: Res<Counter>) -> u64 {
             counter.0 * 2
         }
 
@@ -5541,9 +5540,9 @@ mod reactors {
         }
 
         // Handler that builds a pipeline reactor at runtime
-        fn on_admin(mut notify: ResMut<ReactorNotify>, reg: RegistryRef<'_>, _event: ()) {
+        fn on_admin(mut notify: ResMut<ReactorNotify>, reg: RegistryRef<'_>) {
             let pipeline = CtxPipelineBuilder::<Ctx, ()>::new()
-                .then(double, &reg)
+                .then(nexus_rt::no_event(double), &reg)
                 .then(store, &reg)
                 .build();
 
@@ -5559,7 +5558,7 @@ mod reactors {
                 .subscribe(DataSource(0));
         }
 
-        let mut handler = on_admin.into_handler(world.registry());
+        let mut handler = nexus_rt::no_event(on_admin).into_handler(world.registry());
         handler.run(&mut world, ());
 
         world.resource_mut::<Counter>().0 = 5;

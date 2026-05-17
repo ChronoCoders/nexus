@@ -12,14 +12,14 @@
 //! # Examples
 //!
 //! ```
-//! use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler, Resource};
+//! use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler, Resource, no_event};
 //!
 //! #[derive(Resource)]
 //! struct Config(u64);
 //! #[derive(Resource)]
 //! struct Flag(bool);
 //!
-//! fn process(config: Res<Config>, mut state: ResMut<Flag>, _event: ()) {
+//! fn process(config: Res<Config>, mut state: ResMut<Flag>) {
 //!     if config.0 > 10 {
 //!         state.0 = true;
 //!     }
@@ -30,7 +30,7 @@
 //! builder.register(Flag(false));
 //! let mut world = builder.build();
 //!
-//! let mut handler = process.into_handler(world.registry());
+//! let mut handler = no_event(process).into_handler(world.registry());
 //! handler.run(&mut world, ());
 //!
 //! assert!(world.resource::<Flag>().0);

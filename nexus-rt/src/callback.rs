@@ -125,14 +125,14 @@ pub struct Callback<C, F, Params: Param> {
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoCallback, Handler, Resource};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoCallback, Handler, Resource, no_event};
 ///
 /// #[derive(Resource)]
 /// struct Counter(u64);
 ///
 /// struct TimerCtx { order_id: u64, fires: u64 }
 ///
-/// fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<Counter>, _event: ()) {
+/// fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<Counter>) {
 ///     ctx.fires += 1;
 ///     counter.0 += ctx.order_id;
 /// }
@@ -141,7 +141,7 @@ pub struct Callback<C, F, Params: Param> {
 /// builder.register(Counter(0));
 /// let mut world = builder.build();
 ///
-/// let mut cb = on_timeout.into_callback(
+/// let mut cb = no_event(on_timeout).into_callback(
 ///     TimerCtx { order_id: 42, fires: 0 },
 ///     world.registry(),
 /// );
@@ -158,6 +158,7 @@ pub struct Callback<C, F, Params: Param> {
 #[diagnostic::on_unimplemented(
     message = "this function cannot be converted into a callback",
     note = "callback signature: `fn(&mut Context, Res<A>, ..., Event)` — context first, then resources, event last",
+    note = "for Handler<()> with params, wrap with `no_event(fn_name)` to omit the event parameter",
     note = "closures with resource parameters are not supported — use a named `fn` when using Param resources"
 )]
 pub trait IntoCallback<C, E, Params> {
@@ -266,13 +267,106 @@ macro_rules! impl_into_callback {
 all_tuples!(impl_into_callback);
 
 // =============================================================================
+// No-event callback impls — Handler<()> without trailing `_: ()` parameter
+// =============================================================================
+
+use crate::handler::NoEvent;
+
+// Arity 0: fn(&mut C) → Handler<()>
+impl<C: Send + 'static, F: FnMut(&mut C) + Send + 'static> IntoCallback<C, (), NoEvent<F>> for F {
+    type Callback = Callback<C, NoEvent<F>, ()>;
+
+    fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback {
+        Callback {
+            ctx,
+            f: NoEvent(self),
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+impl<C: Send + 'static, F: FnMut(&mut C) + Send + 'static> Handler<()>
+    for Callback<C, NoEvent<F>, ()>
+{
+    fn run(&mut self, _world: &mut World, _event: ()) {
+        (self.f.0)(&mut self.ctx);
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+macro_rules! impl_into_callback_no_event {
+    ($($P:ident),+) => {
+        impl<C: Send + 'static, F: Send + 'static, $($P: Param + 'static),+>
+            IntoCallback<C, (), ($($P,)+)> for NoEvent<F>
+        where
+            for<'a> &'a mut F:
+                FnMut(&mut C, $($P,)+) +
+                FnMut(&mut C, $($P::Item<'a>,)+),
+        {
+            type Callback = Callback<C, NoEvent<F>, ($($P,)+)>;
+
+            fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback {
+                let state = <($($P,)+) as Param>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as Param>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
+                }
+                Callback { ctx, f: self, state, name: std::any::type_name::<F>() }
+            }
+        }
+
+        impl<C: Send + 'static, F: Send + 'static, $($P: Param + 'static),+>
+            Handler<()> for Callback<C, NoEvent<F>, ($($P,)+)>
+        where
+            for<'a> &'a mut F:
+                FnMut(&mut C, $($P,)+) +
+                FnMut(&mut C, $($P::Item<'a>,)+),
+        {
+            #[allow(non_snake_case)]
+            fn run(&mut self, world: &mut World, _event: ()) {
+                fn call_inner<Ctx, $($P),+>(
+                    mut f: impl FnMut(&mut Ctx, $($P),+),
+                    ctx: &mut Ctx,
+                    $($P: $P,)+
+                ) {
+                    f(ctx, $($P),+);
+                }
+
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f.0, &mut self.ctx, $($P,)+);
+            }
+
+            fn name(&self) -> &'static str {
+                self.name
+            }
+        }
+    };
+}
+
+all_tuples!(impl_into_callback_no_event);
+
+// =============================================================================
 // Tests
 // =============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Local, Res, ResMut, WorldBuilder};
+    use crate::{Local, Res, ResMut, WorldBuilder, no_event};
 
     // -- Helper types ---------------------------------------------------------
 
@@ -509,11 +603,11 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        fn bad(_ctx: &mut u64, a: Res<u64>, b: ResMut<u64>, _e: ()) {
+        fn bad(_ctx: &mut u64, a: Res<u64>, b: ResMut<u64>) {
             let _ = (*a, &*b);
         }
 
-        let _cb = bad.into_callback(0u64, world.registry_mut());
+        let _cb = no_event(bad).into_callback(0u64, world.registry_mut());
     }
 
     // -- Handler<E> interface -------------------------------------------------
@@ -541,15 +635,15 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        fn add(ctx: &mut u64, mut val: ResMut<u64>, _e: ()) {
+        fn add(ctx: &mut u64, mut val: ResMut<u64>) {
             *val += *ctx;
         }
-        fn mul(ctx: &mut u64, mut val: ResMut<u64>, _e: ()) {
+        fn mul(ctx: &mut u64, mut val: ResMut<u64>) {
             *val *= *ctx;
         }
 
-        let cb_add = add.into_callback(3u64, world.registry_mut());
-        let cb_mul = mul.into_callback(2u64, world.registry_mut());
+        let cb_add = no_event(add).into_callback(3u64, world.registry_mut());
+        let cb_mul = no_event(mul).into_callback(2u64, world.registry_mut());
 
         let mut handlers: Vec<Box<dyn Handler<()>>> = vec![Box::new(cb_add), Box::new(cb_mul)];
 
@@ -560,7 +654,7 @@ mod tests {
         assert_eq!(*world.resource::<u64>(), 6);
     }
 
-    fn with_local(_ctx: &mut u64, mut local: Local<u64>, mut val: ResMut<u64>, _e: ()) {
+    fn with_local(_ctx: &mut u64, mut local: Local<u64>, mut val: ResMut<u64>) {
         *local += 1;
         *val = *local;
     }
@@ -571,7 +665,7 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let mut cb = with_local.into_callback(0u64, world.registry_mut());
+        let mut cb = no_event(with_local).into_callback(0u64, world.registry_mut());
         cb.run(&mut world, ());
         cb.run(&mut world, ());
         cb.run(&mut world, ());
@@ -605,5 +699,99 @@ mod tests {
         }
         // 0 + 5 = 5, then 5 * 3 = 15
         assert_eq!(*world.resource::<u64>(), 15);
+    }
+
+    // =========================================================================
+    // NoEvent — Callback<C, NoEvent<F>, P> as Handler<()>
+    // =========================================================================
+
+    fn no_event_ctx_only(ctx: &mut TimerCtx) {
+        ctx.call_count += 1;
+    }
+
+    #[test]
+    fn no_event_callback_arity_0() {
+        let mut world = WorldBuilder::new().build();
+        let mut cb = no_event_ctx_only.into_callback(
+            TimerCtx {
+                order_id: 1,
+                call_count: 0,
+            },
+            world.registry_mut(),
+        );
+        cb.run(&mut world, ());
+        cb.run(&mut world, ());
+        assert_eq!(cb.ctx.call_count, 2);
+    }
+
+    fn no_event_ctx_one_res(ctx: &mut TimerCtx, mut val: ResMut<u64>) {
+        *val += ctx.order_id;
+        ctx.call_count += 1;
+    }
+
+    #[test]
+    fn no_event_callback_arity_1() {
+        use crate::no_event;
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let mut cb = no_event(no_event_ctx_one_res).into_callback(
+            TimerCtx {
+                order_id: 42,
+                call_count: 0,
+            },
+            world.registry_mut(),
+        );
+        cb.run(&mut world, ());
+        assert_eq!(cb.ctx.call_count, 1);
+        assert_eq!(*world.resource::<u64>(), 42);
+    }
+
+    fn no_event_ctx_two_params(ctx: &mut TimerCtx, src: Res<u32>, mut dst: ResMut<u64>) {
+        *dst += *src as u64 + ctx.order_id;
+        ctx.call_count += 1;
+    }
+
+    #[test]
+    fn no_event_callback_arity_2() {
+        use crate::no_event;
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u32>(10);
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let mut cb = no_event(no_event_ctx_two_params).into_callback(
+            TimerCtx {
+                order_id: 5,
+                call_count: 0,
+            },
+            world.registry_mut(),
+        );
+        cb.run(&mut world, ());
+        assert_eq!(cb.ctx.call_count, 1);
+        assert_eq!(*world.resource::<u64>(), 15); // 10 + 5
+    }
+
+    #[test]
+    fn no_event_callback_boxed() {
+        use crate::no_event;
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let cb = no_event(no_event_ctx_one_res).into_callback(
+            TimerCtx {
+                order_id: 7,
+                call_count: 0,
+            },
+            world.registry_mut(),
+        );
+        let mut boxed: Box<dyn Handler<()>> = Box::new(cb);
+        boxed.run(&mut world, ());
+        assert_eq!(*world.resource::<u64>(), 7);
     }
 }

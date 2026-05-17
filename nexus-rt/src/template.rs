@@ -309,6 +309,154 @@ macro_rules! impl_template_dispatch {
 all_tuples!(impl_template_dispatch);
 
 // =============================================================================
+// No-event TemplateDispatch / CallbackTemplateDispatch — E = (), no event param
+// =============================================================================
+
+use crate::handler::NoEvent;
+
+// Arity 0: fn() with no event and no params
+impl<F: FnMut() + Send + 'static> TemplateDispatch<(), ()> for NoEvent<F> {
+    fn run_fn_ptr() -> unsafe fn(&mut (), &mut World, ()) {
+        /// # Safety
+        ///
+        /// `F` must be a ZST (enforced by `HandlerTemplate::new`).
+        unsafe fn run<F: FnMut() + Send>(_state: &mut (), _world: &mut World, _event: ()) {
+            // SAFETY: F is ZST — zeroed() produces the unique value.
+            let mut f: F = unsafe { std::mem::zeroed() };
+            f();
+        }
+        run::<F>
+    }
+
+    fn validate(_state: &(), _registry: &Registry) {}
+}
+
+impl<C: Send + 'static, F: FnMut(&mut C) + Send + 'static> CallbackTemplateDispatch<C, (), ()>
+    for NoEvent<F>
+{
+    fn run_fn_ptr() -> unsafe fn(&mut C, &mut (), &mut World, ()) {
+        /// # Safety
+        ///
+        /// `F` must be a ZST (enforced by `CallbackTemplate::stamp`).
+        unsafe fn run<C: Send, F: FnMut(&mut C) + Send>(
+            ctx: &mut C,
+            _state: &mut (),
+            _world: &mut World,
+            _event: (),
+        ) {
+            // SAFETY: F is ZST — zeroed() produces the unique value.
+            let mut f: F = unsafe { std::mem::zeroed() };
+            f(ctx);
+        }
+        run::<C, F>
+    }
+
+    fn validate(_state: &(), _registry: &Registry) {}
+}
+
+// Arities 1-8: fn(Params...) with no event
+macro_rules! impl_template_dispatch_no_event {
+    ($($P:ident),+) => {
+        impl<F: Send + 'static, $($P: Param + 'static),+> TemplateDispatch<($($P,)+), ()>
+            for NoEvent<F>
+        where
+            for<'a> &'a mut F: FnMut($($P,)+) + FnMut($($P::Item<'a>,)+),
+        {
+            fn run_fn_ptr() -> unsafe fn(&mut ($($P::State,)+), &mut World, ()) {
+                /// # Safety
+                ///
+                /// - `F` must be a ZST (enforced by `HandlerTemplate::new`).
+                /// - `state` must have been produced by `Param::init` on the
+                ///   same registry that built `world`.
+                #[allow(non_snake_case)]
+                unsafe fn run<F: Send + 'static, $($P: Param + 'static),+>(
+                    state: &mut ($($P::State,)+),
+                    world: &mut World,
+                    _event: (),
+                ) where
+                    for<'a> &'a mut F: FnMut($($P,)+) + FnMut($($P::Item<'a>,)+),
+                {
+                    fn call_inner<$($P),+>(
+                        mut f: impl FnMut($($P),+),
+                        $($P: $P,)+
+                    ) {
+                        f($($P),+);
+                    }
+
+                    #[cfg(debug_assertions)]
+                    world.clear_borrows();
+                    let ($($P,)+) = unsafe {
+                        <($($P,)+) as Param>::fetch(world, state)
+                    };
+                    // SAFETY: F is ZST — zeroed() produces the unique value.
+                    let mut f: F = unsafe { std::mem::zeroed() };
+                    call_inner(&mut f, $($P,)+);
+                }
+                run::<F, $($P),+>
+            }
+
+            #[allow(non_snake_case)]
+            fn validate(state: &($($P::State,)+), registry: &Registry) {
+                let ($($P,)+) = state;
+                registry.check_access(&[
+                    $((<$P as Param>::resource_id($P), std::any::type_name::<$P>()),)+
+                ]);
+            }
+        }
+
+        impl<C: Send + 'static, F: Send + 'static, $($P: Param + 'static),+>
+            CallbackTemplateDispatch<C, ($($P,)+), ()> for NoEvent<F>
+        where
+            for<'a> &'a mut F:
+                FnMut(&mut C, $($P,)+) +
+                FnMut(&mut C, $($P::Item<'a>,)+),
+        {
+            fn run_fn_ptr() -> unsafe fn(&mut C, &mut ($($P::State,)+), &mut World, ()) {
+                #[allow(non_snake_case)]
+                unsafe fn run<C: Send, F: Send + 'static, $($P: Param + 'static),+>(
+                    ctx: &mut C,
+                    state: &mut ($($P::State,)+),
+                    world: &mut World,
+                    _event: (),
+                ) where
+                    for<'a> &'a mut F:
+                        FnMut(&mut C, $($P,)+) +
+                        FnMut(&mut C, $($P::Item<'a>,)+),
+                {
+                    fn call_inner<Ctx, $($P),+>(
+                        mut f: impl FnMut(&mut Ctx, $($P),+),
+                        ctx: &mut Ctx,
+                        $($P: $P,)+
+                    ) {
+                        f(ctx, $($P),+);
+                    }
+
+                    #[cfg(debug_assertions)]
+                    world.clear_borrows();
+                    let ($($P,)+) = unsafe {
+                        <($($P,)+) as Param>::fetch(world, state)
+                    };
+                    // SAFETY: F is ZST — zeroed() produces the unique value.
+                    let mut f: F = unsafe { std::mem::zeroed() };
+                    call_inner(&mut f, ctx, $($P,)+);
+                }
+                run::<C, F, $($P),+>
+            }
+
+            #[allow(non_snake_case)]
+            fn validate(state: &($($P::State,)+), registry: &Registry) {
+                let ($($P,)+) = state;
+                registry.check_access(&[
+                    $((<$P as Param>::resource_id($P), std::any::type_name::<$P>()),)+
+                ]);
+            }
+        }
+    };
+}
+
+all_tuples!(impl_template_dispatch_no_event);
+
+// =============================================================================
 // HandlerTemplate<K>
 // =============================================================================
 
@@ -462,7 +610,7 @@ type CallbackRunFn<K> = unsafe fn(
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, Handler, Resource};
+/// use nexus_rt::{WorldBuilder, ResMut, Handler, Resource, no_event};
 /// use nexus_rt::template::{Blueprint, CallbackBlueprint, CallbackTemplate};
 ///
 /// #[derive(Resource)]
@@ -479,7 +627,7 @@ type CallbackRunFn<K> = unsafe fn(
 ///     type Context = TimerCtx;
 /// }
 ///
-/// fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<Counter>, _event: ()) {
+/// fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<Counter>) {
 ///     ctx.fires += 1;
 ///     counter.0 += ctx.order_id;
 /// }
@@ -488,7 +636,7 @@ type CallbackRunFn<K> = unsafe fn(
 /// builder.register(Counter(0));
 /// let world = builder.build();
 ///
-/// let template = CallbackTemplate::<OnTimeout>::new(on_timeout, world.registry());
+/// let template = CallbackTemplate::<OnTimeout>::new(no_event(on_timeout), world.registry());
 /// let mut cb1 = template.generate(TimerCtx { order_id: 10, fires: 0 });
 /// let mut cb2 = template.generate(TimerCtx { order_id: 20, fires: 0 });
 ///
@@ -654,7 +802,7 @@ macro_rules! callback_blueprint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Res, ResMut, WorldBuilder};
+    use crate::{Res, ResMut, WorldBuilder, no_event};
 
     // -- Blueprint definitions ------------------------------------------------
 
@@ -721,7 +869,7 @@ mod tests {
         h.run(&mut world, 42);
     }
 
-    fn two_params_fn(counter: Res<u64>, mut flag: ResMut<bool>, _event: ()) {
+    fn two_params_fn(counter: Res<u64>, mut flag: ResMut<bool>) {
         if *counter > 0 {
             *flag = true;
         }
@@ -734,7 +882,7 @@ mod tests {
         builder.register::<bool>(false);
         let mut world = builder.build();
 
-        let template = HandlerTemplate::<TwoParams>::new(two_params_fn, world.registry());
+        let template = HandlerTemplate::<TwoParams>::new(no_event(two_params_fn), world.registry());
         let mut h = template.generate();
         h.run(&mut world, ());
         assert!(*world.resource::<bool>());
@@ -786,14 +934,14 @@ mod tests {
             type Params = (Res<'static, u64>, ResMut<'static, u64>);
         }
 
-        fn bad(a: Res<u64>, b: ResMut<u64>, _e: ()) {
+        fn bad(a: Res<u64>, b: ResMut<u64>) {
             let _ = (*a, &*b);
         }
 
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
         let world = builder.build();
-        let _template = HandlerTemplate::<BadBlueprint>::new(bad, world.registry());
+        let _template = HandlerTemplate::<BadBlueprint>::new(no_event(bad), world.registry());
     }
 
     // -- CallbackTemplate tests -----------------------------------------------
@@ -812,7 +960,7 @@ mod tests {
         type Context = TimerCtx;
     }
 
-    fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>, _event: ()) {
+    fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>) {
         ctx.fires += 1;
         *counter += ctx.order_id;
     }
@@ -823,7 +971,7 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let template = CallbackTemplate::<OnTimeout>::new(on_timeout, world.registry());
+        let template = CallbackTemplate::<OnTimeout>::new(no_event(on_timeout), world.registry());
         let mut cb = template.generate(TimerCtx {
             order_id: 42,
             fires: 0,
@@ -839,7 +987,7 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let template = CallbackTemplate::<OnTimeout>::new(on_timeout, world.registry());
+        let template = CallbackTemplate::<OnTimeout>::new(no_event(on_timeout), world.registry());
         let mut cb1 = template.generate(TimerCtx {
             order_id: 10,
             fires: 0,
@@ -884,7 +1032,7 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let template = CallbackTemplate::<OnTimeout>::new(on_timeout, world.registry());
+        let template = CallbackTemplate::<OnTimeout>::new(no_event(on_timeout), world.registry());
         let cb = template.generate(TimerCtx {
             order_id: 7,
             fires: 0,
@@ -900,7 +1048,7 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let template = CallbackTemplate::<OnTimeout>::new(on_timeout, world.registry());
+        let template = CallbackTemplate::<OnTimeout>::new(no_event(on_timeout), world.registry());
         let mut cb = template.generate(TimerCtx {
             order_id: 42,
             fires: 0,
@@ -999,7 +1147,8 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let template = CallbackTemplate::<MacroOnTimeout>::new(on_timeout, world.registry());
+        let template =
+            CallbackTemplate::<MacroOnTimeout>::new(no_event(on_timeout), world.registry());
         let mut cb = template.generate(TimerCtx {
             order_id: 5,
             fires: 0,

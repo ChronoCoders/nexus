@@ -1,6 +1,6 @@
 //! Integration tests for #[derive(Param)].
 
-use nexus_rt::{Handler, IntoHandler, Local, Param, Res, ResMut, Resource, WorldBuilder};
+use nexus_rt::{Handler, IntoHandler, Local, Param, Res, ResMut, Resource, WorldBuilder, no_event};
 
 // =========================================================================
 // Test types
@@ -63,7 +63,7 @@ struct ParamsWithLocal<'w> {
     call_count: Local<'w, u64>,
 }
 
-fn handler_with_local(mut params: ParamsWithLocal<'_>, _event: ()) {
+fn handler_with_local(mut params: ParamsWithLocal<'_>) {
     *params.call_count += 1;
     let _ = params.config.max_exposure;
 }
@@ -76,7 +76,7 @@ fn with_local() {
     });
     let mut world = wb.build();
 
-    let mut h = handler_with_local.into_handler(world.registry());
+    let mut h = no_event(handler_with_local).into_handler(world.registry());
     h.run(&mut world, ());
     h.run(&mut world, ());
     h.run(&mut world, ());
@@ -94,7 +94,7 @@ struct OptionalParams<'w> {
     risk: ResMut<'w, RiskState>,
 }
 
-fn handler_optional(mut params: OptionalParams<'_>, _event: ()) {
+fn handler_optional(mut params: OptionalParams<'_>) {
     if let Some(config) = params.config {
         params.risk.exposure = config.max_exposure;
     }
@@ -107,7 +107,7 @@ fn with_optional_res() {
     wb.register(RiskState::default());
     let mut world = wb.build();
 
-    let mut h = handler_optional.into_handler(world.registry());
+    let mut h = no_event(handler_optional).into_handler(world.registry());
     h.run(&mut world, ());
     assert_eq!(world.resource::<RiskState>().exposure, 0.0); // no config
 
@@ -119,7 +119,7 @@ fn with_optional_res() {
     });
     let mut world2 = wb2.build();
 
-    let mut h2 = handler_optional.into_handler(world2.registry());
+    let mut h2 = no_event(handler_optional).into_handler(world2.registry());
     h2.run(&mut world2, ());
     assert_eq!(world2.resource::<RiskState>().exposure, 500.0);
 }
@@ -135,7 +135,7 @@ struct ParamsWithIgnored<'w> {
     _marker: std::marker::PhantomData<u32>,
 }
 
-fn handler_ignored(mut params: ParamsWithIgnored<'_>, _event: ()) {
+fn handler_ignored(mut params: ParamsWithIgnored<'_>) {
     params.risk.exposure += 1.0;
 }
 
@@ -145,7 +145,7 @@ fn with_ignored_field() {
     wb.register(RiskState::default());
     let mut world = wb.build();
 
-    let mut h = handler_ignored.into_handler(world.registry());
+    let mut h = no_event(handler_ignored).into_handler(world.registry());
     h.run(&mut world, ());
     assert_eq!(world.resource::<RiskState>().exposure, 1.0);
 }
@@ -165,7 +165,7 @@ struct OuterParams<'w> {
     config: Res<'w, Config>,
 }
 
-fn handler_nested(mut params: OuterParams<'_>, _event: ()) {
+fn handler_nested(mut params: OuterParams<'_>) {
     params.inner.risk.exposure = params.config.max_exposure;
 }
 
@@ -178,7 +178,7 @@ fn nested_params() {
     });
     let mut world = wb.build();
 
-    let mut h = handler_nested.into_handler(world.registry());
+    let mut h = no_event(handler_nested).into_handler(world.registry());
     h.run(&mut world, ());
     assert_eq!(world.resource::<RiskState>().exposure, 999.0);
 }
@@ -193,7 +193,7 @@ struct TradingParams<'w> {
     risk: ResMut<'w, RiskState>,
 }
 
-fn handler_mixed(mut params: TradingParams<'_>, config: Res<Config>, _event: ()) {
+fn handler_mixed(mut params: TradingParams<'_>, config: Res<Config>) {
     params.risk.exposure = params.book.best_bid * config.max_exposure;
 }
 
@@ -208,7 +208,7 @@ fn param_plus_additional_resources() {
     wb.register(Config { max_exposure: 2.0 });
     let mut world = wb.build();
 
-    let mut h = handler_mixed.into_handler(world.registry());
+    let mut h = no_event(handler_mixed).into_handler(world.registry());
     h.run(&mut world, ());
     assert_eq!(world.resource::<RiskState>().exposure, 100.0);
 }

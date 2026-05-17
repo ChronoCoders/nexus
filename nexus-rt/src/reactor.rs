@@ -2675,7 +2675,7 @@ mod tests {
             _reactor_id: Token,
         }
 
-        fn read(ctx: &mut Ctx, val: Res<u64>, _: ()) -> u64 {
+        fn read(ctx: &mut Ctx, val: Res<u64>) -> u64 {
             let _ = ctx;
             *val
         }
@@ -2695,7 +2695,7 @@ mod tests {
         // Phase 2: build pipeline + wrap in PipelineReactor (needs registry)
         let reg = world.registry();
         let pipeline = CtxPipelineBuilder::<Ctx, ()>::new()
-            .then(read, reg)
+            .then(crate::no_event(read), reg)
             .then(double, reg)
             .then(store, reg)
             .build();

@@ -5,15 +5,15 @@
 //! shutdown via [`Shutdown::trigger`]:
 //!
 //! ```
-//! use nexus_rt::{WorldBuilder, IntoHandler, Handler};
+//! use nexus_rt::{WorldBuilder, IntoHandler, Handler, no_event};
 //! use nexus_rt::shutdown::Shutdown;
 //!
-//! fn on_fatal(shutdown: Shutdown, _event: ()) {
+//! fn on_fatal(shutdown: Shutdown) {
 //!     shutdown.trigger();
 //! }
 //!
 //! let mut world = WorldBuilder::new().build();
-//! let mut handler = on_fatal.into_handler(world.registry());
+//! let mut handler = no_event(on_fatal).into_handler(world.registry());
 //! handler.run(&mut world, ());
 //! assert!(world.shutdown_handle().is_shutdown());
 //! ```
@@ -155,14 +155,14 @@ mod tests {
     fn shutdown_in_handler() {
         use crate::{Handler, IntoHandler};
 
-        fn trigger_shutdown(shutdown: Shutdown, _event: ()) {
+        fn trigger_shutdown(shutdown: Shutdown) {
             shutdown.trigger();
         }
 
         let mut world = crate::WorldBuilder::new().build();
         let handle = world.shutdown_handle();
 
-        let mut handler = trigger_shutdown.into_handler(world.registry());
+        let mut handler = crate::no_event(trigger_shutdown).into_handler(world.registry());
         assert!(!handle.is_shutdown());
         handler.run(&mut world, ());
         assert!(handle.is_shutdown());
