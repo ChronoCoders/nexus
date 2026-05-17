@@ -4698,7 +4698,6 @@ mod view_derive {
     fn derive_generic_view_pipeline_integration() {
         let mut wb = WorldBuilder::new();
         wb.register(AuditLog(Vec::new()));
-        wb.register(RiskLimits { max_qty: 100 });
         let mut world = wb.build();
         let reg = world.registry();
 
@@ -4735,6 +4734,41 @@ mod view_derive {
         assert!(result.is_none());
 
         assert_eq!(world.resource::<AuditLog>().0, vec!["passed: good val=10"]);
+    }
+
+    // Lifetime bound on type param — T: 'a gets stripped from marker struct,
+    // 'static is auto-inserted on the impl.
+    struct LifetimeBoundEvent<T: 'static> {
+        value: T,
+    }
+
+    #[derive(View)]
+    #[source(LifetimeBoundEvent<T>)]
+    struct LifetimeBoundView<'a, T: 'a + Copy> {
+        #[borrow]
+        value: &'a T,
+    }
+
+    #[test]
+    fn derive_lifetime_bound_type_param() {
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn log_lb(mut log: ResMut<AuditLog>, v: &LifetimeBoundView<u64>) {
+            log.0.push(format!("val={}", v.value));
+        }
+
+        let mut p = PipelineBuilder::<LifetimeBoundEvent<u64>>::new()
+            .view::<AsLifetimeBoundView<u64>>()
+            .tap(log_lb, reg)
+            .end_view()
+            .then(|_: LifetimeBoundEvent<u64>| {}, reg);
+
+        p.run(&mut world, LifetimeBoundEvent { value: 77u64 });
+
+        assert_eq!(world.resource::<AuditLog>().0, vec!["val=77"]);
     }
 }
 

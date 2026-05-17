@@ -10,7 +10,9 @@ mod select;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::visit_mut::VisitMut;
-use syn::{Data, DeriveInput, Fields, GenericParam, Lifetime, parse_macro_input};
+use syn::{
+    Data, DeriveInput, Fields, GenericParam, Lifetime, TypeParamBound, parse_macro_input,
+};
 
 // =============================================================================
 // #[derive(Resource)]
@@ -434,6 +436,9 @@ impl VisitMut for LifetimeReplacer {
 /// for each `#[source(Type)]` attribute. Use with `.view::<AsViewName>()`
 /// in pipeline and DAG builders.
 ///
+/// Type and const generic parameters are supported. Non-`#[borrow]` fields
+/// with generic types must be `Copy` (they are copied from `&source`).
+///
 /// # Attributes
 ///
 /// **On the struct:**
@@ -525,6 +530,32 @@ fn derive_view_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStream, syn
         .into_iter()
         .filter(|p| !matches!(p, GenericParam::Lifetime(_)))
         .collect();
+    // Strip lifetime bounds from type params (e.g., T: 'a + Copy → T: Copy)
+    for param in &mut marker_generics.params {
+        if let GenericParam::Type(tp) = param {
+            tp.bounds = tp
+                .bounds
+                .iter()
+                .filter(|b| !matches!(b, TypeParamBound::Lifetime(_)))
+                .cloned()
+                .collect();
+        }
+    }
+    // Strip where-clause predicates referencing the view lifetime
+    if let Some(lt) = &lifetime_param {
+        if let Some(where_clause) = &mut marker_generics.where_clause {
+            let lt_ident = lt.ident.to_string();
+            where_clause.predicates = where_clause
+                .predicates
+                .iter()
+                .filter(|pred| {
+                    let tokens = quote! { #pred }.to_string();
+                    !tokens.contains(&lt_ident)
+                })
+                .cloned()
+                .collect();
+        }
+    }
     // View::StaticViewType: 'static requires all type params to be 'static
     {
         let where_clause = marker_generics.make_where_clause();
