@@ -76,6 +76,8 @@
 
 use core::fmt;
 
+mod loom_impl;
+
 pub mod mpsc;
 pub mod spmc;
 pub mod spsc;

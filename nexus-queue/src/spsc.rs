@@ -44,13 +44,17 @@
 
 use std::cell::Cell;
 use std::fmt;
+#[cfg(not(loom))]
 use std::mem::ManuallyDrop;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(loom)]
+use std::mem::MaybeUninit;
 
 use crossbeam_utils::CachePadded;
 
 use crate::Full;
+#[cfg(loom)]
+use crate::loom_impl::UnsafeCell;
+use crate::loom_impl::{Arc, AtomicUsize, Ordering, fence};
 
 /// Creates a bounded SPSC ring buffer with the given capacity.
 ///
@@ -59,6 +63,7 @@ use crate::Full;
 /// # Panics
 ///
 /// Panics if `capacity` is zero.
+#[cfg(not(loom))]
 pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     assert!(capacity > 0, "capacity must be non-zero");
 
@@ -95,8 +100,44 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     )
 }
 
-// repr(C): Guarantees field order. CachePadded<tail> and CachePadded<head>
-// must be at known offsets for cache line isolation to work correctly.
+#[cfg(loom)]
+/// Creates a bounded SPSC ring buffer with the given capacity (loom variant).
+pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
+    assert!(capacity > 0, "capacity must be non-zero");
+
+    let capacity = capacity
+        .checked_next_power_of_two()
+        .expect("capacity too large (must be <= usize::MAX / 2)");
+    let mask = capacity - 1;
+
+    let buffer: Vec<UnsafeCell<MaybeUninit<T>>> = (0..capacity)
+        .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
+        .collect();
+
+    let shared = Arc::new(Shared {
+        tail: CachePadded::new(AtomicUsize::new(0)),
+        head: CachePadded::new(AtomicUsize::new(0)),
+        buffer: buffer.into_boxed_slice(),
+        mask,
+    });
+
+    (
+        Producer {
+            local_tail: Cell::new(0),
+            cached_head: Cell::new(0),
+            mask,
+            shared: Arc::clone(&shared),
+        },
+        Consumer {
+            local_head: Cell::new(0),
+            cached_tail: Cell::new(0),
+            mask,
+            shared,
+        },
+    )
+}
+
+#[cfg(not(loom))]
 #[repr(C)]
 struct Shared<T> {
     tail: CachePadded<AtomicUsize>,
@@ -105,12 +146,21 @@ struct Shared<T> {
     mask: usize,
 }
 
-// SAFETY: Shared only contains atomics and a raw pointer. The buffer is only
-// accessed through Producer (write) and Consumer (read), which are !Sync.
-// T: Send ensures the data can be transferred between threads.
+#[cfg(loom)]
+struct Shared<T> {
+    tail: CachePadded<AtomicUsize>,
+    head: CachePadded<AtomicUsize>,
+    buffer: Box<[UnsafeCell<MaybeUninit<T>>]>,
+    mask: usize,
+}
+
+// SAFETY: Shared only contains atomics and a raw pointer (or boxed slice under loom).
+// The buffer is only accessed through Producer (write) and Consumer (read), which
+// are !Sync. T: Send ensures the data can be transferred between threads.
 unsafe impl<T: Send> Send for Shared<T> {}
 unsafe impl<T: Send> Sync for Shared<T> {}
 
+#[cfg(not(loom))]
 impl<T> Drop for Shared<T> {
     fn drop(&mut self) {
         let head = self.head.load(Ordering::Relaxed);
@@ -133,16 +183,40 @@ impl<T> Drop for Shared<T> {
     }
 }
 
+#[cfg(loom)]
+impl<T> Drop for Shared<T> {
+    fn drop(&mut self) {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Relaxed);
+
+        let mut i = head;
+        while i != tail {
+            self.buffer[i & self.mask].with_mut(|ptr| unsafe { (*ptr).assume_init_drop() });
+            i = i.wrapping_add(1);
+        }
+    }
+}
+
 /// The producer endpoint of an SPSC queue.
 ///
 /// This endpoint can only push values into the queue.
-// repr(C): Hot fields (local_tail, cached_head) at struct base share cache line
-// with struct pointer. Cold field (shared Arc) pushed to end.
+#[cfg(not(loom))]
 #[repr(C)]
 pub struct Producer<T> {
     local_tail: Cell<usize>,
     cached_head: Cell<usize>,
     buffer: *mut T,
+    mask: usize,
+    shared: Arc<Shared<T>>,
+}
+
+/// The producer endpoint of an SPSC queue.
+///
+/// This endpoint can only push values into the queue.
+#[cfg(loom)]
+pub struct Producer<T> {
+    local_tail: Cell<usize>,
+    cached_head: Cell<usize>,
     mask: usize,
     shared: Arc<Shared<T>>,
 }
@@ -166,7 +240,7 @@ impl<T> Producer<T> {
             self.cached_head
                 .set(self.shared.head.load(Ordering::Relaxed));
 
-            std::sync::atomic::fence(Ordering::Acquire);
+            fence(Ordering::Acquire);
             if tail.wrapping_sub(self.cached_head.get()) > self.mask {
                 return Err(Full(value));
             }
@@ -174,9 +248,15 @@ impl<T> Producer<T> {
 
         // SAFETY: We verified tail - cached_head <= mask, so the slot is not occupied
         // by unconsumed data. tail & mask gives a valid index within the buffer.
-        unsafe { self.buffer.add(tail & self.mask).write(value) };
+        #[cfg(not(loom))]
+        unsafe {
+            self.buffer.add(tail & self.mask).write(value);
+        }
+        #[cfg(loom)]
+        self.shared.buffer[tail & self.mask].with_mut(|ptr| unsafe { (*ptr).write(value) });
+
         let new_tail = tail.wrapping_add(1);
-        std::sync::atomic::fence(Ordering::Release);
+        fence(Ordering::Release);
 
         self.shared.tail.store(new_tail, Ordering::Relaxed);
         self.local_tail.set(new_tail);
@@ -208,13 +288,23 @@ impl<T> fmt::Debug for Producer<T> {
 /// The consumer endpoint of an SPSC queue.
 ///
 /// This endpoint can only pop values from the queue.
-// repr(C): Hot fields (local_head, cached_tail) at struct base share cache line
-// with struct pointer. Cold field (shared Arc) pushed to end.
+#[cfg(not(loom))]
 #[repr(C)]
 pub struct Consumer<T> {
     local_head: Cell<usize>,
     cached_tail: Cell<usize>,
     buffer: *mut T,
+    mask: usize,
+    shared: Arc<Shared<T>>,
+}
+
+/// The consumer endpoint of an SPSC queue.
+///
+/// This endpoint can only pop values from the queue.
+#[cfg(loom)]
+pub struct Consumer<T> {
+    local_head: Cell<usize>,
+    cached_tail: Cell<usize>,
     mask: usize,
     shared: Arc<Shared<T>>,
 }
@@ -235,7 +325,7 @@ impl<T> Consumer<T> {
         if head == self.cached_tail.get() {
             self.cached_tail
                 .set(self.shared.tail.load(Ordering::Relaxed));
-            std::sync::atomic::fence(Ordering::Acquire);
+            fence(Ordering::Acquire);
 
             if head == self.cached_tail.get() {
                 return None;
@@ -244,9 +334,14 @@ impl<T> Consumer<T> {
 
         // SAFETY: We verified head != cached_tail, so the slot contains valid data
         // written by the producer. head & mask gives a valid index within the buffer.
+        #[cfg(not(loom))]
         let value = unsafe { self.buffer.add(head & self.mask).read() };
+        #[cfg(loom)]
+        let value = self.shared.buffer[head & self.mask]
+            .with_mut(|ptr| unsafe { (*ptr).assume_init_read() });
+
         let new_head = head.wrapping_add(1);
-        std::sync::atomic::fence(Ordering::Release);
+        fence(Ordering::Release);
 
         self.shared.head.store(new_head, Ordering::Relaxed);
         self.local_head.set(new_head);
