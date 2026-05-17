@@ -226,6 +226,93 @@ macro_rules! impl_into_ctx_step {
 
 all_tuples!(impl_into_ctx_step);
 
+// =============================================================================
+// No-input impls — IntoCtxStep with In = (), no trailing input parameter
+// =============================================================================
+
+use crate::handler::NoEvent;
+
+// Arity 0: fn(&mut C) -> Out — no params, no input
+impl<C, Out, F: FnMut(&mut C) -> Out + 'static> CtxStepCall<C, ()> for CtxStep<NoEvent<F>, ()> {
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, ctx: &mut C, _world: &mut World, _input: ()) -> Out {
+        (self.f.0)(ctx)
+    }
+}
+
+impl<C, Out, F: FnMut(&mut C) -> Out + 'static> IntoCtxStep<C, (), Out, NoEvent<F>> for F {
+    type Step = CtxStep<NoEvent<F>, ()>;
+
+    fn into_ctx_step(self, registry: &Registry) -> Self::Step {
+        CtxStep {
+            f: NoEvent(self),
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+// Arities 1-8: fn(&mut C, Params...) -> Out — no trailing input
+macro_rules! impl_into_ctx_step_no_event {
+    ($($P:ident),+) => {
+        impl<C, Out, F: 'static, $($P: Param + 'static),+>
+            CtxStepCall<C, ()> for CtxStep<NoEvent<F>, ($($P,)+)>
+        where
+            for<'a> &'a mut F:
+                FnMut(&mut C, $($P,)+) -> Out +
+                FnMut(&mut C, $($P::Item<'a>,)+) -> Out,
+        {
+            type Out = Out;
+            #[inline(always)]
+            #[allow(non_snake_case)]
+            fn call(&mut self, ctx: &mut C, world: &mut World, _input: ()) -> Out {
+                fn call_inner<Ctx, $($P,)+ Output>(
+                    mut f: impl FnMut(&mut Ctx, $($P,)+) -> Output,
+                    ctx: &mut Ctx,
+                    $($P: $P,)+
+                ) -> Output {
+                    f(ctx, $($P,)+)
+                }
+
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f.0, ctx, $($P,)+)
+            }
+        }
+
+        impl<C, Out, F: 'static, $($P: Param + 'static),+>
+            IntoCtxStep<C, (), Out, ($($P,)+)> for NoEvent<F>
+        where
+            for<'a> &'a mut F:
+                FnMut(&mut C, $($P,)+) -> Out +
+                FnMut(&mut C, $($P::Item<'a>,)+) -> Out,
+        {
+            type Step = CtxStep<NoEvent<F>, ($($P,)+)>;
+
+            fn into_ctx_step(self, registry: &Registry) -> Self::Step {
+                let state = <($($P,)+) as Param>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as Param>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
+                }
+                CtxStep { f: self, state, name: std::any::type_name::<F>() }
+            }
+        }
+    };
+}
+
+all_tuples!(impl_into_ctx_step_no_event);
+
 // -- Opaque: FnMut(&mut C, &mut World, In) -> Out ----------------------------
 
 /// Internal: wrapper for opaque closures used as context-aware steps.

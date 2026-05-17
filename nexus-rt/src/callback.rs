@@ -125,14 +125,14 @@ pub struct Callback<C, F, Params: Param> {
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoCallback, Handler, Resource};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoCallback, Handler, Resource, no_event};
 ///
 /// #[derive(Resource)]
 /// struct Counter(u64);
 ///
 /// struct TimerCtx { order_id: u64, fires: u64 }
 ///
-/// fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<Counter>, _event: ()) {
+/// fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<Counter>) {
 ///     ctx.fires += 1;
 ///     counter.0 += ctx.order_id;
 /// }
@@ -141,7 +141,7 @@ pub struct Callback<C, F, Params: Param> {
 /// builder.register(Counter(0));
 /// let mut world = builder.build();
 ///
-/// let mut cb = on_timeout.into_callback(
+/// let mut cb = no_event(on_timeout).into_callback(
 ///     TimerCtx { order_id: 42, fires: 0 },
 ///     world.registry(),
 /// );
@@ -366,7 +366,7 @@ all_tuples!(impl_into_callback_no_event);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Local, Res, ResMut, WorldBuilder};
+    use crate::{Local, Res, ResMut, WorldBuilder, no_event};
 
     // -- Helper types ---------------------------------------------------------
 
@@ -603,11 +603,11 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        fn bad(_ctx: &mut u64, a: Res<u64>, b: ResMut<u64>, _e: ()) {
+        fn bad(_ctx: &mut u64, a: Res<u64>, b: ResMut<u64>) {
             let _ = (*a, &*b);
         }
 
-        let _cb = bad.into_callback(0u64, world.registry_mut());
+        let _cb = no_event(bad).into_callback(0u64, world.registry_mut());
     }
 
     // -- Handler<E> interface -------------------------------------------------
@@ -635,15 +635,15 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        fn add(ctx: &mut u64, mut val: ResMut<u64>, _e: ()) {
+        fn add(ctx: &mut u64, mut val: ResMut<u64>) {
             *val += *ctx;
         }
-        fn mul(ctx: &mut u64, mut val: ResMut<u64>, _e: ()) {
+        fn mul(ctx: &mut u64, mut val: ResMut<u64>) {
             *val *= *ctx;
         }
 
-        let cb_add = add.into_callback(3u64, world.registry_mut());
-        let cb_mul = mul.into_callback(2u64, world.registry_mut());
+        let cb_add = no_event(add).into_callback(3u64, world.registry_mut());
+        let cb_mul = no_event(mul).into_callback(2u64, world.registry_mut());
 
         let mut handlers: Vec<Box<dyn Handler<()>>> = vec![Box::new(cb_add), Box::new(cb_mul)];
 
@@ -654,7 +654,7 @@ mod tests {
         assert_eq!(*world.resource::<u64>(), 6);
     }
 
-    fn with_local(_ctx: &mut u64, mut local: Local<u64>, mut val: ResMut<u64>, _e: ()) {
+    fn with_local(_ctx: &mut u64, mut local: Local<u64>, mut val: ResMut<u64>) {
         *local += 1;
         *val = *local;
     }
@@ -665,7 +665,7 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let mut cb = with_local.into_callback(0u64, world.registry_mut());
+        let mut cb = no_event(with_local).into_callback(0u64, world.registry_mut());
         cb.run(&mut world, ());
         cb.run(&mut world, ());
         cb.run(&mut world, ());
