@@ -3,7 +3,7 @@
 
 //! Fixed-memory, zero-allocation streaming statistics for real-time systems.
 //!
-//! 65+ algorithms, all O(1) per update (or O(d) for d-dimensional filters), fixed memory.
+//! 60+ algorithms, all O(1) per update (or O(d) for d-dimensional filters), fixed memory.
 //! Core types are `no_std` compatible; types marked *(std)* require the `std` feature,
 //! *(alloc)* require `alloc`, and *(std|libm)* require either `std` or `libm`.
 //!
@@ -76,8 +76,8 @@
 //! | Feature | Module | Contents |
 //! |---------|--------|----------|
 //! | `smoothing` | `smoothing` | + Holt, KAMA, Spring, Kalman1d, WindowedMedian |
-//! | `detection` | `detection` | + MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate |
-//! | `detection` | `signal` | Autocorrelation, CrossCorrelation, Entropy, TransferEntropy |
+//! | `detection` | `detection` | + MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate, PageHinkley, ADWIN |
+//! | `detection` | `signal` | Autocorrelation, CrossCorrelation, Entropy, TransferEntropy, PredictiveInfoBound |
 //! | `detection` | `estimation` | + SPRT |
 //! | `regression` | `regression` | Linear, Polynomial, EW variants, Transformed, LogisticRegression |
 //! | `regression` | `learning` | LMS, NLMS, RLS, OnlineKMeans, GD, AdaGrad, Adam |
