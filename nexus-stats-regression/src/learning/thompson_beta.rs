@@ -86,9 +86,8 @@ macro_rules! impl_thompson_beta {
             pub fn select(&self, rng: &mut impl FnMut() -> $ty) -> usize {
                 let mut best_arm = 0;
                 let mut best_sample = -(1.0 as $ty / 0.0 as $ty);
-                for i in 0..self.num_arms {
-                    let sample =
-                        super::sampling::$sampling::beta_sample(self.alphas[i], self.betas[i], rng);
+                for (i, (&a, &b)) in self.alphas.iter().zip(self.betas.iter()).enumerate() {
+                    let sample = super::sampling::$sampling::beta_sample(a, b, rng);
                     if sample > best_sample {
                         best_sample = sample;
                         best_arm = i;
@@ -126,9 +125,10 @@ macro_rules! impl_thompson_beta {
                 );
 
                 if self.decay < 1.0 as $ty {
-                    for i in 0..self.num_arms {
-                        self.alphas[i] *= self.decay;
-                        self.betas[i] *= self.decay;
+                    let decay = self.decay;
+                    for (a, b) in self.alphas.iter_mut().zip(self.betas.iter_mut()) {
+                        *a *= decay;
+                        *b *= decay;
                     }
                 }
 

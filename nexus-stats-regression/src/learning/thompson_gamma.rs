@@ -85,10 +85,9 @@ macro_rules! impl_thompson_gamma {
             pub fn select(&self, rng: &mut impl FnMut() -> $ty) -> usize {
                 let mut best_arm = 0;
                 let mut best_sample = -(1.0 as $ty / 0.0 as $ty);
-                for i in 0..self.num_arms {
-                    // Sample Gamma(shape, rate) = Gamma(shape, 1) / rate
-                    let g = super::sampling::$sampling::gamma_sample(self.shapes[i], rng);
-                    let sample = g / self.rates[i];
+                for (i, (&shape, &rate)) in self.shapes.iter().zip(self.rates.iter()).enumerate() {
+                    let g = super::sampling::$sampling::gamma_sample(shape, rng);
+                    let sample = g / rate;
                     if sample > best_sample {
                         best_sample = sample;
                         best_arm = i;
@@ -126,9 +125,10 @@ macro_rules! impl_thompson_gamma {
                 );
 
                 if self.decay < 1.0 as $ty {
-                    for i in 0..self.num_arms {
-                        self.shapes[i] *= self.decay;
-                        self.rates[i] *= self.decay;
+                    let decay = self.decay;
+                    for (s, r) in self.shapes.iter_mut().zip(self.rates.iter_mut()) {
+                        *s *= decay;
+                        *r *= decay;
                     }
                 }
 

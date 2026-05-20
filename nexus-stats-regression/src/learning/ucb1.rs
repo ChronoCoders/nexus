@@ -84,8 +84,8 @@ macro_rules! impl_ucb1 {
             #[must_use]
             #[allow(clippy::cast_possible_truncation, clippy::float_cmp)]
             pub fn select(&self) -> usize {
-                for i in 0..self.num_arms {
-                    if self.counts[i] == 0.0 as $ty {
+                for (i, &c) in self.counts.iter().enumerate() {
+                    if c == 0.0 as $ty {
                         return i;
                     }
                 }
@@ -95,10 +95,11 @@ macro_rules! impl_ucb1 {
 
                 let mut best_arm = 0;
                 let mut best_score = -(1.0 as $ty / 0.0 as $ty); // -inf
-                for i in 0..self.num_arms {
-                    let mean = self.rewards[i] / self.counts[i];
-                    let bonus = self.exploration
-                        * nexus_stats_core::math::sqrt((ln_total / self.counts[i]) as f64) as $ty;
+                let exploration = self.exploration;
+                for (i, (&r, &c)) in self.rewards.iter().zip(self.counts.iter()).enumerate() {
+                    let mean = r / c;
+                    let bonus = exploration
+                        * nexus_stats_core::math::sqrt((ln_total / c) as f64) as $ty;
                     let score = mean + bonus;
                     if score > best_score {
                         best_score = score;
@@ -134,9 +135,10 @@ macro_rules! impl_ucb1 {
                 );
 
                 if self.decay < 1.0 as $ty {
-                    for i in 0..self.num_arms {
-                        self.counts[i] *= self.decay;
-                        self.rewards[i] *= self.decay;
+                    let decay = self.decay;
+                    for (c, r) in self.counts.iter_mut().zip(self.rewards.iter_mut()) {
+                        *c *= decay;
+                        *r *= decay;
                     }
                 }
 

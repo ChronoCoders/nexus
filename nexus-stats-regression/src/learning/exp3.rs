@@ -89,11 +89,12 @@ macro_rules! impl_exp3 {
             pub fn select(&self, rng: &mut impl FnMut() -> $ty) -> (usize, $ty) {
                 let sum_w: $ty = self.weights.iter().copied().sum();
                 let k = self.num_arms as $ty;
+                let gamma = self.gamma;
                 let u = rng();
                 let mut cumulative = 0.0 as $ty;
 
-                for i in 0..self.num_arms {
-                    let p_i = (1.0 as $ty - self.gamma) * self.weights[i] / sum_w + self.gamma / k;
+                for (i, &w) in self.weights.iter().enumerate() {
+                    let p_i = (1.0 as $ty - gamma) * w / sum_w + gamma / k;
                     cumulative += p_i;
                     if u < cumulative {
                         return (i, p_i);
@@ -103,7 +104,7 @@ macro_rules! impl_exp3 {
                 // Numerical safety: return last arm
                 let last = self.num_arms - 1;
                 let p_last =
-                    (1.0 as $ty - self.gamma) * self.weights[last] / sum_w + self.gamma / k;
+                    (1.0 as $ty - gamma) * self.weights[last] / sum_w + gamma / k;
                 (last, p_last)
             }
 
@@ -183,8 +184,9 @@ macro_rules! impl_exp3 {
                 );
                 let sum_w: $ty = self.weights.iter().copied().sum();
                 let k = self.num_arms as $ty;
-                for i in 0..self.num_arms {
-                    out[i] = (1.0 as $ty - self.gamma) * self.weights[i] / sum_w + self.gamma / k;
+                let gamma = self.gamma;
+                for (o, &w) in out.iter_mut().zip(self.weights.iter()) {
+                    *o = (1.0 as $ty - gamma) * w / sum_w + gamma / k;
                 }
             }
 

@@ -84,8 +84,8 @@ macro_rules! impl_epsilon_greedy {
             #[allow(clippy::float_cmp)]
             pub fn select(&self, rng: &mut impl FnMut() -> $ty) -> usize {
                 // Round-robin unpulled arms first
-                for i in 0..self.num_arms {
-                    if self.counts[i] == 0.0 as $ty {
+                for (i, &c) in self.counts.iter().enumerate() {
+                    if c == 0.0 as $ty {
                         return i;
                     }
                 }
@@ -104,9 +104,9 @@ macro_rules! impl_epsilon_greedy {
                 } else {
                     // Exploit: best mean reward
                     let mut best_arm = 0;
-                    let mut best_mean = self.rewards[0] / self.counts[0];
-                    for i in 1..self.num_arms {
-                        let mean = self.rewards[i] / self.counts[i];
+                    let mut best_mean = -(1.0 as $ty / 0.0 as $ty);
+                    for (i, (&r, &c)) in self.rewards.iter().zip(self.counts.iter()).enumerate() {
+                        let mean = r / c;
                         if mean > best_mean {
                             best_mean = mean;
                             best_arm = i;
@@ -139,9 +139,10 @@ macro_rules! impl_epsilon_greedy {
                 );
 
                 if self.decay < 1.0 as $ty {
-                    for i in 0..self.num_arms {
-                        self.counts[i] *= self.decay;
-                        self.rewards[i] *= self.decay;
+                    let decay = self.decay;
+                    for (c, r) in self.counts.iter_mut().zip(self.rewards.iter_mut()) {
+                        *c *= decay;
+                        *r *= decay;
                     }
                 }
 
