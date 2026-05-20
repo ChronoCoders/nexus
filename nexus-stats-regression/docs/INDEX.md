@@ -14,6 +14,7 @@ All types are streaming, O(1) or O(N) per update in feature dimension, and zero-
 - [Regression](regression.md) — Linear, polynomial, EW-polynomial, transformed, logistic, lagged predictor, Kyle lambda, signal decay.
 - [Learning (adaptive filters)](learning.md) — LMS, NLMS, RLS, Huber regression, online K-Means, OnlineGD / AdaGrad / Adam.
 - [Estimation](estimation.md) — Kalman2d, Kalman3d, BetaBinomial, GammaPoisson.
+- [Bandits](bandits.md) — UCB1, ThompsonBeta, ThompsonGamma, EpsilonGreedy, EXP3. Decision tree, discounting, reward normalization, trading examples.
 
 ## Algorithms
 
@@ -43,6 +44,11 @@ All types are streaming, O(1) or O(N) per update in feature dimension, and zero-
 | `OnlineGdF64` | Plain gradient descent |
 | `AdaGradF64` | Per-feature adaptive learning rate |
 | `AdamF64` | Adam / AdamW optimizer |
+| `Ucb1F64` / `F32` | UCB1 multi-armed bandit — deterministic, no RNG |
+| `ThompsonBetaF64` / `F32` | Thompson Sampling with Beta prior (binary/[0,1] rewards) |
+| `ThompsonGammaF64` / `F32` | Thompson Sampling with Gamma prior (positive rewards) |
+| `EpsilonGreedyF64` / `F32` | Epsilon-greedy bandit |
+| `Exp3F64` / `F32` | EXP3 adversarial bandit (log-space weights) |
 
 ### estimation
 
