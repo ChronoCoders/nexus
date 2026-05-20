@@ -92,14 +92,16 @@ macro_rules! impl_ucb1 {
 
                 let total_eff: $ty = self.counts.iter().copied().sum();
                 let ln_total = nexus_stats_core::math::ln(total_eff as f64) as $ty;
+                let scaled_exp = self.exploration
+                    * nexus_stats_core::math::sqrt(ln_total as f64) as $ty;
 
                 let mut best_arm = 0;
                 let mut best_score = -(1.0 as $ty / 0.0 as $ty); // -inf
-                let exploration = self.exploration;
                 for (i, (&r, &c)) in self.rewards.iter().zip(self.counts.iter()).enumerate() {
-                    let mean = r / c;
-                    let bonus = exploration
-                        * nexus_stats_core::math::sqrt((ln_total / c) as f64) as $ty;
+                    let inv_c = 1.0 as $ty / c;
+                    let mean = r * inv_c;
+                    let bonus = scaled_exp
+                        * nexus_stats_core::math::sqrt(inv_c as f64) as $ty;
                     let score = mean + bonus;
                     if score > best_score {
                         best_score = score;

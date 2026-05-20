@@ -90,11 +90,13 @@ macro_rules! impl_exp3 {
                 let sum_w: $ty = self.weights.iter().copied().sum();
                 let k = self.num_arms as $ty;
                 let gamma = self.gamma;
+                let scale = (1.0 as $ty - gamma) / sum_w;
+                let gamma_over_k = gamma / k;
                 let u = rng();
                 let mut cumulative = 0.0 as $ty;
 
                 for (i, &w) in self.weights.iter().enumerate() {
-                    let p_i = (1.0 as $ty - gamma) * w / sum_w + gamma / k;
+                    let p_i = w * scale + gamma_over_k;
                     cumulative += p_i;
                     if u < cumulative {
                         return (i, p_i);
@@ -103,8 +105,7 @@ macro_rules! impl_exp3 {
 
                 // Numerical safety: return last arm
                 let last = self.num_arms - 1;
-                let p_last =
-                    (1.0 as $ty - gamma) * self.weights[last] / sum_w + gamma / k;
+                let p_last = self.weights[last] * scale + gamma_over_k;
                 (last, p_last)
             }
 
@@ -185,8 +186,10 @@ macro_rules! impl_exp3 {
                 let sum_w: $ty = self.weights.iter().copied().sum();
                 let k = self.num_arms as $ty;
                 let gamma = self.gamma;
+                let scale = (1.0 as $ty - gamma) / sum_w;
+                let gamma_over_k = gamma / k;
                 for (o, &w) in out.iter_mut().zip(self.weights.iter()) {
-                    *o = (1.0 as $ty - gamma) * w / sum_w + gamma / k;
+                    *o = w * scale + gamma_over_k;
                 }
             }
 
