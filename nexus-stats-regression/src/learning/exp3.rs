@@ -49,14 +49,31 @@ macro_rules! impl_exp3 {
         /// let (arm, prob) = bandit.select(&mut rng);
         /// bandit.update(arm, 0.8, prob).unwrap();
         /// ```
-        #[derive(Debug, Clone)]
+        #[derive(Debug)]
         pub struct $name {
             log_weights: Box<[$ty]>,
+            scratch: core::cell::UnsafeCell<Box<[$ty]>>,
             gamma: $ty,
             eta: $ty,
             total_pulls: u64,
             num_arms: usize,
             min_samples: u64,
+        }
+
+        impl Clone for $name {
+            fn clone(&self) -> Self {
+                Self {
+                    log_weights: self.log_weights.clone(),
+                    scratch: core::cell::UnsafeCell::new(
+                        vec![0.0 as $ty; self.num_arms].into_boxed_slice(),
+                    ),
+                    gamma: self.gamma,
+                    eta: self.eta,
+                    total_pulls: self.total_pulls,
+                    num_arms: self.num_arms,
+                    min_samples: self.min_samples,
+                }
+            }
         }
 
         /// Builder for [`
@@ -88,31 +105,35 @@ macro_rules! impl_exp3 {
             /// Returns `(arm_index, selection_probability)`. The caller
             /// must pass the probability back to `update()`.
             ///
-            /// Uses log-sum-exp internally for numerical stability.
+            /// Uses log-sum-exp with a cached scratch buffer to avoid
+            /// recomputing exp() values during CDF sampling.
             #[must_use]
             #[allow(clippy::suboptimal_flops, clippy::cast_possible_truncation)]
             pub fn select(&self, rng: &mut impl FnMut() -> $ty) -> (usize, $ty) {
                 let k = self.num_arms as $ty;
                 let gamma = self.gamma;
 
-                // Log-sum-exp: find max for numerical stability
+                // SAFETY: scratch is a write-only cache derived from log_weights.
+                // No reference escapes this method and select() is not reentrant.
+                let scratch = unsafe { &mut *self.scratch.get() };
+
                 let max_lw = self.log_weights.iter().copied()
                     .fold(-(1.0 as $ty / 0.0 as $ty), |a, b| if a > b { a } else { b });
 
-                // First pass: sum of exp(lw - max_lw)
+                // Compute exp values into scratch, accumulate sum (K exp calls)
                 let mut sum_exp = 0.0 as $ty;
-                for &lw in self.log_weights.iter() {
-                    sum_exp += nexus_stats_core::math::exp((lw - max_lw) as f64) as $ty;
+                for (s, &lw) in scratch.iter_mut().zip(self.log_weights.iter()) {
+                    *s = nexus_stats_core::math::exp((lw - max_lw) as f64) as $ty;
+                    sum_exp += *s;
                 }
 
-                // Second pass: sample from CDF
                 let scale = (1.0 as $ty - gamma) / sum_exp;
                 let gamma_over_k = gamma / k;
                 let u = rng();
                 let mut cumulative = 0.0 as $ty;
 
-                for (i, &lw) in self.log_weights.iter().enumerate() {
-                    let exp_w = nexus_stats_core::math::exp((lw - max_lw) as f64) as $ty;
+                // CDF sampling from cached exp values — no exp() calls
+                for (i, &exp_w) in scratch.iter().enumerate() {
                     let p_i = exp_w * scale + gamma_over_k;
                     cumulative += p_i;
                     if u < cumulative {
@@ -120,10 +141,8 @@ macro_rules! impl_exp3 {
                     }
                 }
 
-                // Numerical safety: return last arm
                 let last = self.num_arms - 1;
-                let exp_last = nexus_stats_core::math::exp((self.log_weights[last] - max_lw) as f64) as $ty;
-                let p_last = exp_last * scale + gamma_over_k;
+                let p_last = scratch[last] * scale + gamma_over_k;
                 (last, p_last)
             }
 
@@ -294,6 +313,9 @@ macro_rules! impl_exp3 {
                 let min_samples = self.min_samples.unwrap_or(arms as u64);
                 Ok($name {
                     log_weights: vec![0.0 as $ty; arms].into_boxed_slice(),
+                    scratch: core::cell::UnsafeCell::new(
+                        vec![0.0 as $ty; arms].into_boxed_slice(),
+                    ),
                     gamma,
                     eta,
                     total_pulls: 0,
