@@ -2,6 +2,17 @@ extern crate alloc;
 use alloc::boxed::Box;
 use nexus_stats_core::math::{exp, ln, ln_gamma};
 
+// Precomputed per-r constants; valid because suf_count[r] == r.
+#[derive(Debug, Clone)]
+struct Precomputed {
+    lng_base: Box<[f64]>,
+    mu_a: Box<[f64]>,
+    mu_b: Box<[f64]>,
+    beta_c: Box<[f64]>,
+    nu_d: Box<[f64]>,
+    alpha: Box<[f64]>,
+}
+
 /// Bayesian Online Change Point Detection (Adams & MacKay 2007).
 ///
 /// Maintains a truncated run-length posterior using a Gaussian
@@ -37,14 +48,13 @@ pub struct BocpdF64 {
     suf_mean: Box<[f64]>,
     suf_sum_sq: Box<[f64]>,
     scratch: Box<[f64]>,
+    pre: Precomputed,
 
     max_run_length: usize,
     log_hazard: f64,
     log_1m_hazard: f64,
 
     prior_mu: f64,
-    prior_kappa: f64,
-    prior_alpha: f64,
     prior_beta: f64,
 
     active: usize,
@@ -114,66 +124,51 @@ impl BocpdF64 {
             self.active = 1;
         }
 
-        // Step 1: log predictive with ln_gamma caching.
-        // suf_count[r] == r by construction (step 5 shifts forward + increments),
-        // so alpha_n increases by 0.5 per r. This means ln_gamma(alpha_n) at r+1
-        // equals ln_gamma(alpha_n + 0.5) at r — cache and reuse.
-        #[allow(clippy::suboptimal_flops, clippy::manual_midpoint)]
+        // Step 1 + 2a fused: log predictive (precomputed tables) + CP mass max.
+        //
+        // All prior/r-dependent values are precomputed. The student-t reduces to:
+        //   lng_base[r] + alpha[r]*ln(a) - (alpha[r]+0.5)*ln(b)
+        // where a = nu_d[r]*beta_n, b = a + dx^2. No divisions in the loop.
+        let cp_terms;
+        #[allow(clippy::suboptimal_flops)]
         {
-            let mut cached_lng = ln_gamma(self.prior_alpha);
+            let mut max_cp_term = f64::NEG_INFINITY;
             for r in 0..self.active {
-                let n = self.suf_count[r] as f64;
-                let kappa_n = self.prior_kappa + n;
-                let mu_n = (self.prior_kappa * self.prior_mu
-                    + n * self.suf_mean[r])
-                    / kappa_n;
-                let alpha_n = self.prior_alpha + n / 2.0;
+                let mu_n = self.pre.mu_a[r]
+                    + self.pre.mu_b[r] * self.suf_mean[r];
+                let diff = self.suf_mean[r] - self.prior_mu;
                 let beta_n = self.prior_beta
-                    + self.suf_sum_sq[r] / 2.0
-                    + self.prior_kappa
-                        * n
-                        * (self.suf_mean[r] - self.prior_mu).powi(2)
-                        / (2.0 * kappa_n);
-                let nu = 2.0 * alpha_n;
-                let scale_sq =
-                    beta_n * (kappa_n + 1.0) / (alpha_n * kappa_n);
-                let z = (sample - mu_n) * (sample - mu_n)
-                    / (nu * scale_sq);
+                    + self.suf_sum_sq[r] * 0.5
+                    + self.pre.beta_c[r] * diff * diff;
+                let a = self.pre.nu_d[r] * beta_n;
+                let dx = sample - mu_n;
+                let b = a + dx * dx;
+                let alpha_r = self.pre.alpha[r];
 
-                let lng_upper = ln_gamma(alpha_n + 0.5);
-                let lng_lower = cached_lng;
-                cached_lng = lng_upper;
+                self.scratch[r] = self.pre.lng_base[r]
+                    + alpha_r * ln(a)
+                    - (alpha_r + 0.5) * ln(b);
 
-                self.scratch[r] = lng_upper - lng_lower
-                    - 0.5 * ln(nu * core::f64::consts::PI * scale_sq)
-                    - ((nu + 1.0) / 2.0) * ln(1.0 + z);
-            }
-        }
-
-        // Step 2a: CP mass via two-pass logsumexp (W exp + 1 ln instead
-        // of pairwise 2W exp + W ln).
-        let cp_terms = {
-            let mut max_term = f64::NEG_INFINITY;
-            for r in 0..self.active {
                 let term =
                     self.log_posterior[r] + self.scratch[r] + self.log_hazard;
-                if term > max_term {
-                    max_term = term;
+                if term > max_cp_term {
+                    max_cp_term = term;
                 }
             }
-            if max_term == f64::NEG_INFINITY {
+
+            cp_terms = if max_cp_term == f64::NEG_INFINITY {
                 f64::NEG_INFINITY
             } else {
                 let mut sum = 0.0;
                 for r in 0..self.active {
                     sum += exp(
                         self.log_posterior[r] + self.scratch[r] + self.log_hazard
-                            - max_term,
+                            - max_cp_term,
                     );
                 }
-                max_term + ln(sum)
-            }
-        };
+                max_cp_term + ln(sum)
+            };
+        }
 
         // Step 2b: growth probabilities (reverse to avoid overwrite of log_pred)
         let cap = self.max_run_length;
@@ -447,18 +442,54 @@ impl BocpdF64Builder {
         let size = max_run_length + 1;
         let h = 1.0 / lambda;
 
+        let pre = {
+            let pa = self.prior_alpha;
+            let pk = self.prior_kappa;
+            let pm = self.prior_mu;
+            let half_ln_pi = 0.5 * ln(core::f64::consts::PI);
+
+            let mut lng_base = alloc::vec![0.0f64; size];
+            let mut mu_a = alloc::vec![0.0f64; size];
+            let mut mu_b = alloc::vec![0.0f64; size];
+            let mut beta_c = alloc::vec![0.0f64; size];
+            let mut nu_d = alloc::vec![0.0f64; size];
+            let mut alpha = alloc::vec![0.0f64; size];
+
+            for r in 0..size {
+                let rf = r as f64;
+                let kn = pk + rf;
+                let inv_kn = 1.0 / kn;
+                let an = rf.mul_add(0.5, pa);
+
+                lng_base[r] = ln_gamma(an + 0.5) - ln_gamma(an) - half_ln_pi;
+                mu_a[r] = pk * pm * inv_kn;
+                mu_b[r] = rf * inv_kn;
+                beta_c[r] = pk * rf * 0.5 * inv_kn;
+                nu_d[r] = 2.0 * (kn + 1.0) * inv_kn;
+                alpha[r] = an;
+            }
+
+            Precomputed {
+                lng_base: lng_base.into_boxed_slice(),
+                mu_a: mu_a.into_boxed_slice(),
+                mu_b: mu_b.into_boxed_slice(),
+                beta_c: beta_c.into_boxed_slice(),
+                nu_d: nu_d.into_boxed_slice(),
+                alpha: alpha.into_boxed_slice(),
+            }
+        };
+
         Ok(BocpdF64 {
             log_posterior: alloc::vec![f64::NEG_INFINITY; size].into_boxed_slice(),
             suf_count: alloc::vec![0u64; size].into_boxed_slice(),
             suf_mean: alloc::vec![0.0f64; size].into_boxed_slice(),
             suf_sum_sq: alloc::vec![0.0f64; size].into_boxed_slice(),
             scratch: alloc::vec![f64::NEG_INFINITY; size].into_boxed_slice(),
+            pre,
             max_run_length,
             log_hazard: ln(h),
             log_1m_hazard: ln(1.0 - h),
             prior_mu: self.prior_mu,
-            prior_kappa: self.prior_kappa,
-            prior_alpha: self.prior_alpha,
             prior_beta: self.prior_beta,
             active: 0,
             count: 0,
