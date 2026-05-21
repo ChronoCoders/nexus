@@ -154,21 +154,21 @@ fn bench_mlp(c: &mut Criterion) {
 
     // 8 → 16 → 1
     let (w, b) = build_mlp_weights(&[8, 16, 1]);
-    let model = MlpF64::from_parts(&[8, 16, 1], &w, &b, Activation::Relu).unwrap();
+    let mut model = MlpF64::from_parts(&[8, 16, 1], &w, &b, Activation::Relu).unwrap();
     c.bench_function("MlpF64::predict_unchecked 8→16→1 relu", |b| {
         b.iter(|| model.predict_unchecked(black_box(&features_8)));
     });
 
     // 16 → 32 → 8 → 1
     let (w, b) = build_mlp_weights(&[16, 32, 8, 1]);
-    let model = MlpF64::from_parts(&[16, 32, 8, 1], &w, &b, Activation::Relu).unwrap();
+    let mut model = MlpF64::from_parts(&[16, 32, 8, 1], &w, &b, Activation::Relu).unwrap();
     c.bench_function("MlpF64::predict_unchecked 16→32→8→1 relu", |b| {
         b.iter(|| model.predict_unchecked(black_box(&features_16)));
     });
 
     // 64 → 64 → 1
     let (w, b) = build_mlp_weights(&[64, 64, 1]);
-    let model = MlpF64::from_parts(&[64, 64, 1], &w, &b, Activation::Relu).unwrap();
+    let mut model = MlpF64::from_parts(&[64, 64, 1], &w, &b, Activation::Relu).unwrap();
     c.bench_function("MlpF64::predict_unchecked 64→64→1 relu", |b| {
         b.iter(|| model.predict_unchecked(black_box(&features_64)));
     });
