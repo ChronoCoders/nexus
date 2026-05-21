@@ -212,7 +212,7 @@ macro_rules! impl_quantile_norm {
                     grid.push(estimator);
                 }
 
-                let min_samples = self.min_samples.unwrap_or(max_min_samples);
+                let min_samples = self.min_samples.unwrap_or(max_min_samples).max(max_min_samples);
 
                 Ok($name {
                     grid: grid.into_boxed_slice(),

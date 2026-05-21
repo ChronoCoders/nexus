@@ -171,13 +171,13 @@ macro_rules! impl_lpm {
             pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let target = self
                     .target
-                    .ok_or(crate::ConfigError::Invalid("target is required"))?;
+                    .ok_or(crate::ConfigError::Missing("target"))?;
                 if !target.is_finite() {
                     return Err(crate::ConfigError::Invalid("target must be finite"));
                 }
                 let order = self
                     .order
-                    .ok_or(crate::ConfigError::Invalid("order is required"))?;
+                    .ok_or(crate::ConfigError::Missing("order"))?;
 
                 Ok($name {
                     sum_lpm: 0.0 as $ty,
