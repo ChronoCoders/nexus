@@ -1,7 +1,9 @@
-//! AVX2 vectorized ln/exp for packed f64x4.
+//! AVX2+FMA vectorized ln/exp for packed f64x4.
 //!
-//! Available when compiled with `-C target-feature=+avx2`.
-//! Algorithms match fdlibm/musl: same coefficients, same precision (~15 digits).
+//! Available when compiled with `-C target-feature=+avx2,+fma` (or `-C target-cpu=native`
+//! on any CPU since Haswell / Zen1). Algorithms match fdlibm/musl coefficients.
+//! FMA Horner evaluation gives strictly better precision (single rounding per step)
+//! and lower latency than separate mul+add.
 
 #![allow(clippy::excessive_precision)]
 
@@ -38,7 +40,7 @@ const EP5: f64 = 4.138_136_797_057_238_5e-08;
 ///
 /// # Safety
 ///
-/// Requires AVX2. All inputs must be positive finite f64.
+/// Requires AVX2+FMA. All inputs must be positive finite f64.
 #[inline]
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::many_single_char_names)]
@@ -69,10 +71,7 @@ unsafe fn ln_f64x4(x: __m256d) -> __m256d {
         // i64 → f64 via magic number trick (valid for |k| < 2^51)
         let magic = _mm256_set1_pd(6_755_399_441_055_744.0); // 2^52 + 2^51
         let magic_i = _mm256_castpd_si256(magic);
-        let k = _mm256_sub_pd(
-            _mm256_castsi256_pd(_mm256_add_epi64(k_i, magic_i)),
-            magic,
-        );
+        let k = _mm256_sub_pd(_mm256_castsi256_pd(_mm256_add_epi64(k_i, magic_i)), magic);
 
         // If m > sqrt(2): m *= 0.5, k += 1
         let gt = _mm256_cmp_pd(m, sqrt2, _CMP_GT_OQ);
@@ -84,14 +83,14 @@ unsafe fn ln_f64x4(x: __m256d) -> __m256d {
         let s = _mm256_div_pd(f, _mm256_add_pd(two, f));
         let s2 = _mm256_mul_pd(s, s);
 
-        // Horner evaluation of R(s²) = s² * (Lg1 + s²*(Lg2 + ...))
+        // FMA Horner: R(s²) = s² * (Lg1 + s²*(Lg2 + ...))
         let mut r = _mm256_set1_pd(LG7);
-        r = _mm256_add_pd(_mm256_mul_pd(r, s2), _mm256_set1_pd(LG6));
-        r = _mm256_add_pd(_mm256_mul_pd(r, s2), _mm256_set1_pd(LG5));
-        r = _mm256_add_pd(_mm256_mul_pd(r, s2), _mm256_set1_pd(LG4));
-        r = _mm256_add_pd(_mm256_mul_pd(r, s2), _mm256_set1_pd(LG3));
-        r = _mm256_add_pd(_mm256_mul_pd(r, s2), _mm256_set1_pd(LG2));
-        r = _mm256_add_pd(_mm256_mul_pd(r, s2), _mm256_set1_pd(LG1));
+        r = _mm256_fmadd_pd(r, s2, _mm256_set1_pd(LG6));
+        r = _mm256_fmadd_pd(r, s2, _mm256_set1_pd(LG5));
+        r = _mm256_fmadd_pd(r, s2, _mm256_set1_pd(LG4));
+        r = _mm256_fmadd_pd(r, s2, _mm256_set1_pd(LG3));
+        r = _mm256_fmadd_pd(r, s2, _mm256_set1_pd(LG2));
+        r = _mm256_fmadd_pd(r, s2, _mm256_set1_pd(LG1));
         r = _mm256_mul_pd(r, s2);
 
         // hfsq = 0.5 * f * f
@@ -100,11 +99,8 @@ unsafe fn ln_f64x4(x: __m256d) -> __m256d {
         // result = k*ln2_hi + (f - hfsq + s*(hfsq + R) + k*ln2_lo)
         let sr = _mm256_mul_pd(s, _mm256_add_pd(hfsq, r));
         _mm256_add_pd(
-            _mm256_mul_pd(k, ln2_hi),
-            _mm256_add_pd(
-                _mm256_sub_pd(f, hfsq),
-                _mm256_add_pd(sr, _mm256_mul_pd(k, ln2_lo)),
-            ),
+            _mm256_fmadd_pd(k, ln2_lo, sr),
+            _mm256_fmadd_pd(k, ln2_hi, _mm256_sub_pd(f, hfsq)),
         )
     }
 }
@@ -113,7 +109,7 @@ unsafe fn ln_f64x4(x: __m256d) -> __m256d {
 ///
 /// # Safety
 ///
-/// Requires AVX2. Inputs should be in a reasonable range (not ±huge).
+/// Requires AVX2+FMA. Inputs should be in a reasonable range (not ±huge).
 #[inline]
 #[cfg(target_arch = "x86_64")]
 unsafe fn exp_f64x4(x: __m256d) -> __m256d {
@@ -128,15 +124,16 @@ unsafe fn exp_f64x4(x: __m256d) -> __m256d {
         let kf = _mm256_round_pd(_mm256_mul_pd(x, ln2_inv), _MM_FROUND_TO_NEAREST_INT);
 
         // Cody-Waite: r = x - k*C1 - k*C2
-        let r = _mm256_sub_pd(_mm256_sub_pd(x, _mm256_mul_pd(kf, c1)), _mm256_mul_pd(kf, c2));
+        // FMA: r = -(k*C1 - x) then r = -(k*C2 - r) = r - k*C2
+        let r = _mm256_fnmadd_pd(kf, c2, _mm256_fnmadd_pd(kf, c1, x));
 
-        // Polynomial: t = r² * (P1 + r*(P2 + r*(P3 + r*(P4 + r*P5))))
+        // FMA Horner: t = r² * (P1 + r*(P2 + r*(P3 + r*(P4 + r*P5))))
         let r2 = _mm256_mul_pd(r, r);
         let mut p = _mm256_set1_pd(EP5);
-        p = _mm256_add_pd(_mm256_mul_pd(p, r), _mm256_set1_pd(EP4));
-        p = _mm256_add_pd(_mm256_mul_pd(p, r), _mm256_set1_pd(EP3));
-        p = _mm256_add_pd(_mm256_mul_pd(p, r), _mm256_set1_pd(EP2));
-        p = _mm256_add_pd(_mm256_mul_pd(p, r), _mm256_set1_pd(EP1));
+        p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(EP4));
+        p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(EP3));
+        p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(EP2));
+        p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(EP1));
         let t = _mm256_mul_pd(r2, p);
 
         // musl reconstruction: exp(r) = 1 - ((r*t)/(t-2) - r)
@@ -145,7 +142,7 @@ unsafe fn exp_f64x4(x: __m256d) -> __m256d {
         let exp_r = _mm256_sub_pd(one, _mm256_sub_pd(frac, r));
 
         // Scale by 2^k: set exponent bits
-        let k_i = _mm256_cvtpd_epi32(kf); // f64x4 → i32x4 (__m128i)
+        let k_i = _mm256_cvtpd_epi32(kf);
         let k_i64 = _mm256_cvtepi32_epi64(k_i);
         let bias = _mm256_set1_epi64x(1023);
         let exp_bits = _mm256_slli_epi64(_mm256_add_epi64(k_i64, bias), 52);
@@ -161,7 +158,7 @@ pub fn ln_inplace(buf: &mut [f64]) {
     let len = buf.len();
     let mut i = 0;
 
-    // SAFETY: AVX2 availability guaranteed by target_feature cfg.
+    // SAFETY: AVX2+FMA availability guaranteed by target_feature cfg.
     // All values in buf are positive (guaranteed by BOCPD: a > 0, b > 0).
     unsafe {
         while i + 4 <= len {
@@ -184,21 +181,40 @@ pub fn exp_sum(buf: &[f64], offset: f64) -> f64 {
     let mut i = 0;
     let mut sum: f64;
 
-    // SAFETY: AVX2 availability guaranteed by target_feature cfg.
+    // SAFETY: AVX2+FMA availability guaranteed by target_feature cfg.
     unsafe {
         let offset_v = _mm256_set1_pd(offset);
-        let mut acc = _mm256_setzero_pd();
+        // 4 independent accumulators to hide exp latency (~20 cycle throughput).
+        let mut acc0 = _mm256_setzero_pd();
+        let mut acc1 = _mm256_setzero_pd();
+        let mut acc2 = _mm256_setzero_pd();
+        let mut acc3 = _mm256_setzero_pd();
 
+        while i + 16 <= len {
+            let v0 = _mm256_loadu_pd(buf.as_ptr().add(i));
+            let v1 = _mm256_loadu_pd(buf.as_ptr().add(i + 4));
+            let v2 = _mm256_loadu_pd(buf.as_ptr().add(i + 8));
+            let v3 = _mm256_loadu_pd(buf.as_ptr().add(i + 12));
+            acc0 = _mm256_add_pd(acc0, exp_f64x4(_mm256_sub_pd(v0, offset_v)));
+            acc1 = _mm256_add_pd(acc1, exp_f64x4(_mm256_sub_pd(v1, offset_v)));
+            acc2 = _mm256_add_pd(acc2, exp_f64x4(_mm256_sub_pd(v2, offset_v)));
+            acc3 = _mm256_add_pd(acc3, exp_f64x4(_mm256_sub_pd(v3, offset_v)));
+            i += 16;
+        }
+
+        // Drain remaining 4-wide chunks
         while i + 4 <= len {
             let v = _mm256_loadu_pd(buf.as_ptr().add(i));
-            let shifted = _mm256_sub_pd(v, offset_v);
-            acc = _mm256_add_pd(acc, exp_f64x4(shifted));
+            acc0 = _mm256_add_pd(acc0, exp_f64x4(_mm256_sub_pd(v, offset_v)));
             i += 4;
         }
 
-        // Horizontal sum of acc
-        let hi = _mm256_extractf128_pd(acc, 1);
-        let lo = _mm256_castpd256_pd128(acc);
+        // Reduce 4 accumulators → 1
+        acc0 = _mm256_add_pd(_mm256_add_pd(acc0, acc1), _mm256_add_pd(acc2, acc3));
+
+        // Horizontal sum
+        let hi = _mm256_extractf128_pd(acc0, 1);
+        let lo = _mm256_castpd256_pd128(acc0);
         let pair = _mm_add_pd(lo, hi);
         let high_lane = _mm_unpackhi_pd(pair, pair);
         sum = _mm_cvtsd_f64(_mm_add_sd(pair, high_lane));

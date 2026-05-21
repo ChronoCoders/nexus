@@ -7,18 +7,30 @@
 #[allow(dead_code)]
 mod scalar;
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    target_feature = "fma"
+))]
 mod avx2;
 
 /// Compute ln(x) in-place for each element. All values must be positive.
 #[inline]
 pub fn ln_inplace(buf: &mut [f64]) {
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        target_feature = "fma"
+    ))]
     {
         avx2::ln_inplace(buf);
     }
 
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    #[cfg(not(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        target_feature = "fma"
+    )))]
     {
         scalar::ln_inplace(buf);
     }
@@ -27,12 +39,20 @@ pub fn ln_inplace(buf: &mut [f64]) {
 /// Compute sum of exp(x - offset) for each element.
 #[inline]
 pub fn exp_sum(buf: &[f64], offset: f64) -> f64 {
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        target_feature = "fma"
+    ))]
     {
         avx2::exp_sum(buf, offset)
     }
 
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    #[cfg(not(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        target_feature = "fma"
+    )))]
     {
         scalar::exp_sum(buf, offset)
     }

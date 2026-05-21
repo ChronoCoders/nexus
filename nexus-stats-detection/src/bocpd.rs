@@ -139,12 +139,10 @@ impl BocpdF64 {
         {
             // Pass 1: a[r] = nu_d*beta_n, b[r] = a + dx^2.
             for r in 0..self.active {
-                let mu_n = self.pre.mu_a[r]
-                    + self.pre.mu_b[r] * self.suf_mean[r];
+                let mu_n = self.pre.mu_a[r] + self.pre.mu_b[r] * self.suf_mean[r];
                 let diff = self.suf_mean[r] - self.prior_mu;
-                let beta_n = self.prior_beta
-                    + self.suf_sum_sq[r] * 0.5
-                    + self.pre.beta_c[r] * diff * diff;
+                let beta_n =
+                    self.prior_beta + self.suf_sum_sq[r] * 0.5 + self.pre.beta_c[r] * diff * diff;
                 let a = self.pre.nu_d[r] * beta_n;
                 let dx = sample - mu_n;
                 self.scratch[r] = a;
@@ -159,14 +157,12 @@ impl BocpdF64 {
             let mut max_cp_term = f64::NEG_INFINITY;
             for r in 0..self.active {
                 let alpha_r = self.pre.alpha[r];
-                let log_pred = self.pre.lng_base[r]
-                    + alpha_r * self.scratch[r]
+                let log_pred = self.pre.lng_base[r] + alpha_r * self.scratch[r]
                     - (alpha_r + 0.5) * self.scratch2[r];
 
                 self.scratch[r] = log_pred;
 
-                let term =
-                    self.log_posterior[r] + log_pred + self.log_hazard;
+                let term = self.log_posterior[r] + log_pred + self.log_hazard;
                 if term > max_cp_term {
                     max_cp_term = term;
                 }
@@ -178,13 +174,9 @@ impl BocpdF64 {
                 f64::NEG_INFINITY
             } else {
                 for r in 0..self.active {
-                    self.scratch2[r] =
-                        self.log_posterior[r] + self.scratch[r] + self.log_hazard;
+                    self.scratch2[r] = self.log_posterior[r] + self.scratch[r] + self.log_hazard;
                 }
-                let sum = simd_math::exp_sum(
-                    &self.scratch2[..self.active],
-                    max_cp_term,
-                );
+                let sum = simd_math::exp_sum(&self.scratch2[..self.active], max_cp_term);
                 max_cp_term + ln(sum)
             };
         }
