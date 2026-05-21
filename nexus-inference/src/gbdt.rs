@@ -4,12 +4,14 @@ extern crate alloc;
 #[cfg(feature = "alloc")]
 use alloc::{boxed::Box, vec::Vec};
 
+#[cfg(feature = "alloc")]
 pub(crate) const LEAF_SENTINEL: u16 = u16::MAX;
 
 /// Decision tree node. 16 bytes, cache-line friendly.
 ///
 /// Internal nodes: `feature_idx < LEAF_SENTINEL`, `value` = threshold.
 /// Leaf nodes: `feature_idx == LEAF_SENTINEL`, `value` = leaf prediction.
+#[cfg(feature = "alloc")]
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct Node {
@@ -50,6 +52,10 @@ macro_rules! impl_gbdt {
         impl $name {
             /// Predict with NaN routing (LightGBM-compatible).
             ///
+            /// Returns the raw ensemble score (base score + sum of leaf values).
+            /// For classification objectives, apply the appropriate link function
+            /// (e.g., sigmoid for binary classification).
+            ///
             /// NaN features are routed via the learned default direction at each
             /// split node. Matches LightGBM's inference behavior.
             ///
@@ -67,6 +73,10 @@ macro_rules! impl_gbdt {
 
             /// Predict without NaN checks. Caller guarantees all features are finite.
             ///
+            /// Returns the raw ensemble score (base score + sum of leaf values).
+            /// For classification objectives, apply the appropriate link function
+            /// (e.g., sigmoid for binary classification).
+            ///
             /// NaN features produce undefined output (IEEE 754: `NaN <= threshold`
             /// is always false, so NaN always routes right).
             ///
@@ -82,7 +92,7 @@ macro_rules! impl_gbdt {
                 score
             }
 
-            /// Evaluate only the first `n_trees` trees.
+            /// Evaluate only the first `n_trees` trees with NaN routing.
             ///
             /// Clamped to `self.n_trees()` if `n_trees` exceeds the ensemble size.
             pub fn predict_n(&self, features: &[$ty], n_trees: usize) -> $ty {
@@ -91,6 +101,20 @@ macro_rules! impl_gbdt {
                 let mut score = self.base_score;
                 for tree in &self.trees[..n] {
                     score += Self::walk_tree(tree, features, true);
+                }
+                score
+            }
+
+            /// Evaluate only the first `n_trees` trees without NaN checks.
+            ///
+            /// Clamped to `self.n_trees()` if `n_trees` exceeds the ensemble size.
+            /// Caller guarantees all features are finite.
+            pub fn predict_n_unchecked(&self, features: &[$ty], n_trees: usize) -> $ty {
+                assert_eq!(features.len(), self.n_features);
+                let n = n_trees.min(self.trees.len());
+                let mut score = self.base_score;
+                for tree in &self.trees[..n] {
+                    score += Self::walk_tree(tree, features, false);
                 }
                 score
             }
@@ -132,7 +156,8 @@ macro_rules! impl_gbdt {
                 }
             }
 
-            pub(crate) fn from_raw(
+            #[allow(dead_code)]
+            pub(crate) fn from_parts(
                 trees: Vec<Vec<Node>>,
                 n_features: usize,
                 base_score: $ty,
@@ -187,7 +212,7 @@ mod tests {
                 value: 1.0,
             },
         ];
-        GbdtF64::from_raw(vec![nodes], 1, base_score)
+        GbdtF64::from_parts(vec![nodes], 1, base_score)
     }
 
     #[test]
@@ -247,7 +272,7 @@ mod tests {
                 value: 1.0,
             },
         ];
-        let model = GbdtF64::from_raw(vec![stump.clone(), stump.clone(), stump], 1, 0.0);
+        let model = GbdtF64::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 0.0);
         assert_eq!(model.predict(&[0.3]), -3.0);
         assert_eq!(model.predict(&[0.8]), 3.0);
     }
@@ -278,7 +303,7 @@ mod tests {
                 value: 1.0,
             },
         ];
-        let model = GbdtF64::from_raw(vec![stump.clone(), stump.clone(), stump], 1, 5.0);
+        let model = GbdtF64::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 5.0);
         // 2 of 3 trees, feature goes left
         assert_eq!(model.predict_n(&[0.3], 2), 5.0 + -2.0);
     }
@@ -309,8 +334,42 @@ mod tests {
                 value: 1.0,
             },
         ];
-        let model = GbdtF64::from_raw(vec![stump.clone(), stump.clone(), stump], 1, 0.0);
+        let model = GbdtF64::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 0.0);
         assert_eq!(model.predict_n(&[0.3], 100), model.predict(&[0.3]));
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn predict_n_unchecked_partial() {
+        let stump = vec![
+            Node {
+                feature_idx: 0,
+                left: 1,
+                right: 2,
+                flags: 0,
+                value: 0.5,
+            },
+            Node {
+                feature_idx: LEAF_SENTINEL,
+                left: 0,
+                right: 0,
+                flags: 0,
+                value: -1.0,
+            },
+            Node {
+                feature_idx: LEAF_SENTINEL,
+                left: 0,
+                right: 0,
+                flags: 0,
+                value: 1.0,
+            },
+        ];
+        let model = GbdtF64::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 5.0);
+        assert_eq!(model.predict_n_unchecked(&[0.3], 2), 5.0 + -2.0);
+        assert_eq!(
+            model.predict_n_unchecked(&[0.3], 100),
+            model.predict_unchecked(&[0.3])
+        );
     }
 
     #[test]
@@ -374,7 +433,7 @@ mod tests {
                 value: 4.0,
             },
         ];
-        let model = GbdtF64::from_raw(vec![nodes], 2, 0.0);
+        let model = GbdtF64::from_parts(vec![nodes], 2, 0.0);
         // f[0]=3 <= 5 → left, f[1]=1 <= 2 → left → leaf0 = -4.0
         assert_eq!(model.predict(&[3.0, 1.0]), -4.0);
         // f[0]=3 <= 5 → left, f[1]=3 > 2 → right → leaf1 = -2.0
@@ -412,7 +471,7 @@ mod tests {
                 value: 1.0,
             },
         ];
-        let model = GbdtF64::from_raw(vec![nodes], 1, 0.0);
+        let model = GbdtF64::from_parts(vec![nodes], 1, 0.0);
         assert_eq!(model.predict(&[f64::NAN]), -1.0);
     }
 
@@ -443,7 +502,7 @@ mod tests {
                 value: 1.0,
             },
         ];
-        let model = GbdtF64::from_raw(vec![nodes], 1, 0.0);
+        let model = GbdtF64::from_parts(vec![nodes], 1, 0.0);
         assert_eq!(model.predict(&[f64::NAN]), 1.0);
     }
 
@@ -474,7 +533,7 @@ mod tests {
                 value: 1.0,
             },
         ];
-        let model = GbdtF64::from_raw(vec![nodes], 1, 0.0);
+        let model = GbdtF64::from_parts(vec![nodes], 1, 0.0);
         assert_eq!(model.predict_unchecked(&[f64::NAN]), 1.0);
     }
 
@@ -512,7 +571,7 @@ mod tests {
                 value: 1.0,
             },
         ];
-        let model = GbdtF32::from_raw(vec![nodes], 1, 0.0_f32);
+        let model = GbdtF32::from_parts(vec![nodes], 1, 0.0_f32);
         assert_eq!(model.predict(&[0.3_f32]), -1.0_f32);
         assert_eq!(model.predict(&[0.8_f32]), 1.0_f32);
     }

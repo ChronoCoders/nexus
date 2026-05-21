@@ -3,6 +3,10 @@
 // - internal_value / internal_weight / internal_count: training diagnostics
 // - leaf_weight / leaf_count: training metadata
 // - shrinkage: already baked into leaf_value by LightGBM during training
+//
+// Rejected features (produce LoadError::Validation):
+// - num_cat > 0: categorical splits not supported
+// - is_linear > 0: linear tree inference requires leaf_const/leaf_coeff/leaf_features
 
 use alloc::{vec, vec::Vec};
 
@@ -22,6 +26,7 @@ struct TreeBlock {
 fn parse_tree_block(lines: &[&str]) -> Result<TreeBlock, LoadError> {
     let mut num_leaves: Option<usize> = None;
     let mut num_cat: Option<usize> = None;
+    let mut is_linear: Option<usize> = None;
     let mut split_feature: Option<Vec<usize>> = None;
     let mut threshold: Option<Vec<f64>> = None;
     let mut decision_type: Option<Vec<u8>> = None;
@@ -49,6 +54,12 @@ fn parse_tree_block(lines: &[&str]) -> Result<TreeBlock, LoadError> {
                 num_cat = Some(
                     val.parse::<usize>()
                         .map_err(|_| LoadError::Parse("invalid num_cat"))?,
+                );
+            }
+            "is_linear" => {
+                is_linear = Some(
+                    val.parse::<usize>()
+                        .map_err(|_| LoadError::Parse("invalid is_linear"))?,
                 );
             }
             "split_feature" => {
@@ -79,13 +90,32 @@ fn parse_tree_block(lines: &[&str]) -> Result<TreeBlock, LoadError> {
         }
     }
 
+    if let Some(il) = is_linear {
+        if il > 0 {
+            return Err(LoadError::Validation("linear trees not supported"));
+        }
+    }
+
     let num_leaves = num_leaves.ok_or(LoadError::Parse("missing num_leaves in tree block"))?;
+
+    if num_leaves < 2 {
+        return Err(LoadError::Validation("num_leaves must be >= 2"));
+    }
+
+    let decision_type =
+        decision_type.ok_or(LoadError::Parse("missing decision_type"))?;
+
+    for &dt in &decision_type {
+        if dt & 1 != 0 {
+            return Err(LoadError::Validation("categorical splits not supported"));
+        }
+    }
 
     Ok(TreeBlock {
         num_leaves,
         split_feature: split_feature.ok_or(LoadError::Parse("missing split_feature"))?,
         threshold: threshold.ok_or(LoadError::Parse("missing threshold"))?,
-        decision_type: decision_type.ok_or(LoadError::Parse("missing decision_type"))?,
+        decision_type,
         left_child: left_child.ok_or(LoadError::Parse("missing left_child"))?,
         right_child: right_child.ok_or(LoadError::Parse("missing right_child"))?,
         leaf_value: leaf_value.ok_or(LoadError::Parse("missing leaf_value"))?,
@@ -95,6 +125,13 @@ fn parse_tree_block(lines: &[&str]) -> Result<TreeBlock, LoadError> {
 fn convert_tree(block: &TreeBlock, n_features: usize) -> Result<Vec<Node>, LoadError> {
     let num_internal = block.num_leaves - 1;
     let total_nodes = 2 * block.num_leaves - 1;
+
+    if n_features > LEAF_SENTINEL as usize {
+        return Err(LoadError::Validation("n_features exceeds u16 limit"));
+    }
+    if total_nodes > u16::MAX as usize + 1 {
+        return Err(LoadError::Validation("tree too large for u16 node indices"));
+    }
 
     if block.split_feature.len() != num_internal {
         return Err(LoadError::Validation("split_feature length mismatch"));
@@ -228,11 +265,10 @@ fn parse_model(bytes: &[u8]) -> Result<(Vec<Vec<Node>>, usize, f64), LoadError> 
         return Err(LoadError::Validation("multi-class not supported"));
     }
 
-    let n_features = max_feature_idx.ok_or(LoadError::Parse("missing max_feature_idx"))? + 1;
-
-    if n_features == 0 {
-        return Err(LoadError::Validation("n_features must be > 0"));
-    }
+    let n_features = max_feature_idx
+        .ok_or(LoadError::Parse("missing max_feature_idx"))?
+        .checked_add(1)
+        .ok_or(LoadError::Validation("max_feature_idx overflow"))?;
 
     // Parse tree blocks
     while i < lines.len() {
@@ -313,10 +349,9 @@ impl GbdtF64 {
     /// Returns [`LoadError::Parse`] if the file format is malformed.
     /// Returns [`LoadError::Validation`] if the model uses unsupported
     /// features (categorical splits, multi-class).
-    #[cfg(feature = "loader-lightgbm")]
     pub fn from_lightgbm(bytes: &[u8]) -> Result<Self, LoadError> {
         let (trees, n_features, base_score) = parse_model(bytes)?;
-        Ok(Self::from_raw(trees, n_features, base_score))
+        Ok(Self::from_parts(trees, n_features, base_score))
     }
 }
 
@@ -328,10 +363,9 @@ impl GbdtF32 {
     /// Returns [`LoadError::Parse`] if the file format is malformed.
     /// Returns [`LoadError::Validation`] if the model uses unsupported
     /// features (categorical splits, multi-class).
-    #[cfg(feature = "loader-lightgbm")]
     pub fn from_lightgbm(bytes: &[u8]) -> Result<Self, LoadError> {
         let (trees, n_features, base_score) = parse_model(bytes)?;
-        Ok(Self::from_raw(trees, n_features, base_score as f32))
+        Ok(Self::from_parts(trees, n_features, base_score as f32))
     }
 }
 
@@ -609,5 +643,31 @@ end of trees
         assert_eq!(model.n_features(), 3);
         let p = model.predict(&[3.0_f32, 1.0_f32, 0.0_f32]);
         assert!((p - (0.5_f32 + -0.3_f32)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn parse_rejects_linear_tree() {
+        let model_text = "\
+tree
+version=v4
+num_class=1
+max_feature_idx=0
+average_output=0.0
+
+Tree=0
+num_leaves=2
+num_cat=0
+is_linear=1
+split_feature=0
+threshold=5.0
+decision_type=0
+left_child=-1
+right_child=-2
+leaf_value=-1.0 1.0
+
+end of trees
+";
+        let err = GbdtF64::from_lightgbm(model_text.as_bytes()).unwrap_err();
+        assert_eq!(err, LoadError::Validation("linear trees not supported"));
     }
 }

@@ -4,8 +4,8 @@
 //! ML inference engine for pre-trained models.
 //!
 //! This crate provides low-latency inference for models trained in
-//! external frameworks (LightGBM, XGBoost). No training — just fast
-//! prediction on the hot path.
+//! external frameworks (LightGBM). No training — just fast prediction
+//! on the hot path.
 //!
 //! # Available Types
 //!
