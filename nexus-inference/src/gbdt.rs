@@ -130,14 +130,15 @@ macro_rules! impl_gbdt {
         }
 
         impl $name {
-            /// Predict with NaN routing (LightGBM-compatible).
+            /// Predict the ensemble score.
             ///
             /// Returns the raw ensemble score (base score + sum of leaf values).
             /// For classification objectives, apply the appropriate link function
             /// (e.g., sigmoid for binary classification).
             ///
-            /// NaN features are routed via the learned default direction at each
-            /// split node. Matches LightGBM's inference behavior.
+            /// NaN features always route right (`NaN <= threshold` is false).
+            /// Use [`predict_nan_aware`](Self::predict_nan_aware) for learned
+            /// NaN routing.
             ///
             /// # Panics
             ///
@@ -148,35 +149,32 @@ macro_rules! impl_gbdt {
                 let mut score = self.base_score;
                 for &offset in &*self.tree_offsets {
                     // SAFETY: offset is the validated start of a tree within self.nodes.
-                    score += Self::walk_tree(unsafe { base.add(offset as usize) }, features, true);
-                }
-                score
-            }
-
-            /// Predict without NaN checks. Caller guarantees all features are finite.
-            ///
-            /// Returns the raw ensemble score (base score + sum of leaf values).
-            /// For classification objectives, apply the appropriate link function
-            /// (e.g., sigmoid for binary classification).
-            ///
-            /// NaN features produce undefined output (IEEE 754: `NaN <= threshold`
-            /// is always false, so NaN always routes right).
-            ///
-            /// # Panics
-            ///
-            /// Panics if `features.len() != self.n_features()`.
-            pub fn predict_unchecked(&self, features: &[$ty]) -> $ty {
-                assert_eq!(features.len(), self.n_features);
-                let base = self.nodes.as_ptr();
-                let mut score = self.base_score;
-                for &offset in &*self.tree_offsets {
-                    // SAFETY: offset is the validated start of a tree within self.nodes.
                     score += Self::walk_tree(unsafe { base.add(offset as usize) }, features, false);
                 }
                 score
             }
 
-            /// Evaluate only the first `n_trees` trees with NaN routing.
+            /// Predict with NaN routing (LightGBM-compatible).
+            ///
+            /// NaN features are routed via the learned default direction at each
+            /// split node. Matches LightGBM's inference behavior. Use this when
+            /// features may contain NaN (missing values).
+            ///
+            /// # Panics
+            ///
+            /// Panics if `features.len() != self.n_features()`.
+            pub fn predict_nan_aware(&self, features: &[$ty]) -> $ty {
+                assert_eq!(features.len(), self.n_features);
+                let base = self.nodes.as_ptr();
+                let mut score = self.base_score;
+                for &offset in &*self.tree_offsets {
+                    // SAFETY: offset is the validated start of a tree within self.nodes.
+                    score += Self::walk_tree(unsafe { base.add(offset as usize) }, features, true);
+                }
+                score
+            }
+
+            /// Evaluate only the first `n_trees` trees.
             ///
             /// Clamped to `self.n_trees()` if `n_trees` exceeds the ensemble size.
             pub fn predict_n(&self, features: &[$ty], n_trees: usize) -> $ty {
@@ -186,23 +184,22 @@ macro_rules! impl_gbdt {
                 let mut score = self.base_score;
                 for &offset in &self.tree_offsets[..n] {
                     // SAFETY: offset is the validated start of a tree within self.nodes.
-                    score += Self::walk_tree(unsafe { base.add(offset as usize) }, features, true);
+                    score += Self::walk_tree(unsafe { base.add(offset as usize) }, features, false);
                 }
                 score
             }
 
-            /// Evaluate only the first `n_trees` trees without NaN checks.
+            /// Evaluate only the first `n_trees` trees with NaN routing.
             ///
             /// Clamped to `self.n_trees()` if `n_trees` exceeds the ensemble size.
-            /// Caller guarantees all features are finite.
-            pub fn predict_n_unchecked(&self, features: &[$ty], n_trees: usize) -> $ty {
+            pub fn predict_n_nan_aware(&self, features: &[$ty], n_trees: usize) -> $ty {
                 assert_eq!(features.len(), self.n_features);
                 let n = n_trees.min(self.tree_offsets.len());
                 let base = self.nodes.as_ptr();
                 let mut score = self.base_score;
                 for &offset in &self.tree_offsets[..n] {
                     // SAFETY: offset is the validated start of a tree within self.nodes.
-                    score += Self::walk_tree(unsafe { base.add(offset as usize) }, features, false);
+                    score += Self::walk_tree(unsafe { base.add(offset as usize) }, features, true);
                 }
                 score
             }
@@ -220,6 +217,33 @@ macro_rules! impl_gbdt {
             /// Base score (initial prediction before tree contributions).
             pub fn base_score(&self) -> $ty {
                 self.base_score
+            }
+
+            /// Number of outputs. Always 1 for GBDT.
+            pub fn n_outputs(&self) -> usize {
+                1
+            }
+
+            /// Write prediction to output buffer.
+            ///
+            /// # Panics
+            ///
+            /// Panics if `features.len() != self.n_features()` or
+            /// `output.len() != 1`.
+            pub fn predict_into(&self, features: &[$ty], output: &mut [$ty]) {
+                assert_eq!(output.len(), 1);
+                output[0] = self.predict(features);
+            }
+
+            /// Write prediction to output buffer with NaN routing.
+            ///
+            /// # Panics
+            ///
+            /// Panics if `features.len() != self.n_features()` or
+            /// `output.len() != 1`.
+            pub fn predict_into_nan_aware(&self, features: &[$ty], output: &mut [$ty]) {
+                assert_eq!(output.len(), 1);
+                output[0] = self.predict_nan_aware(features);
             }
 
             /// # Safety
@@ -248,11 +272,7 @@ macro_rules! impl_gbdt {
                     } else {
                         feat <= node.value as $ty
                     };
-                    idx = if go_left {
-                        node.left as usize
-                    } else {
-                        idx + 1
-                    };
+                    idx = if go_left { node.left as usize } else { idx + 1 };
                 }
             }
 
@@ -265,6 +285,17 @@ macro_rules! impl_gbdt {
                 let total: usize = trees.iter().map(|t| t.len()).sum();
                 let mut nodes = Vec::with_capacity(total);
                 let mut tree_offsets = Vec::with_capacity(trees.len());
+                for tree in &trees {
+                    for node in tree {
+                        assert!(
+                            node.feature_idx == LEAF_SENTINEL
+                                || (node.feature_idx as usize) < n_features,
+                            "feature_idx {} out of range for n_features {}",
+                            node.feature_idx,
+                            n_features,
+                        );
+                    }
+                }
                 for tree in trees {
                     tree_offsets.push(nodes.len() as u32);
                     nodes.extend_from_slice(&reorder_and_compact(&tree));
@@ -378,18 +409,6 @@ mod tests {
 
     #[test]
     #[cfg(feature = "alloc")]
-    fn predict_n_unchecked_partial() {
-        let stump = vec![split(0, 1, 2, 0.5), leaf(-1.0), leaf(1.0)];
-        let model = GbdtF64::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 5.0);
-        assert_eq!(model.predict_n_unchecked(&[0.3], 2), 5.0 + -2.0);
-        assert_eq!(
-            model.predict_n_unchecked(&[0.3], 100),
-            model.predict_unchecked(&[0.3])
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "alloc")]
     fn deeper_tree() {
         // depth-3 tree on 2 features:
         //        node0: f[0] <= 5.0
@@ -433,7 +452,7 @@ mod tests {
             leaf(1.0),
         ];
         let model = GbdtF64::from_parts(vec![nodes], 1, 0.0);
-        assert_eq!(model.predict(&[f64::NAN]), -1.0);
+        assert_eq!(model.predict_nan_aware(&[f64::NAN]), -1.0);
     }
 
     #[test]
@@ -441,26 +460,26 @@ mod tests {
     fn nan_routing_default_right() {
         let nodes = vec![split(0, 1, 2, 0.5), leaf(-1.0), leaf(1.0)];
         let model = GbdtF64::from_parts(vec![nodes], 1, 0.0);
-        assert_eq!(model.predict(&[f64::NAN]), 1.0);
+        assert_eq!(model.predict_nan_aware(&[f64::NAN]), 1.0);
     }
 
     #[test]
     #[cfg(feature = "alloc")]
-    fn nan_unchecked_goes_right() {
-        // predict_unchecked: NaN <= threshold is false → always right
+    fn nan_goes_right() {
+        // predict: NaN <= threshold is false → always right
         let nodes = vec![
             RawNode {
                 feature_idx: 0,
                 left: 1,
                 right: 2,
-                default_left: true, // ignored by unchecked
+                default_left: true, // ignored by predict
                 value: 0.5,
             },
             leaf(-1.0),
             leaf(1.0),
         ];
         let model = GbdtF64::from_parts(vec![nodes], 1, 0.0);
-        assert_eq!(model.predict_unchecked(&[f64::NAN]), 1.0);
+        assert_eq!(model.predict(&[f64::NAN]), 1.0);
     }
 
     #[test]
@@ -486,6 +505,27 @@ mod tests {
         let model = single_stump(2.5);
         assert_eq!(model.n_trees(), 1);
         assert_eq!(model.n_features(), 1);
+        assert_eq!(model.n_outputs(), 1);
         assert_eq!(model.base_score(), 2.5);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn predict_into_matches() {
+        let model = single_stump(0.0);
+        let mut out = [0.0_f64];
+        model.predict_into(&[0.3], &mut out);
+        assert_eq!(out[0], model.predict(&[0.3]));
+        model.predict_into(&[0.8], &mut out);
+        assert_eq!(out[0], model.predict(&[0.8]));
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    #[should_panic]
+    fn predict_into_wrong_output_len() {
+        let model = single_stump(0.0);
+        let mut out = [0.0_f64; 2];
+        model.predict_into(&[0.3], &mut out);
     }
 }

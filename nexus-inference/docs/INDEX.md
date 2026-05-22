@@ -1,9 +1,54 @@
 # nexus-inference
 
-ML inference engine for pre-trained models.
+ML inference engine for pre-trained models. Low-latency prediction
+on the hot path — no training, no Python, no allocation after setup.
+
+Models are trained externally (LightGBM, PyTorch, scikit-learn, etc.),
+loaded once at startup via `from_parts()`, and served immutably with
+`&self` prediction methods.
+
+## Model Types
+
+| Type | What it is | Prediction cost | Use case |
+|------|-----------|----------------|----------|
+| [GBDT](algorithms/gbdt.md) | Gradient-boosted decision tree ensemble | ~5 cycles/node | Tabular features, risk signals |
+| [MLP](algorithms/mlp.md) | Feedforward neural network | ~0.5 ns/FMA | Nonlinear combinations, embeddings |
+| [LUT](algorithms/lut.md) | Discretized lookup table | ~5-8 ns total | Pre-computed surfaces, fast approximation |
+
+## Guides
+
+- [Quickstart](guides/quickstart.md) — Load a model, make predictions, handle errors
+- [Choosing a Model Type](guides/choosing.md) — Decision tree: GBDT vs MLP vs LUT
+- [NaN Handling](guides/nan-handling.md) — Checked vs unchecked contracts per type
+- [no_std Support](guides/no-std.md) — Feature flags: `alloc`, `std`, `libm`
+- [Exporting from Python](guides/python-export.md) — Get weights out of PyTorch/LightGBM into `from_parts()`
+
+## Reference
+
+- [Performance](reference/performance.md) — Benchmark results, complexity analysis
+
+## Use Cases
+
+- [Trading Systems](use-cases/trading.md) — Feature pipeline to inference to execution
 
 ## Crate Layout
 
-- `src/gbdt.rs` — `GbdtF64` / `GbdtF32` ensemble types and prediction
-- `src/loader/lightgbm.rs` — LightGBM text format parser
-- `src/error.rs` — `LoadError` type
+```
+src/
+├── lib.rs              — Public API, re-exports
+├── error.rs            — LoadError
+├── gbdt.rs             — GbdtF64/F32, Node, RawNode, reorder_and_compact
+├── mlp.rs              — MlpF64/F32, Activation
+├── lut.rs              — LutF64/F32, checked_pow
+└── loader/
+    └── lightgbm.rs     — LightGBM text format parser
+```
+
+## Feature Flags
+
+| Flag | Default | Enables |
+|------|---------|---------|
+| `std` | Yes | Standard library (implies `alloc`) |
+| `alloc` | Via `std` | All model types (`Box`, `Vec`) |
+| `libm` | No | `Tanh`/`Sigmoid` activations in no_std (implies `alloc`) |
+| `loader-lightgbm` | No | `GbdtF64::from_lightgbm()` parser (implies `alloc`) |
