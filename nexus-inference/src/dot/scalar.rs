@@ -39,3 +39,25 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     }
     (s0 + s2) + (s1 + s3)
 }
+
+#[inline]
+pub fn dot4_f64(rows: &[f64], input: &[f64]) -> [f64; 4] {
+    let n = input.len();
+    [
+        dot_f64(&rows[..n], input),
+        dot_f64(&rows[n..2 * n], input),
+        dot_f64(&rows[2 * n..3 * n], input),
+        dot_f64(&rows[3 * n..4 * n], input),
+    ]
+}
+
+#[inline]
+pub fn dot4_f32(rows: &[f32], input: &[f32]) -> [f32; 4] {
+    let n = input.len();
+    [
+        dot_f32(&rows[..n], input),
+        dot_f32(&rows[n..2 * n], input),
+        dot_f32(&rows[2 * n..3 * n], input),
+        dot_f32(&rows[3 * n..4 * n], input),
+    ]
+}

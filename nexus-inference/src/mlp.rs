@@ -26,7 +26,7 @@ pub enum Activation {
 
 #[cfg(feature = "alloc")]
 macro_rules! impl_mlp {
-    ($name:ident, $ty:ty, $dot_fn:path) => {
+    ($name:ident, $ty:ty, $dot_fn:path, $dot4_fn:path) => {
         /// Feedforward neural network (multi-layer perceptron).
         ///
         /// Immutable after construction. All prediction methods take `&self`.
@@ -201,8 +201,29 @@ macro_rules! impl_mlp {
                     let in_size = self.layer_sizes[layer] as usize;
                     let out_size = self.layer_sizes[layer + 1] as usize;
                     let is_last = layer == n_layers - 1;
+                    let out_size_4 = out_size & !3;
 
-                    for j in 0..out_size {
+                    let mut j = 0;
+                    while j < out_size_4 {
+                        let rows = &self.weights[w_offset + j * in_size..w_offset + (j + 4) * in_size];
+                        let src = if src_is_a { &self.scratch_a[..in_size] } else { &self.scratch_b[..in_size] };
+                        let dots = $dot4_fn(rows, src);
+                        for k in 0..4 {
+                            let mut sum = self.biases[b_offset + j + k] + dots[k];
+                            if !is_last {
+                                sum = Self::activate(sum, self.activation);
+                            }
+                            if is_last {
+                                output[j + k] = sum;
+                            } else if src_is_a {
+                                self.scratch_b[j + k] = sum;
+                            } else {
+                                self.scratch_a[j + k] = sum;
+                            }
+                        }
+                        j += 4;
+                    }
+                    while j < out_size {
                         let row = &self.weights[w_offset + j * in_size..w_offset + (j + 1) * in_size];
                         let src = if src_is_a { &self.scratch_a[..in_size] } else { &self.scratch_b[..in_size] };
                         let mut sum = self.biases[b_offset + j] + $dot_fn(row, src);
@@ -216,6 +237,7 @@ macro_rules! impl_mlp {
                         } else {
                             self.scratch_a[j] = sum;
                         }
+                        j += 1;
                     }
 
                     w_offset += in_size * out_size;
@@ -276,9 +298,9 @@ macro_rules! impl_mlp {
 }
 
 #[cfg(feature = "alloc")]
-impl_mlp!(MlpF64, f64, crate::dot::dot_f64);
+impl_mlp!(MlpF64, f64, crate::dot::dot_f64, crate::dot::dot4_f64);
 #[cfg(feature = "alloc")]
-impl_mlp!(MlpF32, f32, crate::dot::dot_f32);
+impl_mlp!(MlpF32, f32, crate::dot::dot_f32, crate::dot::dot4_f32);
 
 #[cfg(test)]
 mod tests {

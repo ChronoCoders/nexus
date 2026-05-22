@@ -5,6 +5,32 @@ use super::scalar;
 
 #[inline]
 #[cfg(target_arch = "x86_64")]
+unsafe fn hsum_f64(v: __m256d) -> f64 {
+    unsafe {
+        let hi = _mm256_extractf128_pd(v, 1);
+        let lo = _mm256_castpd256_pd128(v);
+        let pair = _mm_add_pd(lo, hi);
+        let high_lane = _mm_unpackhi_pd(pair, pair);
+        _mm_cvtsd_f64(_mm_add_sd(pair, high_lane))
+    }
+}
+
+#[inline]
+#[cfg(target_arch = "x86_64")]
+unsafe fn hsum_f32(v: __m256) -> f32 {
+    unsafe {
+        let hi = _mm256_extractf128_ps(v, 1);
+        let lo = _mm256_castps256_ps128(v);
+        let sum128 = _mm_add_ps(lo, hi);
+        let shuf = _mm_movehdup_ps(sum128);
+        let sums = _mm_add_ps(sum128, shuf);
+        let shuf2 = _mm_movehl_ps(sums, sums);
+        _mm_cvtss_f32(_mm_add_ss(sums, shuf2))
+    }
+}
+
+#[inline]
+#[cfg(target_arch = "x86_64")]
 pub fn dot_f64(a: &[f64], b: &[f64]) -> f64 {
     let len = a.len();
     let mut i = 0;
@@ -45,11 +71,7 @@ pub fn dot_f64(a: &[f64], b: &[f64]) -> f64 {
             _mm256_add_pd(acc2, acc3),
         );
 
-        let hi = _mm256_extractf128_pd(acc0, 1);
-        let lo = _mm256_castpd256_pd128(acc0);
-        let pair = _mm_add_pd(lo, hi);
-        let high_lane = _mm_unpackhi_pd(pair, pair);
-        _mm_cvtsd_f64(_mm_add_sd(pair, high_lane))
+        hsum_f64(acc0)
     };
 
     sum + scalar::dot_f64(&a[i..], &b[i..])
@@ -97,14 +119,152 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
             _mm256_add_ps(acc2, acc3),
         );
 
-        let hi = _mm256_extractf128_ps(acc0, 1);
-        let lo = _mm256_castps256_ps128(acc0);
-        let sum128 = _mm_add_ps(lo, hi);
-        let shuf = _mm_movehdup_ps(sum128);
-        let sums = _mm_add_ps(sum128, shuf);
-        let shuf2 = _mm_movehl_ps(sums, sums);
-        _mm_cvtss_f32(_mm_add_ss(sums, shuf2))
+        hsum_f32(acc0)
     };
 
     sum + scalar::dot_f32(&a[i..], &b[i..])
+}
+
+/// 4 simultaneous f64 dot products sharing input loads.
+/// 2 accumulators per neuron (8 total) to hide FMA latency.
+#[inline]
+#[cfg(target_arch = "x86_64")]
+pub fn dot4_f64(rows: &[f64], input: &[f64]) -> [f64; 4] {
+    let in_size = input.len();
+    let mut i = 0;
+
+    // SAFETY: AVX2+FMA guaranteed by target_feature cfg on parent module.
+    // Row pointers: rows.len() == 4 * in_size, offsets k * in_size + i where k < 4.
+    // Input pointer: i + N <= in_size before every access.
+    let sums = unsafe {
+        let mut a0a = _mm256_setzero_pd();
+        let mut a0b = _mm256_setzero_pd();
+        let mut a1a = _mm256_setzero_pd();
+        let mut a1b = _mm256_setzero_pd();
+        let mut a2a = _mm256_setzero_pd();
+        let mut a2b = _mm256_setzero_pd();
+        let mut a3a = _mm256_setzero_pd();
+        let mut a3b = _mm256_setzero_pd();
+
+        let r0 = rows.as_ptr();
+        let r1 = r0.add(in_size);
+        let r2 = r1.add(in_size);
+        let r3 = r2.add(in_size);
+        let inp = input.as_ptr();
+
+        while i + 8 <= in_size {
+            let x0 = _mm256_loadu_pd(inp.add(i));
+            let x1 = _mm256_loadu_pd(inp.add(i + 4));
+
+            a0a = _mm256_fmadd_pd(_mm256_loadu_pd(r0.add(i)), x0, a0a);
+            a0b = _mm256_fmadd_pd(_mm256_loadu_pd(r0.add(i + 4)), x1, a0b);
+            a1a = _mm256_fmadd_pd(_mm256_loadu_pd(r1.add(i)), x0, a1a);
+            a1b = _mm256_fmadd_pd(_mm256_loadu_pd(r1.add(i + 4)), x1, a1b);
+            a2a = _mm256_fmadd_pd(_mm256_loadu_pd(r2.add(i)), x0, a2a);
+            a2b = _mm256_fmadd_pd(_mm256_loadu_pd(r2.add(i + 4)), x1, a2b);
+            a3a = _mm256_fmadd_pd(_mm256_loadu_pd(r3.add(i)), x0, a3a);
+            a3b = _mm256_fmadd_pd(_mm256_loadu_pd(r3.add(i + 4)), x1, a3b);
+
+            i += 8;
+        }
+
+        if i + 4 <= in_size {
+            let x = _mm256_loadu_pd(inp.add(i));
+            a0a = _mm256_fmadd_pd(_mm256_loadu_pd(r0.add(i)), x, a0a);
+            a1a = _mm256_fmadd_pd(_mm256_loadu_pd(r1.add(i)), x, a1a);
+            a2a = _mm256_fmadd_pd(_mm256_loadu_pd(r2.add(i)), x, a2a);
+            a3a = _mm256_fmadd_pd(_mm256_loadu_pd(r3.add(i)), x, a3a);
+            i += 4;
+        }
+
+        a0a = _mm256_add_pd(a0a, a0b);
+        a1a = _mm256_add_pd(a1a, a1b);
+        a2a = _mm256_add_pd(a2a, a2b);
+        a3a = _mm256_add_pd(a3a, a3b);
+
+        [hsum_f64(a0a), hsum_f64(a1a), hsum_f64(a2a), hsum_f64(a3a)]
+    };
+
+    // Scalar tail (0-3 remaining elements)
+    let mut out = sums;
+    for k in i..in_size {
+        let x = input[k];
+        out[0] += rows[k] * x;
+        out[1] += rows[in_size + k] * x;
+        out[2] += rows[2 * in_size + k] * x;
+        out[3] += rows[3 * in_size + k] * x;
+    }
+    out
+}
+
+/// 4 simultaneous f32 dot products sharing input loads.
+/// 2 accumulators per neuron (8 total) to hide FMA latency.
+#[inline]
+#[cfg(target_arch = "x86_64")]
+pub fn dot4_f32(rows: &[f32], input: &[f32]) -> [f32; 4] {
+    let in_size = input.len();
+    let mut i = 0;
+
+    // SAFETY: AVX2+FMA guaranteed by target_feature cfg on parent module.
+    // Row pointers: rows.len() == 4 * in_size, offsets k * in_size + i where k < 4.
+    // Input pointer: i + N <= in_size before every access.
+    let sums = unsafe {
+        let mut a0a = _mm256_setzero_ps();
+        let mut a0b = _mm256_setzero_ps();
+        let mut a1a = _mm256_setzero_ps();
+        let mut a1b = _mm256_setzero_ps();
+        let mut a2a = _mm256_setzero_ps();
+        let mut a2b = _mm256_setzero_ps();
+        let mut a3a = _mm256_setzero_ps();
+        let mut a3b = _mm256_setzero_ps();
+
+        let r0 = rows.as_ptr();
+        let r1 = r0.add(in_size);
+        let r2 = r1.add(in_size);
+        let r3 = r2.add(in_size);
+        let inp = input.as_ptr();
+
+        while i + 16 <= in_size {
+            let x0 = _mm256_loadu_ps(inp.add(i));
+            let x1 = _mm256_loadu_ps(inp.add(i + 8));
+
+            a0a = _mm256_fmadd_ps(_mm256_loadu_ps(r0.add(i)), x0, a0a);
+            a0b = _mm256_fmadd_ps(_mm256_loadu_ps(r0.add(i + 8)), x1, a0b);
+            a1a = _mm256_fmadd_ps(_mm256_loadu_ps(r1.add(i)), x0, a1a);
+            a1b = _mm256_fmadd_ps(_mm256_loadu_ps(r1.add(i + 8)), x1, a1b);
+            a2a = _mm256_fmadd_ps(_mm256_loadu_ps(r2.add(i)), x0, a2a);
+            a2b = _mm256_fmadd_ps(_mm256_loadu_ps(r2.add(i + 8)), x1, a2b);
+            a3a = _mm256_fmadd_ps(_mm256_loadu_ps(r3.add(i)), x0, a3a);
+            a3b = _mm256_fmadd_ps(_mm256_loadu_ps(r3.add(i + 8)), x1, a3b);
+
+            i += 16;
+        }
+
+        if i + 8 <= in_size {
+            let x = _mm256_loadu_ps(inp.add(i));
+            a0a = _mm256_fmadd_ps(_mm256_loadu_ps(r0.add(i)), x, a0a);
+            a1a = _mm256_fmadd_ps(_mm256_loadu_ps(r1.add(i)), x, a1a);
+            a2a = _mm256_fmadd_ps(_mm256_loadu_ps(r2.add(i)), x, a2a);
+            a3a = _mm256_fmadd_ps(_mm256_loadu_ps(r3.add(i)), x, a3a);
+            i += 8;
+        }
+
+        a0a = _mm256_add_ps(a0a, a0b);
+        a1a = _mm256_add_ps(a1a, a1b);
+        a2a = _mm256_add_ps(a2a, a2b);
+        a3a = _mm256_add_ps(a3a, a3b);
+
+        [hsum_f32(a0a), hsum_f32(a1a), hsum_f32(a2a), hsum_f32(a3a)]
+    };
+
+    // Scalar tail (0-7 remaining elements)
+    let mut out = sums;
+    for k in i..in_size {
+        let x = input[k];
+        out[0] += rows[k] * x;
+        out[1] += rows[in_size + k] * x;
+        out[2] += rows[2 * in_size + k] * x;
+        out[3] += rows[3 * in_size + k] * x;
+    }
+    out
 }
