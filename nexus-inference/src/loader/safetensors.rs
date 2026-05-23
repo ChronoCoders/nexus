@@ -179,7 +179,12 @@ impl crate::TinyLstmF32 {
         let hidden_size = wih_shape[0] / 4;
         let input_size = wih_shape[1];
 
-        let weight_hh = extract_f32(&st, &whh_name)?;
+        let (weight_hh, whh_shape) = extract_f32_2d(&st, &whh_name)?;
+        if whh_shape != [4 * hidden_size, hidden_size] {
+            return Err(LoadError::Validation(
+                "weight_hh_l0 shape mismatch (expected [4*hidden, hidden])",
+            ));
+        }
         let bias_ih = extract_f32_1d(&st, &bih_name)?;
         let bias_hh = extract_f32_1d(&st, &bhh_name)?;
         let (w_out, wo_shape) = extract_f32_2d(&st, &wo_name)?;
@@ -248,7 +253,12 @@ impl crate::TinyGruF32 {
         let hidden_size = wih_shape[0] / 3;
         let input_size = wih_shape[1];
 
-        let weight_hh = extract_f32(&st, &whh_name)?;
+        let (weight_hh, whh_shape) = extract_f32_2d(&st, &whh_name)?;
+        if whh_shape != [3 * hidden_size, hidden_size] {
+            return Err(LoadError::Validation(
+                "weight_hh_l0 shape mismatch (expected [3*hidden, hidden])",
+            ));
+        }
         let bias_ih = extract_f32_1d(&st, &bih_name)?;
         let bias_hh = extract_f32_1d(&st, &bhh_name)?;
         let (w_out, wo_shape) = extract_f32_2d(&st, &wo_name)?;
@@ -270,25 +280,6 @@ impl crate::TinyGruF32 {
 }
 
 // ---- MLP loaders ----
-
-/// Raw f32 extraction without shape validation (for weight_hh which
-/// we only need as flat data — from_parts validates dimensions).
-fn extract_f32(st: &SafeTensors<'_>, name: &str) -> Result<Vec<f32>, LoadError> {
-    let tv = st
-        .tensor(name)
-        .map_err(|_| LoadError::TensorNotFound(String::from(name)))?;
-    if tv.dtype() != Dtype::F32 {
-        return Err(LoadError::Validation("expected F32 tensor"));
-    }
-    let bytes = tv.data();
-    if bytes.len() % 4 != 0 {
-        return Err(LoadError::Parse("F32 tensor data not aligned"));
-    }
-    Ok(bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect())
-}
 
 macro_rules! impl_mlp_safetensors {
     ($name:ident, $ty:ty, $extract_2d:ident, $extract_1d:ident) => {

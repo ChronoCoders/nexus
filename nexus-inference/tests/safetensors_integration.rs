@@ -62,6 +62,17 @@ fn expected_outputs(v: &serde_json::Value) -> Vec<Vec<f64>> {
         .collect()
 }
 
+fn parse_activation(v: &serde_json::Value) -> Activation {
+    match v["activation"].as_str().unwrap() {
+        "relu" => Activation::Relu,
+        "tanh" => Activation::Tanh,
+        "sigmoid" => Activation::Sigmoid,
+        "gelu" => Activation::Gelu,
+        "identity" => Activation::Identity,
+        other => panic!("unknown activation: {other}"),
+    }
+}
+
 fn assert_close(model: &str, step: usize, idx: usize, actual: f64, expected: f64, tol: f64) {
     let err = (actual - expected).abs();
     assert!(
@@ -129,7 +140,8 @@ fn mlp_f32_matches_pytorch() {
     let tol = exp["tolerance"].as_f64().unwrap();
 
     let mut mlp =
-        MlpF32::from_safetensors(&data, exp["prefix"].as_str().unwrap(), Activation::Relu).unwrap();
+        MlpF32::from_safetensors(&data, exp["prefix"].as_str().unwrap(), parse_activation(&exp))
+            .unwrap();
 
     for (i, (inp, exp_out)) in inputs_f32(&exp)
         .iter()
@@ -151,7 +163,8 @@ fn mlp_f64_matches_pytorch() {
     let tol = exp["tolerance"].as_f64().unwrap();
 
     let mut mlp =
-        MlpF64::from_safetensors(&data, exp["prefix"].as_str().unwrap(), Activation::Relu).unwrap();
+        MlpF64::from_safetensors(&data, exp["prefix"].as_str().unwrap(), parse_activation(&exp))
+            .unwrap();
 
     for (i, (inp, exp_out)) in inputs_f64(&exp)
         .iter()
@@ -176,7 +189,7 @@ fn conv1d_matches_pytorch() {
         &data,
         exp["conv_prefix"].as_str().unwrap(),
         exp["proj_prefix"].as_str().unwrap(),
-        Activation::Relu,
+        parse_activation(&exp),
     )
     .unwrap();
 
