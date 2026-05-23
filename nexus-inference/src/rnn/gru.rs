@@ -186,8 +186,12 @@ impl TinyGruF32 {
         let in_sz = self.input_size as usize;
         let hi = self.hidden_size as usize;
         let gate_count = 3 * hi;
-        assert_eq!(input.len(), in_sz);
-        assert_eq!(output.len(), self.output_size as usize);
+        assert_eq!(input.len(), in_sz, "input length must equal input_size");
+        assert_eq!(
+            output.len(),
+            self.output_size as usize,
+            "output length must equal output_size"
+        );
 
         // ih_scratch = weight_ih @ x
         matvec_f32(
@@ -446,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "input length")]
     fn step_panics_wrong_input_len() {
         let mut gru = make_gru(2, 2, 1, 0.1, 0.1, 0.0, 0.1);
         gru.step(&[1.0]);

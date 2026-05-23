@@ -529,6 +529,11 @@ impl crate::StackedGruF32 {
 
 /// Count consecutive `weight_ih_l{k}` tensors to detect num_layers.
 /// `gate_mult` is 4 for LSTM, 3 for GRU.
+///
+/// PyTorch emits layer weights as consecutive `weight_ih_l0..l{N-1}`.
+/// A gap in the sequence (e.g. `l0` and `l2` present but `l1` missing)
+/// means a malformed file or a wrong `rnn_prefix`. We reject it rather
+/// than silently load a truncated model from the consecutive prefix.
 fn count_rnn_layers(
     st: &SafeTensors<'_>,
     rnn_prefix: &str,
@@ -555,6 +560,20 @@ fn count_rnn_layers(
             prefixed(rnn_prefix, "weight_ih_l0"),
         ));
     }
+
+    // Reject orphaned higher-index layers past the consecutive run.
+    let stem = prefixed(rnn_prefix, "weight_ih_l");
+    for name in st.names() {
+        if let Some(suffix) = name.strip_prefix(stem.as_str())
+            && let Ok(idx) = suffix.parse::<usize>()
+            && idx >= num_layers
+        {
+            return Err(LoadError::Validation(
+                "non-consecutive RNN layer indices (gap in weight_ih_l{k})",
+            ));
+        }
+    }
+
     Ok(num_layers)
 }
 
@@ -1595,6 +1614,47 @@ mod tests {
 
         let lstm = crate::StackedLstmF32::from_safetensors(&data, "lstm", "fc").unwrap();
         assert_eq!(lstm.num_layers(), 1);
+    }
+
+    #[test]
+    #[cfg(any(feature = "std", feature = "libm"))]
+    fn stacked_lstm_rejects_non_consecutive_layers() {
+        // l0 and l2 present, l1 missing. A gap means a malformed file or
+        // wrong prefix; must error rather than silently load 1 layer.
+        let i = 4_usize;
+        let h = 8_usize;
+        let o = 1_usize;
+        let gc = 4 * h;
+
+        let wih_l0 = vec![0.1_f32; gc * i];
+        let whh = vec![0.1_f32; gc * h];
+        let bih = vec![0.0_f32; gc];
+        let bhh = vec![0.0_f32; gc];
+        let wo = vec![0.1_f32; o * h];
+        let bo = vec![0.0_f32; o];
+
+        let wih_l0_b = f32_bytes(&wih_l0);
+        let whh_b = f32_bytes(&whh);
+        let bih_b = f32_bytes(&bih);
+        let bhh_b = f32_bytes(&bhh);
+        let wo_b = f32_bytes(&wo);
+        let bo_b = f32_bytes(&bo);
+
+        let data = serialize_tensors(vec![
+            ("lstm.weight_ih_l0", make_view(Dtype::F32, &[gc, i], &wih_l0_b)),
+            ("lstm.weight_hh_l0", make_view(Dtype::F32, &[gc, h], &whh_b)),
+            ("lstm.bias_ih_l0", make_view(Dtype::F32, &[gc], &bih_b)),
+            ("lstm.bias_hh_l0", make_view(Dtype::F32, &[gc], &bhh_b)),
+            ("lstm.weight_ih_l2", make_view(Dtype::F32, &[gc, h], &whh_b)),
+            ("lstm.weight_hh_l2", make_view(Dtype::F32, &[gc, h], &whh_b)),
+            ("lstm.bias_ih_l2", make_view(Dtype::F32, &[gc], &bih_b)),
+            ("lstm.bias_hh_l2", make_view(Dtype::F32, &[gc], &bhh_b)),
+            ("fc.weight", make_view(Dtype::F32, &[o, h], &wo_b)),
+            ("fc.bias", make_view(Dtype::F32, &[o], &bo_b)),
+        ]);
+
+        let err = crate::StackedLstmF32::from_safetensors(&data, "lstm", "fc");
+        assert!(matches!(err, Err(LoadError::Validation(_))), "got {err:?}");
     }
 
     // ---- Stacked GRU ----

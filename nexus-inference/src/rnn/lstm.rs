@@ -203,8 +203,12 @@ impl TinyLstmF32 {
         let h = self.hidden_size as usize;
         let concat_size = i + h;
         let gate_count = 4 * h;
-        assert_eq!(input.len(), i);
-        assert_eq!(output.len(), self.output_size as usize);
+        assert_eq!(input.len(), i, "input length must equal input_size");
+        assert_eq!(
+            output.len(),
+            self.output_size as usize,
+            "output length must equal output_size"
+        );
 
         self.concat[..i].copy_from_slice(input);
         self.concat[i..concat_size].copy_from_slice(&self.h);
@@ -443,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "input length")]
     fn step_panics_wrong_input_len() {
         let mut lstm = make_lstm(2, 2, 1, 0.1, 0.1, 0.0, 0.1);
         lstm.step(&[1.0]);

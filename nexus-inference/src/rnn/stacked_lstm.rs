@@ -260,8 +260,16 @@ impl StackedLstmF32 {
     pub fn step_into(&mut self, input: &[f32], output: &mut [f32]) {
         let h = self.hidden_size as usize;
         let n = self.layers.len();
-        assert_eq!(input.len(), self.input_size as usize);
-        assert_eq!(output.len(), self.output_size as usize);
+        assert_eq!(
+            input.len(),
+            self.input_size as usize,
+            "input length must equal input_size"
+        );
+        assert_eq!(
+            output.len(),
+            self.output_size as usize,
+            "output length must equal output_size"
+        );
 
         self.layers[0].step(input, h);
 
@@ -561,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "input length")]
     fn step_panics_wrong_input_len() {
         let mut lstm = make_stacked_lstm(2, 4, 1, 2, 0.1);
         lstm.step(&[1.0]);
