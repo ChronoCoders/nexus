@@ -39,7 +39,7 @@ mod rnn;
 #[cfg(feature = "alloc")]
 mod conv;
 
-#[cfg(any(feature = "loader-lightgbm", feature = "loader-safetensors"))]
+#[cfg(any(feature = "loader-lightgbm", feature = "safetensors"))]
 mod loader;
 
 #[cfg(feature = "alloc")]

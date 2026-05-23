@@ -16,7 +16,7 @@ std = ["alloc"]
 alloc = []
 libm = ["alloc", "dep:libm"]
 loader-lightgbm = ["alloc"]
-loader-safetensors = ["alloc", "dep:safetensors"]
+safetensors = ["alloc", "dep:safetensors"]
 
 [dependencies]
 libm = { version = "0.2", optional = true }

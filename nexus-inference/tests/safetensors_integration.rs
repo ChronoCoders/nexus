@@ -1,4 +1,4 @@
-#![cfg(feature = "loader-safetensors")]
+#![cfg(feature = "safetensors")]
 
 use nexus_inference::*;
 
