@@ -314,6 +314,11 @@ macro_rules! impl_mlp_safetensors {
             /// layer at load time (requires `std` or `libm` for `sqrt`).
             /// Both `affine=True` (default) and `affine=False` are supported.
             ///
+            /// `LayerNorm` layers are detected by 1D `.weight` tensors
+            /// between linear layers (without `running_mean`). LayerNorm
+            /// is applied at inference time with eps=1e-5 (PyTorch default).
+            /// Requires `std` or `libm`.
+            ///
             /// # Errors
             ///
             /// Returns [`LoadError::Validation`] if layer dimensions are
@@ -340,6 +345,7 @@ macro_rules! impl_mlp_safetensors {
 
                 let mut layer_indices: Vec<usize> = Vec::new();
                 let mut batchnorm_indices: Vec<usize> = Vec::new();
+                let mut onedim_weight_indices: Vec<usize> = Vec::new();
                 for name in st.names() {
                     let suffix = if prefix.is_empty() {
                         name.as_ref()
@@ -354,6 +360,8 @@ macro_rules! impl_mlp_safetensors {
                             if let Ok(tv) = st.tensor(name) {
                                 if tv.shape().len() == 2 {
                                     layer_indices.push(idx);
+                                } else if tv.shape().len() == 1 {
+                                    onedim_weight_indices.push(idx);
                                 }
                             }
                         }
@@ -366,6 +374,10 @@ macro_rules! impl_mlp_safetensors {
                 }
                 layer_indices.sort_unstable();
                 batchnorm_indices.sort_unstable();
+                let layernorm_indices: Vec<usize> = onedim_weight_indices
+                    .into_iter()
+                    .filter(|i| !batchnorm_indices.contains(i))
+                    .collect();
 
                 if layer_indices.is_empty() {
                     return Err(LoadError::Parse("no linear layers found in safetensors"));
@@ -374,6 +386,10 @@ macro_rules! impl_mlp_safetensors {
                 let mut layer_sizes: Vec<usize> = Vec::new();
                 let mut all_weights: Vec<$ty> = Vec::new();
                 let mut all_biases: Vec<$ty> = Vec::new();
+                let mut ln_gamma_data: Vec<$ty> = Vec::new();
+                let mut ln_beta_data: Vec<$ty> = Vec::new();
+                let mut has_layernorm = false;
+                let n_linear = layer_indices.len();
 
                 for (i, &idx) in layer_indices.iter().enumerate() {
                     let w_name = format!("{prefix_dot}{idx}.weight");
@@ -470,8 +486,59 @@ macro_rules! impl_mlp_safetensors {
                         }
                     }
 
+                    // Detect LayerNorm for hidden layers
+                    let is_last_layer = i == n_linear - 1;
+                    if !is_last_layer {
+                        if let Some(&ln_idx) = layernorm_indices
+                            .iter()
+                            .find(|&&li| li > idx && li < next_linear)
+                        {
+                            has_layernorm = true;
+                            let ln_g =
+                                $extract_1d(&st, &format!("{prefix_dot}{ln_idx}.weight"))?;
+                            let ln_b =
+                                match $extract_1d(&st, &format!("{prefix_dot}{ln_idx}.bias")) {
+                                    Ok(b) => b,
+                                    Err(LoadError::TensorNotFound(_)) => {
+                                        vec![0.0 as $ty; w_shape[0]]
+                                    }
+                                    Err(e) => return Err(e),
+                                };
+                            if ln_g.len() != w_shape[0] || ln_b.len() != w_shape[0] {
+                                return Err(LoadError::Validation(
+                                    "LayerNorm size mismatch with linear output",
+                                ));
+                            }
+                            ln_gamma_data.extend_from_slice(&ln_g);
+                            ln_beta_data.extend_from_slice(&ln_b);
+                        } else {
+                            ln_gamma_data
+                                .extend(core::iter::repeat(1.0 as $ty).take(w_shape[0]));
+                            ln_beta_data
+                                .extend(core::iter::repeat(0.0 as $ty).take(w_shape[0]));
+                        }
+                    }
+
                     all_weights.extend_from_slice(&w_data);
                     all_biases.extend_from_slice(&b_data);
+                }
+
+                if has_layernorm {
+                    #[cfg(not(any(feature = "std", feature = "libm")))]
+                    {
+                        return Err(LoadError::Validation(
+                            "LayerNorm requires 'std' or 'libm' feature",
+                        ));
+                    }
+                    #[cfg(any(feature = "std", feature = "libm"))]
+                    return Self::from_parts_with_layer_norm(
+                        &layer_sizes,
+                        &all_weights,
+                        &all_biases,
+                        &ln_gamma_data,
+                        &ln_beta_data,
+                        activation,
+                    );
                 }
 
                 Self::from_parts(&layer_sizes, &all_weights, &all_biases, activation)

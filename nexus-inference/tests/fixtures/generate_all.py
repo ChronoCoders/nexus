@@ -163,13 +163,15 @@ def generate_gru_multi_output():
 
 def generate_mlp(name, layer_sizes, activation_cls, activation_name, dtype,
                  inputs, prefix, init_fn, tolerance, activation_param=None,
-                 bias=True, batchnorm=False):
+                 bias=True, batchnorm=False, layernorm=False):
     layers = []
     for i in range(len(layer_sizes) - 1):
         layers.append(nn.Linear(layer_sizes[i], layer_sizes[i + 1], bias=bias))
         if i < len(layer_sizes) - 2:
             if batchnorm:
                 layers.append(nn.BatchNorm1d(layer_sizes[i + 1]))
+            if layernorm:
+                layers.append(nn.LayerNorm(layer_sizes[i + 1]))
             layers.append(activation_cls())
     mlp = nn.Sequential(*layers)
     if dtype == torch.float64:
@@ -190,6 +192,9 @@ def generate_mlp(name, layer_sizes, activation_cls, activation_name, dtype,
                 if module.affine:
                     init_sinusoidal(module.weight, 0.8, 1.2)
                     module.bias.fill_(0.05)
+            elif isinstance(module, nn.LayerNorm):
+                init_sinusoidal(module.weight, 0.8, 1.2)
+                module.bias.fill_(0.05)
 
     if batchnorm:
         mlp.eval()
@@ -229,6 +234,8 @@ def generate_mlp(name, layer_sizes, activation_cls, activation_name, dtype,
         tags.append("bias=False")
     if batchnorm:
         tags.append("BN")
+    if layernorm:
+        tags.append("LN")
     tag_str = f" [{', '.join(tags)}]" if tags else ""
     sizes_str = "->".join(str(s) for s in layer_sizes)
     print(f"  {name}: {sizes_str}, {activation_name}{tag_str}, {len(inputs)} inputs")
@@ -327,6 +334,20 @@ def generate_mlp_f32_batchnorm_no_bias():
                  inputs=make_inputs(5, 4, seed=42),
                  prefix="bnb", init_fn=init_sinusoidal, tolerance=1e-5,
                  bias=False, batchnorm=True)
+
+
+def generate_mlp_f32_layernorm():
+    generate_mlp("mlp_f32_layernorm", [3, 8, 4, 2], nn.ReLU, "relu", torch.float32,
+                 inputs=make_inputs(4, 3, seed=43),
+                 prefix="ln", init_fn=init_linspace, tolerance=1e-5,
+                 layernorm=True)
+
+
+def generate_mlp_f32_layernorm_no_bias():
+    generate_mlp("mlp_f32_layernorm_no_bias", [4, 8, 4, 1], nn.ReLU, "relu", torch.float32,
+                 inputs=make_inputs(5, 4, seed=44),
+                 prefix="lnb", init_fn=init_sinusoidal, tolerance=1e-5,
+                 bias=False, layernorm=True)
 
 
 # ---- Conv1d generators ----
@@ -577,6 +598,8 @@ if __name__ == "__main__":
     generate_mlp_f32_no_bias()
     generate_mlp_f32_batchnorm()
     generate_mlp_f32_batchnorm_no_bias()
+    generate_mlp_f32_layernorm()
+    generate_mlp_f32_layernorm_no_bias()
     # MLP f64
     generate_mlp_f64()
     generate_mlp_f64_no_prefix()

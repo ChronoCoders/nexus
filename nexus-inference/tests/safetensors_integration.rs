@@ -311,6 +311,16 @@ fn mlp_f32_batchnorm_no_bias() {
     run_mlp_f32_test("mlp_f32_batchnorm_no_bias");
 }
 
+#[test]
+fn mlp_f32_layernorm() {
+    run_mlp_f32_test("mlp_f32_layernorm");
+}
+
+#[test]
+fn mlp_f32_layernorm_no_bias() {
+    run_mlp_f32_test("mlp_f32_layernorm_no_bias");
+}
+
 // ---- MLP f64 tests ----
 
 #[test]
