@@ -42,7 +42,9 @@ jobs:
       with:
         python-version: '3.12'
     - name: Install Python dependencies
-      run: pip install torch --index-url https://download.pytorch.org/whl/cpu safetensors
+      run: |
+        pip install torch --index-url https://download.pytorch.org/whl/cpu
+        pip install safetensors
     - name: Regenerate fixtures
       run: python nexus-inference/tests/fixtures/generate_all.py
     - name: Verify fixtures are current
