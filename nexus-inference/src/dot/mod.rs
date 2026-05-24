@@ -185,15 +185,47 @@ pub(crate) fn matvec_f32(
 ) {
     let out_4 = out_size & !3;
     let mut j = 0;
-    while j < out_4 {
-        let rows = &weight[j * in_size..(j + 4) * in_size];
-        let dots = dot4_f32(rows, &input[..in_size]);
-        output[j] = dots[0];
-        output[j + 1] = dots[1];
-        output[j + 2] = dots[2];
-        output[j + 3] = dots[3];
-        j += 4;
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(
+            target_feature = "avx512f",
+            all(target_feature = "avx2", target_feature = "fma"),
+        )
+    ))]
+    {
+        use core::arch::x86_64::*;
+        while j < out_4 {
+            let rows = &weight[j * in_size..(j + 4) * in_size];
+            // SAFETY: cfg guarantees SIMD availability.
+            // j + 4 <= out_size within this loop; output accesses are in bounds.
+            unsafe {
+                let dots = dot4_f32_m128(rows, &input[..in_size]);
+                _mm_storeu_ps(output.as_mut_ptr().add(j), dots);
+            }
+            j += 4;
+        }
     }
+
+    #[cfg(not(all(
+        target_arch = "x86_64",
+        any(
+            target_feature = "avx512f",
+            all(target_feature = "avx2", target_feature = "fma"),
+        )
+    )))]
+    {
+        while j < out_4 {
+            let rows = &weight[j * in_size..(j + 4) * in_size];
+            let dots = dot4_f32(rows, &input[..in_size]);
+            output[j] = dots[0];
+            output[j + 1] = dots[1];
+            output[j + 2] = dots[2];
+            output[j + 3] = dots[3];
+            j += 4;
+        }
+    }
+
     while j < out_size {
         let row = &weight[j * in_size..(j + 1) * in_size];
         output[j] = dot_f32(row, &input[..in_size]);
