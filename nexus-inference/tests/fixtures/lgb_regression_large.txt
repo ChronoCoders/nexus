@@ -991,7 +991,7 @@ parameters:
 [num_iterations: 50]
 [learning_rate: 0.05]
 [num_leaves: 64]
-[num_threads: 0]
+[num_threads: 1]
 [seed: 44]
 [deterministic: 1]
 [force_col_wise: 0]

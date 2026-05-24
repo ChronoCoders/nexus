@@ -39,6 +39,7 @@ nexus-ascii/ROADMAP.md
 PERF.md
 *PERF.md
 
-# Python bytecode (test fixture generators, e.g. nexus-inference)
+# Python (test fixture generators)
 __pycache__/
 *.py[cod]
+.venv/

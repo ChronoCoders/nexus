@@ -60,8 +60,10 @@ jobs:
       with:
         python-version: '3.12'
     - name: Install Python dependencies
-      run: pip install lightgbm numpy
+      run: pip install lightgbm==4.6.0 numpy
     - name: Generate fixtures from LightGBM
       run: python nexus-inference/tests/fixtures/generate_lightgbm.py
+    - name: Verify fixtures are in sync
+      run: git diff --exit-code nexus-inference/tests/fixtures/lgb_*
     - name: Verify Rust matches LightGBM
       run: cargo test -p nexus-inference --features loader-lightgbm --test lightgbm_integration --verbose

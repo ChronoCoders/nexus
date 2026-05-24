@@ -124,7 +124,7 @@ parameters:
 [num_iterations: 5]
 [learning_rate: 0.3]
 [num_leaves: 8]
-[num_threads: 0]
+[num_threads: 1]
 [seed: 42]
 [deterministic: 1]
 [force_col_wise: 0]

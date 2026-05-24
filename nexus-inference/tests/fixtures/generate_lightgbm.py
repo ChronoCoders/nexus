@@ -40,12 +40,14 @@ def make_binary_data(n_samples, n_features, seed):
     return X, y
 
 
-def make_test_inputs(n_inputs, n_features, seed):
+def make_test_inputs(n_inputs, n_features, seed, lo=-5.0, hi=10.0):
+    mid = (lo + hi) / 2
+    scale = (hi - lo) / 2
     inputs = []
     for i in range(n_inputs):
         row = []
         for j in range(n_features):
-            val = 0.5 * math.sin(seed * (i + 1) * (j + 1) * 0.7)
+            val = mid + scale * math.sin(seed * (i + 1) * (j + 1) * 0.7)
             row.append(round(val, 8))
         inputs.append(row)
     return inputs
@@ -64,6 +66,7 @@ def generate_model(name, X_train, y_train, params, test_inputs,
         nan_indices: list of (input_idx, feature_idx) to set to NaN
         tolerance: comparison tolerance for Rust tests
     """
+    params.setdefault("num_threads", 1)
     dataset = lgb.Dataset(X_train, label=y_train, free_raw_data=False)
     model = lgb.train(params, dataset, num_boost_round=params.get("n_trees", 10))
 
@@ -200,6 +203,7 @@ def generate_nan_regression():
         "learning_rate": 0.2,
         "verbose": -1,
         "deterministic": True,
+        "num_threads": 1,
         "seed": 60,
     }
     dataset = lgb.Dataset(X_with_nan, label=y, free_raw_data=False)
