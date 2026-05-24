@@ -676,6 +676,123 @@ def generate_ssm_large():
                  prefix="ssm", init_fn=init_sinusoidal)
 
 
+# ---- BNN generators ----
+
+
+def make_binary_weights(hidden_size, init_fn, lo=-0.3, hi=0.3):
+    """Generate deterministic ±1 weights by thresholding initialized floats.
+
+    Uses >= 0 convention (matching Rust binarize): 0.0 → +1.
+    """
+    tmp = torch.empty(hidden_size, hidden_size)
+    init_fn(tmp, lo, hi)
+    return torch.where(tmp >= 0,
+                       torch.tensor(1, dtype=torch.int8),
+                       torch.tensor(-1, dtype=torch.int8))
+
+
+def generate_bnn(name, input_size, hidden_size, output_size, num_binary,
+                 inputs, prefix, init_fn):
+    # fp32 input layer
+    w_input = torch.empty(hidden_size, input_size)
+    b_input = torch.empty(hidden_size)
+    init_fn(w_input)
+    init_fn(b_input, -0.1, 0.1)
+
+    # binary layers (i8 ±1 weights, fp32 biases from BN folding)
+    binary_weights = []
+    binary_biases = []
+    for k in range(num_binary):
+        bw = make_binary_weights(hidden_size, init_fn,
+                                 -0.3 + 0.1 * k, 0.3 + 0.1 * k)
+        bb = torch.empty(hidden_size)
+        init_fn(bb, -0.5, 0.5)
+        binary_weights.append(bw)
+        binary_biases.append(bb)
+
+    # fp32 output layer
+    w_output = torch.empty(output_size, hidden_size)
+    b_output = torch.empty(output_size)
+    init_fn(w_output)
+    init_fn(b_output, -0.05, 0.05)
+
+    # Save tensors
+    state = {
+        f"{prefix}.input_weight": w_input.float(),
+        f"{prefix}.input_bias": b_input.float(),
+        f"{prefix}.output_weight": w_output.float(),
+        f"{prefix}.output_bias": b_output.float(),
+    }
+    for k, (bw, bb) in enumerate(zip(binary_weights, binary_biases)):
+        state[f"{prefix}.binary_weight_{k}"] = bw
+        state[f"{prefix}.binary_bias_{k}"] = bb.float()
+
+    save_file(state, FIXTURES_DIR / f"{name}.safetensors")
+
+    # Forward pass (manual BNN equations)
+    outputs = []
+    with torch.no_grad():
+        for inp in inputs:
+            x = torch.tensor(inp, dtype=torch.float32)
+
+            # fp32 input layer
+            h = w_input @ x + b_input
+
+            # binarize: sign(h), with sign(0) = +1
+            h = torch.where(h >= 0, torch.ones_like(h), -torch.ones_like(h))
+
+            # binary hidden layers
+            for bw, bb in zip(binary_weights, binary_biases):
+                # i8 matmul (cast to float for torch, but result is exact integer)
+                dot = bw.float() @ h + bb
+                h = torch.where(dot >= 0, torch.ones_like(dot), -torch.ones_like(dot))
+
+            # fp32 output layer
+            y = w_output @ h + b_output
+            outputs.append(y.tolist())
+
+    with open(FIXTURES_DIR / f"{name}_expected.json", "w") as f:
+        json.dump({
+            "prefix": prefix,
+            "num_binary": num_binary,
+            "inputs": inputs,
+            "outputs": outputs,
+            "tolerance": 1e-5,
+        }, f, indent=2)
+        f.write("\n")
+
+    bl_tag = f", {num_binary} binary" if num_binary > 0 else ", no binary"
+    print(f"  {name}: I={input_size} H={hidden_size} O={output_size}{bl_tag}, {len(inputs)} steps")
+
+
+def generate_bnn_basic():
+    generate_bnn("bnn", input_size=4, hidden_size=64, output_size=1,
+                 num_binary=0,
+                 inputs=make_inputs(5, 4, seed=60),
+                 prefix="bnn", init_fn=init_linspace)
+
+
+def generate_bnn_one_binary():
+    generate_bnn("bnn_one_binary", input_size=4, hidden_size=64, output_size=1,
+                 num_binary=1,
+                 inputs=make_inputs(5, 4, seed=61),
+                 prefix="model.bnn", init_fn=init_sinusoidal)
+
+
+def generate_bnn_two_binary():
+    generate_bnn("bnn_two_binary", input_size=4, hidden_size=64, output_size=2,
+                 num_binary=2,
+                 inputs=make_inputs(8, 4, seed=62),
+                 prefix="enc.bnn", init_fn=init_linspace)
+
+
+def generate_bnn_large():
+    generate_bnn("bnn_large", input_size=8, hidden_size=128, output_size=2,
+                 num_binary=2,
+                 inputs=make_inputs(10, 8, seed=63),
+                 prefix="bnn", init_fn=init_sinusoidal)
+
+
 # ---- Fuzz generators (seeded random configs) ----
 
 
@@ -814,6 +931,19 @@ def generate_fuzz():
                       prefix=f"fuzz{i}.ssm", init_fn=rng.choice(init_fns),
                       has_d=has_d)
 
+    # Fuzz BNN
+    for i in range(4):
+        input_size = rng.randint(1, 8)
+        hidden_size = rng.choice([64, 128])
+        output_size = rng.randint(1, 4)
+        num_binary = rng.randint(0, 3)
+        n_steps = rng.randint(3, 8)
+        generate_bnn(f"fuzz_bnn_{i}",
+                     input_size=input_size, hidden_size=hidden_size,
+                     output_size=output_size, num_binary=num_binary,
+                     inputs=make_inputs(n_steps, input_size, seed=900+i),
+                     prefix=f"fuzz{i}.bnn", init_fn=rng.choice(init_fns))
+
 
 if __name__ == "__main__":
     print("Generating fixtures...")
@@ -866,6 +996,11 @@ if __name__ == "__main__":
     generate_ssm_no_skip()
     generate_ssm_multi_output()
     generate_ssm_large()
+    # BNN
+    generate_bnn_basic()
+    generate_bnn_one_binary()
+    generate_bnn_two_binary()
+    generate_bnn_large()
     # Fuzz (seeded random configs)
     generate_fuzz()
     print("Done.")
