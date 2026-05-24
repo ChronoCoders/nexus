@@ -50,3 +50,20 @@ jobs:
       run: python nexus-inference/tests/fixtures/generate_all.py
     - name: Verify Rust matches PyTorch
       run: cargo test -p nexus-inference --features safetensors --test safetensors_integration --verbose
+
+  verify-lightgbm:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@1.94.0
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Install Python dependencies
+      run: pip install lightgbm==4.6.0 numpy
+    - name: Generate fixtures from LightGBM
+      run: python nexus-inference/tests/fixtures/generate_lightgbm.py
+    - name: Verify fixtures are in sync
+      run: git diff --exit-code nexus-inference/tests/fixtures/lgb_*
+    - name: Verify Rust matches LightGBM
+      run: cargo test -p nexus-inference --features loader-lightgbm --test lightgbm_integration --verbose

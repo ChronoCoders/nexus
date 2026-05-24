@@ -119,7 +119,6 @@ pub(crate) fn matvec_bias_f32(
     out_size: usize,
     in_size: usize,
 ) {
-    let out_8 = out_size & !7;
     let out_4 = out_size & !3;
     let mut j = 0;
 
@@ -132,6 +131,7 @@ pub(crate) fn matvec_bias_f32(
     ))]
     {
         use core::arch::x86_64::*;
+        let out_8 = out_size & !7;
         // SAFETY: cfg guarantees SIMD availability.
         // All j + N <= out_size within respective loops; bias/output in bounds.
         unsafe {
@@ -195,7 +195,6 @@ pub(crate) fn matvec_f32(
     out_size: usize,
     in_size: usize,
 ) {
-    let out_8 = out_size & !7;
     let out_4 = out_size & !3;
     let mut j = 0;
 
@@ -208,6 +207,7 @@ pub(crate) fn matvec_f32(
     ))]
     {
         use core::arch::x86_64::*;
+        let out_8 = out_size & !7;
         // SAFETY: cfg guarantees SIMD availability.
         // All j + N <= out_size within respective loops; output in bounds.
         unsafe {
