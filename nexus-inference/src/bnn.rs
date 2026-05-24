@@ -24,13 +24,76 @@ fn binarize(values: &[f32], bits: &mut [u64]) {
     }
 }
 
-fn unpack_bits(bits: &[u64], values: &mut [f32]) {
-    debug_assert_eq!(values.len(), bits.len() * 64);
+#[cfg(not(all(
+    target_arch = "x86_64",
+    any(
+        target_feature = "avx512f",
+        all(target_feature = "avx2", target_feature = "fma")
+    )
+)))]
+fn output_from_bits(
+    weights: &[f32],
+    bits: &[u64],
+    row_sum: f32,
+    bias: f32,
+    hidden_size: usize,
+) -> f32 {
+    let mut pos_sum = 0.0_f32;
     for (w, &word) in bits.iter().enumerate() {
         let base = w * 64;
-        for b in 0..64 {
-            values[base + b] = if (word >> b) & 1 == 1 { 1.0 } else { -1.0 };
+        let count = 64.min(hidden_size - base);
+        for b in 0..count {
+            if (word >> b) & 1 == 1 {
+                pos_sum += weights[base + b];
+            }
         }
+    }
+    2.0f32.mul_add(pos_sum, -row_sum + bias)
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    any(
+        target_feature = "avx512f",
+        all(target_feature = "avx2", target_feature = "fma")
+    )
+))]
+#[inline(never)]
+fn output_from_bits_simd(
+    weights: &[f32],
+    bits: &[u64],
+    row_sum: f32,
+    bias: f32,
+) -> f32 {
+    use core::arch::x86_64::*;
+    unsafe {
+        let bit_positions = _mm256_setr_epi32(1, 2, 4, 8, 16, 32, 64, 128);
+        let mut acc = _mm256_setzero_ps();
+
+        for (w_idx, &word) in bits.iter().enumerate() {
+            let base = w_idx * 64;
+            for byte_idx in 0..8 {
+                let byte = ((word >> (byte_idx * 8)) & 0xFF) as i32;
+                let offset = base + byte_idx * 8;
+
+                let w = _mm256_loadu_ps(weights.as_ptr().add(offset));
+                let byte_broadcast = _mm256_set1_epi32(byte);
+                let masked = _mm256_and_si256(byte_broadcast, bit_positions);
+                let cmp = _mm256_cmpeq_epi32(masked, bit_positions);
+                acc = _mm256_add_ps(acc, _mm256_and_ps(w, _mm256_castsi256_ps(cmp)));
+            }
+        }
+
+        let hi = _mm256_extractf128_ps(acc, 1);
+        let lo = _mm256_castps256_ps128(acc);
+        let sum128 = _mm_add_ps(lo, hi);
+        let hi64 = _mm_movehl_ps(sum128, sum128);
+        let sum64 = _mm_add_ps(sum128, hi64);
+        let hi32 = _mm_shuffle_ps(sum64, sum64, 0x55);
+        let sum32 = _mm_add_ss(sum64, hi32);
+        let pos_sum = _mm_cvtss_f32(sum32);
+
+        2.0f32.mul_add(pos_sum, -row_sum + bias)
     }
 }
 
@@ -115,6 +178,7 @@ pub struct BnnF32 {
     binary_layers: Box<[BinaryLayer]>,
     w_output: Box<[f32]>,
     b_output: Box<[f32]>,
+    w_output_row_sum: Box<[f32]>,
     bits_a: Box<[u64]>,
     bits_b: Box<[u64]>,
     float_scratch: Box<[f32]>,
@@ -233,12 +297,21 @@ impl BnnF32 {
             })
             .collect();
 
+        let w_output_row_sum: Vec<f32> = (0..output_size)
+            .map(|j| {
+                w_output[j * hidden_size..(j + 1) * hidden_size]
+                    .iter()
+                    .sum()
+            })
+            .collect();
+
         Ok(Self {
             w_input: w_input.into(),
             b_input: b_input.into(),
             binary_layers: binary_layers.into_boxed_slice(),
             w_output: w_output.into(),
             b_output: b_output.into(),
+            w_output_row_sum: w_output_row_sum.into_boxed_slice(),
             bits_a: vec![0_u64; wpr].into_boxed_slice(),
             bits_b: vec![0_u64; wpr].into_boxed_slice(),
             float_scratch: vec![0.0_f32; hidden_size].into_boxed_slice(),
@@ -321,22 +394,39 @@ impl BnnF32 {
             }
         }
 
-        // unpack final binary activations to ±1.0
-        if n_layers.is_multiple_of(2) {
-            unpack_bits(&self.bits_a, &mut self.float_scratch);
+        // fused output: compute dot product directly from bits
+        let final_bits = if n_layers.is_multiple_of(2) {
+            &self.bits_a
         } else {
-            unpack_bits(&self.bits_b, &mut self.float_scratch);
-        }
+            &self.bits_b
+        };
 
-        // fp32 output layer
-        matvec_bias_f32(
-            &self.w_output,
-            &self.float_scratch,
-            &self.b_output,
-            output,
-            o_sz,
-            h_sz,
-        );
+        for j in 0..o_sz {
+            let w_row = &self.w_output[j * h_sz..(j + 1) * h_sz];
+            let row_sum = self.w_output_row_sum[j];
+            let bias = self.b_output[j];
+
+            #[cfg(all(
+                target_arch = "x86_64",
+                any(
+                    target_feature = "avx512f",
+                    all(target_feature = "avx2", target_feature = "fma")
+                )
+            ))]
+            {
+                output[j] = output_from_bits_simd(w_row, final_bits, row_sum, bias);
+            }
+            #[cfg(not(all(
+                target_arch = "x86_64",
+                any(
+                    target_feature = "avx512f",
+                    all(target_feature = "avx2", target_feature = "fma")
+                )
+            )))]
+            {
+                output[j] = output_from_bits(w_row, final_bits, row_sum, bias, h_sz);
+            }
+        }
     }
 
     /// Number of input features.
