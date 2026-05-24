@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nexus_inference::{Activation, GbdtF64, LutF64, MlpF32, MlpF64};
+use nexus_inference::{Activation, BnnF32, GbdtF64, LutF64, MlpF32, MlpF64};
 
 const LIGHTGBM_HEADER: &str = "\
 tree
@@ -286,5 +286,49 @@ fn bench_mlp_f32_layernorm(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_gbdt, bench_mlp, bench_mlp_f32, bench_mlp_f32_layernorm, bench_lut);
+fn make_bnn(input: usize, hidden: usize, output: usize, n_binary: usize) -> BnnF32 {
+    let wpr = hidden / 64;
+    let w_input = vec![0.1_f32; hidden * input];
+    let b_input = vec![0.0_f32; hidden];
+
+    let bin_w = vec![0xAAAA_AAAA_AAAA_AAAA_u64; hidden * wpr];
+    let bin_b = vec![0.0_f32; hidden];
+
+    let bin_weights: Vec<&[u64]> = (0..n_binary).map(|_| bin_w.as_slice()).collect();
+    let bin_biases: Vec<&[f32]> = (0..n_binary).map(|_| bin_b.as_slice()).collect();
+
+    let w_output = vec![0.1_f32; output * hidden];
+    let b_output = vec![0.0_f32; output];
+
+    BnnF32::from_parts(
+        &w_input, &b_input, &bin_weights, &bin_biases, &w_output, &b_output, output,
+    )
+    .unwrap()
+}
+
+fn bench_bnn(c: &mut Criterion) {
+    let input_8 = vec![0.5_f32; 8];
+
+    let mut m = make_bnn(8, 64, 1, 0);
+    c.bench_function("BNN 8→64→1 (0 binary)", |b| {
+        b.iter(|| m.predict(black_box(&input_8)));
+    });
+
+    let mut m = make_bnn(8, 64, 1, 1);
+    c.bench_function("BNN 8→64→1 (1 binary)", |b| {
+        b.iter(|| m.predict(black_box(&input_8)));
+    });
+
+    let mut m = make_bnn(8, 64, 1, 2);
+    c.bench_function("BNN 8→64→1 (2 binary)", |b| {
+        b.iter(|| m.predict(black_box(&input_8)));
+    });
+
+    let mut m = make_bnn(8, 128, 1, 2);
+    c.bench_function("BNN 8→128→1 (2 binary)", |b| {
+        b.iter(|| m.predict(black_box(&input_8)));
+    });
+}
+
+criterion_group!(benches, bench_gbdt, bench_mlp, bench_mlp_f32, bench_mlp_f32_layernorm, bench_lut, bench_bnn);
 criterion_main!(benches);

@@ -85,6 +85,22 @@ fn extract_f32_3d(st: &SafeTensors<'_>, name: &str) -> Result<(Vec<f32>, [usize;
     Ok((data, dims))
 }
 
+fn extract_i8_2d(st: &SafeTensors<'_>, name: &str) -> Result<(Vec<i8>, [usize; 2]), LoadError> {
+    let tv = st
+        .tensor(name)
+        .map_err(|_| LoadError::TensorNotFound(String::from(name)))?;
+    if tv.dtype() != Dtype::I8 {
+        return Err(LoadError::Validation("expected I8 tensor"));
+    }
+    let shape = tv.shape();
+    if shape.len() != 2 {
+        return Err(LoadError::Validation("expected 2D tensor"));
+    }
+    let dims = [shape[0], shape[1]];
+    let data: Vec<i8> = tv.data().iter().map(|&b| b as i8).collect();
+    Ok((data, dims))
+}
+
 fn extract_f64_1d(st: &SafeTensors<'_>, name: &str) -> Result<Vec<f64>, LoadError> {
     let tv = st
         .tensor(name)
@@ -986,6 +1002,132 @@ impl crate::LinearSsmF32 {
         };
 
         Self::from_parts(&a_diag, &b, &c, &d, output_size)
+    }
+}
+
+fn pack_i8_to_u64(weights: &[i8], rows: usize, cols: usize) -> Vec<u64> {
+    debug_assert_eq!(weights.len(), rows * cols);
+    debug_assert_eq!(cols % 64, 0);
+    let wpr = cols / 64;
+    let mut packed = vec![0_u64; rows * wpr];
+    for r in 0..rows {
+        for c in 0..cols {
+            if weights[r * cols + c] == 1 {
+                packed[r * wpr + c / 64] |= 1 << (c % 64);
+            }
+        }
+    }
+    packed
+}
+
+fn count_bnn_binary_layers(st: &SafeTensors<'_>, prefix: &str) -> usize {
+    let mut n = 0;
+    loop {
+        let name = prefixed(prefix, &format!("binary_weight_{n}"));
+        if st.tensor(&name).is_ok() {
+            n += 1;
+        } else {
+            break;
+        }
+    }
+    n
+}
+
+impl crate::BnnF32 {
+    /// Load from safetensors data.
+    ///
+    /// Tensor naming convention:
+    /// - `{prefix}.input_weight` — F32 `[H, I]`
+    /// - `{prefix}.input_bias` — F32 `[H]`
+    /// - `{prefix}.binary_weight_0` — I8 `[H, H]` (±1 values)
+    /// - `{prefix}.binary_bias_0` — F32 `[H]`
+    /// - `{prefix}.binary_weight_1`, `binary_bias_1`, ... (optional)
+    /// - `{prefix}.output_weight` — F32 `[O, H]`
+    /// - `{prefix}.output_bias` — F32 `[O]`
+    ///
+    /// Binary layer count is auto-detected by scanning for consecutive
+    /// `binary_weight_{k}` tensors. Binary weights are stored as I8 ±1
+    /// and packed to u64 at load time (bit 1 = +1, bit 0 = −1).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoadError::TensorNotFound`] if required tensors are
+    /// missing, or [`LoadError::Validation`] if shapes are inconsistent
+    /// or hidden size is not a multiple of 64.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let bytes = std::fs::read("bnn.safetensors")?;
+    /// let bnn = BnnF32::from_safetensors(&bytes, "bnn")?;
+    /// ```
+    pub fn from_safetensors(data: &[u8], prefix: &str) -> Result<Self, LoadError> {
+        let st = parse(data)?;
+
+        let wi_name = prefixed(prefix, "input_weight");
+        let bi_name = prefixed(prefix, "input_bias");
+        let wo_name = prefixed(prefix, "output_weight");
+        let bo_name = prefixed(prefix, "output_bias");
+
+        let (w_input, wi_shape) = extract_f32_2d(&st, &wi_name)?;
+        let b_input = extract_f32_1d(&st, &bi_name)?;
+        let (w_output, wo_shape) = extract_f32_2d(&st, &wo_name)?;
+        let b_output = extract_f32_1d(&st, &bo_name)?;
+
+        let hidden_size = wi_shape[0];
+        let output_size = wo_shape[0];
+
+        if b_input.len() != hidden_size {
+            return Err(LoadError::Validation(
+                "input_bias length must equal hidden_size",
+            ));
+        }
+        if wo_shape[1] != hidden_size {
+            return Err(LoadError::Validation(
+                "output_weight columns must equal hidden_size",
+            ));
+        }
+
+        let num_binary = count_bnn_binary_layers(&st, prefix);
+
+        let mut binary_weights_packed = Vec::with_capacity(num_binary);
+        let mut binary_biases = Vec::with_capacity(num_binary);
+
+        for k in 0..num_binary {
+            let bw_name = prefixed(prefix, &format!("binary_weight_{k}"));
+            let bb_name = prefixed(prefix, &format!("binary_bias_{k}"));
+
+            let (bw_i8, bw_shape) = extract_i8_2d(&st, &bw_name)?;
+            let bb = extract_f32_1d(&st, &bb_name)?;
+
+            if bw_shape != [hidden_size, hidden_size] {
+                return Err(LoadError::Validation(
+                    "binary_weight shape must be [H, H]",
+                ));
+            }
+            if bb.len() != hidden_size {
+                return Err(LoadError::Validation(
+                    "binary_bias length must equal hidden_size",
+                ));
+            }
+
+            let packed = pack_i8_to_u64(&bw_i8, hidden_size, hidden_size);
+            binary_weights_packed.push(packed);
+            binary_biases.push(bb);
+        }
+
+        let bw_refs: Vec<&[u64]> = binary_weights_packed.iter().map(Vec::as_slice).collect();
+        let bb_refs: Vec<&[f32]> = binary_biases.iter().map(Vec::as_slice).collect();
+
+        Self::from_parts(
+            &w_input,
+            &b_input,
+            &bw_refs,
+            &bb_refs,
+            &w_output,
+            &b_output,
+            output_size,
+        )
     }
 }
 
@@ -1988,5 +2130,132 @@ mod tests {
         let y_st2 = st.step(&input);
         let y_fp2 = fp.step(&input);
         assert!((y_st2 - y_fp2).abs() < 1e-7, "step 2: st={y_st2} fp={y_fp2}");
+    }
+
+    // ---- BNN ----
+
+    fn i8_bytes(data: &[i8]) -> Vec<u8> {
+        data.iter().map(|&v| v as u8).collect()
+    }
+
+    #[test]
+    fn bnn_from_safetensors() {
+        let h = 64_usize;
+        let i = 2_usize;
+        let o = 1_usize;
+
+        let w_in = vec![0.1_f32; h * i];
+        let b_in = vec![0.0_f32; h];
+        let w_out = vec![0.1_f32; o * h];
+        let b_out = vec![0.0_f32; o];
+        let bin_w = vec![1_i8; h * h];
+        let bin_b = vec![0.0_f32; h];
+
+        let w_in_b = f32_bytes(&w_in);
+        let b_in_b = f32_bytes(&b_in);
+        let w_out_b = f32_bytes(&w_out);
+        let b_out_b = f32_bytes(&b_out);
+        let bin_w_b = i8_bytes(&bin_w);
+        let bin_b_b = f32_bytes(&bin_b);
+
+        let data = serialize_tensors(vec![
+            ("bnn.input_weight", make_view(Dtype::F32, &[h, i], &w_in_b)),
+            ("bnn.input_bias", make_view(Dtype::F32, &[h], &b_in_b)),
+            ("bnn.binary_weight_0", make_view(Dtype::I8, &[h, h], &bin_w_b)),
+            ("bnn.binary_bias_0", make_view(Dtype::F32, &[h], &bin_b_b)),
+            ("bnn.output_weight", make_view(Dtype::F32, &[o, h], &w_out_b)),
+            ("bnn.output_bias", make_view(Dtype::F32, &[o], &b_out_b)),
+        ]);
+
+        let bnn = crate::BnnF32::from_safetensors(&data, "bnn").unwrap();
+        assert_eq!(bnn.input_size(), i);
+        assert_eq!(bnn.hidden_size(), h);
+        assert_eq!(bnn.output_size(), o);
+        assert_eq!(bnn.num_binary_layers(), 1);
+    }
+
+    #[test]
+    fn bnn_no_binary_layers() {
+        let h = 64_usize;
+        let i = 4_usize;
+        let o = 1_usize;
+
+        let w_in = vec![0.1_f32; h * i];
+        let b_in = vec![0.0_f32; h];
+        let w_out = vec![0.1_f32; o * h];
+        let b_out = vec![0.0_f32; o];
+
+        let w_in_b = f32_bytes(&w_in);
+        let b_in_b = f32_bytes(&b_in);
+        let w_out_b = f32_bytes(&w_out);
+        let b_out_b = f32_bytes(&b_out);
+
+        let data = serialize_tensors(vec![
+            ("net.input_weight", make_view(Dtype::F32, &[h, i], &w_in_b)),
+            ("net.input_bias", make_view(Dtype::F32, &[h], &b_in_b)),
+            ("net.output_weight", make_view(Dtype::F32, &[o, h], &w_out_b)),
+            ("net.output_bias", make_view(Dtype::F32, &[o], &b_out_b)),
+        ]);
+
+        let bnn = crate::BnnF32::from_safetensors(&data, "net").unwrap();
+        assert_eq!(bnn.num_binary_layers(), 0);
+        assert_eq!(bnn.input_size(), i);
+    }
+
+    #[test]
+    fn bnn_matches_from_parts() {
+        let h = 64_usize;
+        let i = 2_usize;
+        let o = 1_usize;
+
+        let w_in: Vec<f32> = (0..h * i).map(|k| 0.1 * (k as f32 + 1.0) / (h * i) as f32).collect();
+        let b_in: Vec<f32> = (0..h).map(|k| 0.01 * k as f32).collect();
+        let w_out: Vec<f32> = (0..o * h).map(|k| -0.1 + 0.2 * k as f32 / (o * h) as f32).collect();
+        let b_out = vec![0.05_f32; o];
+
+        // Binary weights: alternating +1/-1 pattern
+        let bin_w_i8: Vec<i8> = (0..h * h).map(|k| if k % 2 == 0 { 1 } else { -1 }).collect();
+        let bin_b: Vec<f32> = (0..h).map(|k| 0.5 - 0.01 * k as f32).collect();
+
+        // Pack i8 → u64 (same logic as loader)
+        let wpr = h / 64;
+        let mut bin_w_u64 = vec![0_u64; h * wpr];
+        for r in 0..h {
+            for c in 0..h {
+                if bin_w_i8[r * h + c] == 1 {
+                    bin_w_u64[r * wpr + c / 64] |= 1 << (c % 64);
+                }
+            }
+        }
+
+        let bw_refs: Vec<&[u64]> = vec![bin_w_u64.as_slice()];
+        let bb_refs: Vec<&[f32]> = vec![bin_b.as_slice()];
+        let mut fp = crate::BnnF32::from_parts(
+            &w_in, &b_in, &bw_refs, &bb_refs, &w_out, &b_out, o,
+        ).unwrap();
+
+        // Build safetensors
+        let w_in_b = f32_bytes(&w_in);
+        let b_in_b = f32_bytes(&b_in);
+        let w_out_b = f32_bytes(&w_out);
+        let b_out_b = f32_bytes(&b_out);
+        let bin_w_b = i8_bytes(&bin_w_i8);
+        let bin_b_b = f32_bytes(&bin_b);
+
+        let data = serialize_tensors(vec![
+            ("b.input_weight", make_view(Dtype::F32, &[h, i], &w_in_b)),
+            ("b.input_bias", make_view(Dtype::F32, &[h], &b_in_b)),
+            ("b.binary_weight_0", make_view(Dtype::I8, &[h, h], &bin_w_b)),
+            ("b.binary_bias_0", make_view(Dtype::F32, &[h], &bin_b_b)),
+            ("b.output_weight", make_view(Dtype::F32, &[o, h], &w_out_b)),
+            ("b.output_bias", make_view(Dtype::F32, &[o], &b_out_b)),
+        ]);
+
+        let mut st = crate::BnnF32::from_safetensors(&data, "b").unwrap();
+
+        let input = [1.0_f32, -0.5];
+        let y_st = st.predict(&input);
+        let y_fp = fp.predict(&input);
+        assert!((y_st - y_fp).abs() < 1e-7, "st={y_st} fp={y_fp}");
     }
 }

@@ -573,3 +573,53 @@ fuzz_tests!(
     fuzz_ssm_2,
     fuzz_ssm_3,
 );
+
+// ---- BNN tests ----
+
+fn run_bnn_test(name: &str) {
+    let data = load_model(name);
+    let exp = load_expected(name);
+    let tol = exp["tolerance"].as_f64().unwrap();
+
+    let mut bnn = BnnF32::from_safetensors(&data, exp["prefix"].as_str().unwrap()).unwrap();
+
+    for (i, (inp, exp_out)) in inputs_f32(&exp)
+        .iter()
+        .zip(expected_outputs(&exp).iter())
+        .enumerate()
+    {
+        let mut out = vec![0.0_f32; exp_out.len()];
+        bnn.predict_into(inp, &mut out);
+        for (j, (&actual, &expected)) in out.iter().zip(exp_out.iter()).enumerate() {
+            assert_close(name, i, j, actual as f64, expected, tol);
+        }
+    }
+}
+
+#[test]
+fn bnn() {
+    run_bnn_test("bnn");
+}
+
+#[test]
+fn bnn_one_binary() {
+    run_bnn_test("bnn_one_binary");
+}
+
+#[test]
+fn bnn_two_binary() {
+    run_bnn_test("bnn_two_binary");
+}
+
+#[test]
+fn bnn_large() {
+    run_bnn_test("bnn_large");
+}
+
+fuzz_tests!(
+    run_bnn_test,
+    fuzz_bnn_0,
+    fuzz_bnn_1,
+    fuzz_bnn_2,
+    fuzz_bnn_3,
+);
