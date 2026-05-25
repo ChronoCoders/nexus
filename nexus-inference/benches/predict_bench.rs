@@ -1,6 +1,6 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nexus_inference::{
-    Activation, BnnF32, GbdtF32, LutF64, MlpF32, MlpF64, QuantizedMlpI8, TinyTcnF32,
+    Activation, BnnF32, Gbdt, LutF64, MlpF32, MlpF64, QuantizedMlpI8, TinyTcnF32,
 };
 
 const LIGHTGBM_HEADER: &str = "\
@@ -125,26 +125,26 @@ fn bench_gbdt(c: &mut Criterion) {
     let features_16 = vec![0.5_f32; 16];
 
     let text_50x6 = build_lightgbm_model(50, 6, 8);
-    let model_50x6 = GbdtF32::from_lightgbm(text_50x6.as_bytes()).unwrap();
-    c.bench_function("GbdtF32::predict 50x6 8feat", |b| {
+    let model_50x6 = Gbdt::from_lightgbm(text_50x6.as_bytes()).unwrap();
+    c.bench_function("Gbdt::predict 50x6 8feat", |b| {
         b.iter(|| model_50x6.predict(black_box(&features_8)));
     });
 
     let text_100x6 = build_lightgbm_model(100, 6, 8);
-    let model_100x6 = GbdtF32::from_lightgbm(text_100x6.as_bytes()).unwrap();
-    c.bench_function("GbdtF32::predict 100x6 8feat", |b| {
+    let model_100x6 = Gbdt::from_lightgbm(text_100x6.as_bytes()).unwrap();
+    c.bench_function("Gbdt::predict 100x6 8feat", |b| {
         b.iter(|| model_100x6.predict(black_box(&features_8)));
     });
 
     let text_200x8 = build_lightgbm_model(200, 8, 16);
-    let model_200x8 = GbdtF32::from_lightgbm(text_200x8.as_bytes()).unwrap();
-    c.bench_function("GbdtF32::predict 200x8 16feat", |b| {
+    let model_200x8 = Gbdt::from_lightgbm(text_200x8.as_bytes()).unwrap();
+    c.bench_function("Gbdt::predict 200x8 16feat", |b| {
         b.iter(|| model_200x8.predict(black_box(&features_16)));
     });
 
     let text_100x6b = build_lightgbm_model(100, 6, 8);
-    let model_100x6b = GbdtF32::from_lightgbm(text_100x6b.as_bytes()).unwrap();
-    c.bench_function("GbdtF32::predict (NaN-aware) 100x6 8feat", |b| {
+    let model_100x6b = Gbdt::from_lightgbm(text_100x6b.as_bytes()).unwrap();
+    c.bench_function("Gbdt::predict (NaN-aware) 100x6 8feat", |b| {
         b.iter(|| model_100x6b.predict_nan_aware(black_box(&features_8)));
     });
 }
@@ -177,8 +177,8 @@ fn bench_gbdt_random(c: &mut Criterion) {
     let batches_16 = random_features(16, 0xCAFE_BABE_1234_5678);
 
     let text_50x6 = build_lightgbm_model(50, 6, 8);
-    let model_50x6 = GbdtF32::from_lightgbm(text_50x6.as_bytes()).unwrap();
-    c.bench_function("GbdtF32::predict 50x6 8feat (random)", |b| {
+    let model_50x6 = Gbdt::from_lightgbm(text_50x6.as_bytes()).unwrap();
+    c.bench_function("Gbdt::predict 50x6 8feat (random)", |b| {
         let mut i = 0;
         b.iter(|| {
             let result = model_50x6.predict(black_box(&batches_8[i % 1024]));
@@ -188,8 +188,8 @@ fn bench_gbdt_random(c: &mut Criterion) {
     });
 
     let text_100x6 = build_lightgbm_model(100, 6, 8);
-    let model_100x6 = GbdtF32::from_lightgbm(text_100x6.as_bytes()).unwrap();
-    c.bench_function("GbdtF32::predict 100x6 8feat (random)", |b| {
+    let model_100x6 = Gbdt::from_lightgbm(text_100x6.as_bytes()).unwrap();
+    c.bench_function("Gbdt::predict 100x6 8feat (random)", |b| {
         let mut i = 0;
         b.iter(|| {
             let result = model_100x6.predict(black_box(&batches_8[i % 1024]));
@@ -199,8 +199,8 @@ fn bench_gbdt_random(c: &mut Criterion) {
     });
 
     let text_200x8 = build_lightgbm_model(200, 8, 16);
-    let model_200x8 = GbdtF32::from_lightgbm(text_200x8.as_bytes()).unwrap();
-    c.bench_function("GbdtF32::predict 200x8 16feat (random)", |b| {
+    let model_200x8 = Gbdt::from_lightgbm(text_200x8.as_bytes()).unwrap();
+    c.bench_function("Gbdt::predict 200x8 16feat (random)", |b| {
         let mut i = 0;
         b.iter(|| {
             let result = model_200x8.predict(black_box(&batches_16[i % 1024]));
@@ -210,8 +210,8 @@ fn bench_gbdt_random(c: &mut Criterion) {
     });
 
     let text_100x6b = build_lightgbm_model(100, 6, 8);
-    let model_100x6b = GbdtF32::from_lightgbm(text_100x6b.as_bytes()).unwrap();
-    c.bench_function("GbdtF32::predict (NaN-aware) 100x6 8feat (random)", |b| {
+    let model_100x6b = Gbdt::from_lightgbm(text_100x6b.as_bytes()).unwrap();
+    c.bench_function("Gbdt::predict (NaN-aware) 100x6 8feat (random)", |b| {
         let mut i = 0;
         b.iter(|| {
             let result = model_100x6b.predict_nan_aware(black_box(&batches_8[i % 1024]));

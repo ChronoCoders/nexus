@@ -49,7 +49,7 @@ fn parse_outputs(v: &serde_json::Value) -> Vec<f64> {
         .collect()
 }
 
-fn run_test_f32(name: &str) {
+fn run_test(name: &str) {
     let model_bytes = load_model_txt(name);
     let exp = load_expected(name);
     let tol = exp["tolerance"].as_f64().unwrap().max(1e-4);
@@ -60,7 +60,7 @@ fn run_test_f32(name: &str) {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let model = GbdtF32::from_lightgbm(&model_bytes).unwrap();
+    let model = Gbdt::from_lightgbm(&model_bytes).unwrap();
     assert_eq!(
         model.n_features(),
         expected_n_features,
@@ -99,53 +99,53 @@ fn run_test_f32(name: &str) {
 
 #[test]
 fn regression_small() {
-    run_test_f32("regression_small");
+    run_test("regression_small");
 }
 
 #[test]
 fn regression_deep() {
-    run_test_f32("regression_deep");
+    run_test("regression_deep");
 }
 
 #[test]
 fn regression_large() {
-    run_test_f32("regression_large");
+    run_test("regression_large");
 }
 
 // ---- binary classification (raw logit) ----
 
 #[test]
 fn binary_small() {
-    run_test_f32("binary_small");
+    run_test("binary_small");
 }
 
 #[test]
 fn binary_deep() {
-    run_test_f32("binary_deep");
+    run_test("binary_deep");
 }
 
 // ---- NaN routing ----
 
 #[test]
 fn nan_regression() {
-    run_test_f32("nan_regression");
+    run_test("nan_regression");
 }
 
 // ---- edge cases ----
 
 #[test]
 fn stump() {
-    run_test_f32("stump");
+    run_test("stump");
 }
 
 #[test]
 fn many_features() {
-    run_test_f32("many_features");
+    run_test("many_features");
 }
 
 // ---- alternative objectives ----
 
 #[test]
 fn huber() {
-    run_test_f32("huber");
+    run_test("huber");
 }

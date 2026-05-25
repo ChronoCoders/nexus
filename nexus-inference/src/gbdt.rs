@@ -116,7 +116,7 @@ fn reorder_and_compact(raw: &[RawNode]) -> Vec<Node> {
     nodes
 }
 
-/// Gradient-boosted decision tree ensemble (f32 inference).
+/// Gradient-boosted decision tree ensemble.
 ///
 /// Immutable after construction. All prediction methods take `&self`.
 /// Thread-safe: `Send + Sync` by construction (no interior mutability).
@@ -125,16 +125,16 @@ fn reorder_and_compact(raw: &[RawNode]) -> Vec<Node> {
 ///
 /// ```
 /// # #[cfg(feature = "loader-lightgbm")] {
-/// use nexus_inference::GbdtF32;
+/// use nexus_inference::Gbdt;
 ///
 /// // Load a LightGBM model from text format bytes
-/// // let model = GbdtF32::from_lightgbm(model_bytes).unwrap();
+/// // let model = Gbdt::from_lightgbm(model_bytes).unwrap();
 /// // let prediction = model.predict(&features);
 /// # }
 /// ```
 #[cfg(feature = "alloc")]
 #[derive(Debug, Clone)]
-pub struct GbdtF32 {
+pub struct Gbdt {
     nodes: Box<[Node]>,
     tree_offsets: Box<[u32]>,
     n_features: usize,
@@ -142,7 +142,7 @@ pub struct GbdtF32 {
 }
 
 #[cfg(feature = "alloc")]
-impl GbdtF32 {
+impl Gbdt {
     /// Predict the ensemble score.
     ///
     /// Returns the raw ensemble score (base score + sum of leaf values).
@@ -255,6 +255,8 @@ impl GbdtF32 {
         output[0] = self.predict_nan_aware(features);
     }
 
+    /// Branchless tree traversal with single cmov per level.
+    ///
     /// # Safety
     ///
     /// `tree` must point to the root of a valid tree within `self.nodes`.
@@ -263,11 +265,14 @@ impl GbdtF32 {
     fn walk_tree(tree: *const Node, features: &[f32], nan_aware: bool) -> f32 {
         let mut idx = 0usize;
         loop {
+            // SAFETY: idx=0 at entry. Subsequent values from node.left
+            // (validated by remap_child) or idx+1 (DFS layout invariant).
             let node = unsafe { *tree.add(idx) };
             if node.feature_idx & LEAF_BIT != 0 {
                 return node.value;
             }
 
+            // SAFETY: feature_idx & FEATURE_MASK < n_features (validated in convert_tree).
             let feat = unsafe {
                 *features.get_unchecked((node.feature_idx & FEATURE_MASK) as usize)
             };
@@ -349,9 +354,9 @@ mod tests {
     }
 
     #[cfg(feature = "alloc")]
-    fn single_stump(base_score: f32) -> GbdtF32 {
+    fn single_stump(base_score: f32) -> Gbdt {
         let nodes = vec![split(0, 1, 2, 0.5), leaf(-1.0), leaf(1.0)];
-        GbdtF32::from_parts(vec![nodes], 1, base_score)
+        Gbdt::from_parts(vec![nodes], 1, base_score)
     }
 
     #[test]
@@ -387,7 +392,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     fn multi_tree_sums() {
         let stump = vec![split(0, 1, 2, 0.5), leaf(-1.0), leaf(1.0)];
-        let model = GbdtF32::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 0.0_f32);
+        let model = Gbdt::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 0.0_f32);
         assert_eq!(model.predict(&[0.3_f32]), -3.0_f32);
         assert_eq!(model.predict(&[0.8_f32]), 3.0_f32);
     }
@@ -396,7 +401,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     fn predict_n_partial() {
         let stump = vec![split(0, 1, 2, 0.5), leaf(-1.0), leaf(1.0)];
-        let model = GbdtF32::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 5.0_f32);
+        let model = Gbdt::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 5.0_f32);
         assert_eq!(model.predict_n(&[0.3_f32], 2), 5.0_f32 + -2.0_f32);
     }
 
@@ -404,7 +409,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     fn predict_n_exceeds_count() {
         let stump = vec![split(0, 1, 2, 0.5), leaf(-1.0), leaf(1.0)];
-        let model = GbdtF32::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 0.0_f32);
+        let model = Gbdt::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 0.0_f32);
         assert_eq!(model.predict_n(&[0.3_f32], 100), model.predict(&[0.3_f32]));
     }
 
@@ -420,7 +425,7 @@ mod tests {
             leaf(2.0),
             leaf(4.0),
         ];
-        let model = GbdtF32::from_parts(vec![nodes], 2, 0.0_f32);
+        let model = Gbdt::from_parts(vec![nodes], 2, 0.0_f32);
         assert_eq!(model.predict(&[3.0_f32, 1.0]), -4.0_f32);
         assert_eq!(model.predict(&[3.0_f32, 3.0]), -2.0_f32);
         assert_eq!(model.predict(&[7.0_f32, 5.0]), 2.0_f32);
@@ -441,7 +446,7 @@ mod tests {
             leaf(-1.0),
             leaf(1.0),
         ];
-        let model = GbdtF32::from_parts(vec![nodes], 1, 0.0_f32);
+        let model = Gbdt::from_parts(vec![nodes], 1, 0.0_f32);
         assert_eq!(model.predict_nan_aware(&[f32::NAN]), -1.0_f32);
     }
 
@@ -449,7 +454,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     fn nan_routing_default_right() {
         let nodes = vec![split(0, 1, 2, 0.5), leaf(-1.0), leaf(1.0)];
-        let model = GbdtF32::from_parts(vec![nodes], 1, 0.0_f32);
+        let model = Gbdt::from_parts(vec![nodes], 1, 0.0_f32);
         assert_eq!(model.predict_nan_aware(&[f32::NAN]), 1.0_f32);
     }
 
@@ -467,7 +472,7 @@ mod tests {
             leaf(-1.0),
             leaf(1.0),
         ];
-        let model = GbdtF32::from_parts(vec![nodes], 1, 0.0_f32);
+        let model = Gbdt::from_parts(vec![nodes], 1, 0.0_f32);
         assert_eq!(model.predict(&[f32::NAN]), 1.0_f32);
     }
 

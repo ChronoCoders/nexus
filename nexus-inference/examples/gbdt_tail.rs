@@ -1,7 +1,7 @@
 //! Measures the full latency distribution of GBDT predict.
 //! Run with: taskset -c 0 cargo run --example gbdt_tail --release --features loader-lightgbm
 
-use nexus_inference::GbdtF32;
+use nexus_inference::Gbdt;
 use std::time::Instant;
 
 const LIGHTGBM_HEADER: &str = "\
@@ -109,7 +109,7 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
     sorted[idx.min(sorted.len() - 1)]
 }
 
-fn run_distribution(name: &str, model: &GbdtF32, features: &[Vec<f32>], n_samples: usize) {
+fn run_distribution(name: &str, model: &Gbdt, features: &[Vec<f32>], n_samples: usize) {
     let n_feat = features.len();
     let mut latencies = Vec::with_capacity(n_samples);
 
@@ -151,7 +151,7 @@ fn run_distribution(name: &str, model: &GbdtF32, features: &[Vec<f32>], n_sample
     println!();
 }
 
-fn run_distribution_nan(name: &str, model: &GbdtF32, features: &[Vec<f32>], n_samples: usize) {
+fn run_distribution_nan(name: &str, model: &Gbdt, features: &[Vec<f32>], n_samples: usize) {
     let n_feat = features.len();
     let mut latencies = Vec::with_capacity(n_samples);
 
@@ -198,7 +198,7 @@ fn main() {
     let features_random = random_features(8, 4096, 0xDEAD_BEEF_CAFE_F00D);
 
     let text = build_lightgbm_model(100, 6, 8);
-    let model = GbdtF32::from_lightgbm(text.as_bytes()).unwrap();
+    let model = Gbdt::from_lightgbm(text.as_bytes()).unwrap();
 
     println!("=== GBDT 100x6, 8 features — Latency Distribution ===\n");
 

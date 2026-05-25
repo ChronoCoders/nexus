@@ -11,7 +11,7 @@
 use alloc::{vec, vec::Vec};
 
 use crate::error::LoadError;
-use crate::gbdt::{FEATURE_MASK, GbdtF32, LEAF_SENTINEL, RawNode};
+use crate::gbdt::{FEATURE_MASK, Gbdt, LEAF_SENTINEL, RawNode};
 
 struct TreeBlock {
     num_leaves: usize,
@@ -340,7 +340,7 @@ fn parse_u8_array(s: &str) -> Result<Vec<u8>, LoadError> {
         .collect()
 }
 
-impl GbdtF32 {
+impl Gbdt {
     /// Load from LightGBM text model format.
     ///
     /// # Errors
@@ -392,7 +392,7 @@ end of trees
 
     #[test]
     fn parse_minimal_model() {
-        let model = GbdtF32::from_lightgbm(MINIMAL_MODEL.as_bytes()).unwrap();
+        let model = Gbdt::from_lightgbm(MINIMAL_MODEL.as_bytes()).unwrap();
         assert_eq!(model.n_trees(), 1);
         assert_eq!(model.n_features(), 3);
         assert_eq!(model.base_score(), 0.5_f32);
@@ -435,7 +435,7 @@ end of trees
 
     #[test]
     fn parse_multi_tree() {
-        let model = GbdtF32::from_lightgbm(TWO_TREE_MODEL.as_bytes()).unwrap();
+        let model = Gbdt::from_lightgbm(TWO_TREE_MODEL.as_bytes()).unwrap();
         assert_eq!(model.n_trees(), 2);
         assert_eq!(model.n_features(), 2);
 
@@ -466,7 +466,7 @@ leaf_value=-1.0 1.0
 
 end of trees
 ";
-        let model = GbdtF32::from_lightgbm(model_text.as_bytes()).unwrap();
+        let model = Gbdt::from_lightgbm(model_text.as_bytes()).unwrap();
         assert_eq!(model.predict_nan_aware(&[f32::NAN]), -1.0_f32);
     }
 
@@ -491,7 +491,7 @@ leaf_value=-1.0 1.0
 
 end of trees
 ";
-        let err = GbdtF32::from_lightgbm(model_text.as_bytes()).unwrap_err();
+        let err = Gbdt::from_lightgbm(model_text.as_bytes()).unwrap_err();
         assert_eq!(
             err,
             LoadError::Validation("categorical splits not supported")
@@ -509,13 +509,13 @@ average_output=0.0
 
 end of trees
 ";
-        let err = GbdtF32::from_lightgbm(model_text.as_bytes()).unwrap_err();
+        let err = Gbdt::from_lightgbm(model_text.as_bytes()).unwrap_err();
         assert_eq!(err, LoadError::Validation("multi-class not supported"));
     }
 
     #[test]
     fn parse_rejects_malformed() {
-        let err = GbdtF32::from_lightgbm(b"garbage input").unwrap_err();
+        let err = Gbdt::from_lightgbm(b"garbage input").unwrap_err();
         assert!(matches!(
             err,
             LoadError::Parse(_) | LoadError::Validation(_)
@@ -543,7 +543,7 @@ leaf_value=-1.0 1.0
 
 end of trees
 ";
-        let err = GbdtF32::from_lightgbm(model_text.as_bytes()).unwrap_err();
+        let err = Gbdt::from_lightgbm(model_text.as_bytes()).unwrap_err();
         assert_eq!(
             err,
             LoadError::Validation("split_feature index exceeds n_features")
@@ -588,7 +588,7 @@ end of trees
 
     #[test]
     fn round_trip_prediction() {
-        let model = GbdtF32::from_lightgbm(ROUND_TRIP_MODEL.as_bytes()).unwrap();
+        let model = Gbdt::from_lightgbm(ROUND_TRIP_MODEL.as_bytes()).unwrap();
         assert_eq!(model.n_trees(), 2);
         assert_eq!(model.n_features(), 3);
         assert!((model.base_score() - 4.28_f32).abs() < 1e-5);
@@ -625,7 +625,7 @@ leaf_value=-1.0 1.0
 
 end of trees
 ";
-        let err = GbdtF32::from_lightgbm(model_text.as_bytes()).unwrap_err();
+        let err = Gbdt::from_lightgbm(model_text.as_bytes()).unwrap_err();
         assert_eq!(err, LoadError::Validation("linear trees not supported"));
     }
 }
