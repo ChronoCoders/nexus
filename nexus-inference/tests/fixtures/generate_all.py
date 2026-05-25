@@ -797,7 +797,9 @@ def generate_bnn_large():
 
 
 def generate_fuzz():
-    rng = random.Random(42)
+    # Each fuzz family below seeds its own independent RNG (distinct fixed
+    # seed) so that adding or reordering a family never perturbs the configs
+    # or fixtures of the others.
 
     activations_mlp = [
         ("relu", nn.ReLU, None),
@@ -824,6 +826,7 @@ def generate_fuzz():
     init_fns = [init_linspace, init_sinusoidal]
 
     # Fuzz LSTM
+    rng = random.Random(42)
     for i in range(4):
         input_size = rng.randint(1, 8)
         hidden_size = rng.randint(2, 16)
@@ -836,6 +839,7 @@ def generate_fuzz():
                      rnn_prefix=f"fuzz{i}.lstm", proj_prefix=f"fuzz{i}.fc")
 
     # Fuzz GRU
+    rng = random.Random(142)
     for i in range(4):
         input_size = rng.randint(1, 8)
         hidden_size = rng.randint(2, 16)
@@ -848,6 +852,7 @@ def generate_fuzz():
                      rnn_prefix=f"fuzz{i}.gru", proj_prefix=f"fuzz{i}.proj")
 
     # Fuzz MLP f32
+    rng = random.Random(242)
     for i in range(4):
         n_hidden = rng.randint(0, 3)
         input_size = rng.randint(1, 8)
@@ -862,6 +867,7 @@ def generate_fuzz():
                      activation_param=act_param)
 
     # Fuzz MLP f64
+    rng = random.Random(342)
     for i in range(2):
         n_hidden = rng.randint(0, 2)
         input_size = rng.randint(1, 6)
@@ -876,6 +882,7 @@ def generate_fuzz():
                      activation_param=act_param)
 
     # Fuzz Conv1d
+    rng = random.Random(442)
     for i in range(4):
         input_ch = rng.randint(1, 6)
         kernel_size = rng.randint(2, 6)
@@ -890,6 +897,7 @@ def generate_fuzz():
                       init_fn=rng.choice(init_fns), activation_param=act_param)
 
     # Fuzz Stacked LSTM
+    rng = random.Random(542)
     for i in range(4):
         input_size = rng.randint(1, 8)
         hidden_size = rng.randint(2, 16)
@@ -904,6 +912,7 @@ def generate_fuzz():
                              rnn_prefix=f"fuzz{i}.lstm", proj_prefix=f"fuzz{i}.fc")
 
     # Fuzz Stacked GRU
+    rng = random.Random(642)
     for i in range(4):
         input_size = rng.randint(1, 8)
         hidden_size = rng.randint(2, 16)
@@ -918,6 +927,7 @@ def generate_fuzz():
                              rnn_prefix=f"fuzz{i}.gru", proj_prefix=f"fuzz{i}.proj")
 
     # Fuzz SSM
+    rng = random.Random(742)
     for i in range(4):
         input_size = rng.randint(1, 6)
         hidden_size = rng.randint(2, 16)
@@ -932,6 +942,7 @@ def generate_fuzz():
                       has_d=has_d)
 
     # Fuzz TCN
+    rng = random.Random(842)
     for i in range(4):
         input_size = rng.randint(1, 4)
         filters = rng.choice([2, 4, 8])
@@ -951,6 +962,7 @@ def generate_fuzz():
                      prefix=f"fuzz{i}.tcn", init_fn=rng.choice(init_fns))
 
     # Fuzz BNN
+    rng = random.Random(942)
     for i in range(4):
         input_size = rng.randint(1, 8)
         hidden_size = rng.choice([64, 128])

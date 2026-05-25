@@ -1021,10 +1021,15 @@ fn count_tcn_layers(st: &SafeTensors<'_>, prefix: &str) -> Result<usize, LoadErr
         return Err(LoadError::TensorNotFound(format!("{prefix}.conv_0.weight")));
     }
 
+    // Reject orphaned per-layer tensors (weight or bias) past the
+    // consecutive run — a stray conv_{k}.bias signals a malformed file.
     let stem = format!("{prefix}.conv_");
     for name in st.names() {
-        if let Some(suffix) = name.strip_prefix(stem.as_str())
-            && let Some(idx_str) = suffix.strip_suffix(".weight")
+        let idx_str = name.strip_prefix(stem.as_str()).and_then(|s| {
+            s.strip_suffix(".weight")
+                .or_else(|| s.strip_suffix(".bias"))
+        });
+        if let Some(idx_str) = idx_str
             && let Ok(idx) = idx_str.parse::<usize>()
             && idx >= n
         {
@@ -2570,5 +2575,35 @@ mod tests {
         let y_st = st.predict(&input);
         let y_fp = fp.predict(&input);
         assert!((y_st - y_fp).abs() < 1e-7, "st={y_st} fp={y_fp}");
+    }
+
+    // ---- TCN ----
+
+    #[test]
+    fn tcn_rejects_orphan_bias() {
+        // conv_0 complete + a stray conv_2.bias (no conv_2.weight, conv_1
+        // missing). The orphan bias past the consecutive run must be
+        // rejected, not silently ignored.
+        let f = 4_usize;
+        let ic = 2_usize;
+        let ks = 3_usize;
+        let o = 1_usize;
+
+        let w0 = f32_bytes(&vec![0.1_f32; f * ic * ks]);
+        let b0 = f32_bytes(&vec![0.0_f32; f]);
+        let wo = f32_bytes(&vec![0.1_f32; o * f]);
+        let bo = f32_bytes(&vec![0.0_f32; o]);
+        let orphan_bias = f32_bytes(&vec![0.0_f32; f]);
+
+        let data = serialize_tensors(vec![
+            ("t.conv_0.weight", make_view(Dtype::F32, &[f, ic, ks], &w0)),
+            ("t.conv_0.bias", make_view(Dtype::F32, &[f], &b0)),
+            ("t.conv_2.bias", make_view(Dtype::F32, &[f], &orphan_bias)),
+            ("t.output.weight", make_view(Dtype::F32, &[o, f], &wo)),
+            ("t.output.bias", make_view(Dtype::F32, &[o], &bo)),
+        ]);
+
+        let err = crate::TinyTcnF32::from_safetensors(&data, "t", crate::Activation::Relu, false);
+        assert!(matches!(err, Err(LoadError::Validation(_))), "got {err:?}");
     }
 }
