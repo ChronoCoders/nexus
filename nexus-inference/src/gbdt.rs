@@ -271,7 +271,9 @@ macro_rules! impl_gbdt {
                     } else {
                         feat <= node.value as $ty
                     };
-                    idx = if go_left { node.left as usize } else { idx + 1 };
+                    let left = node.left as usize;
+                    let right = idx + 1;
+                    idx = core::hint::select_unpredictable(go_left, left, right);
                 }
             }
 
