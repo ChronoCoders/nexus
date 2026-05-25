@@ -1367,6 +1367,10 @@ fn count_quantized_mlp_layers(st: &SafeTensors<'_>, prefix: &str) -> Result<usiz
         }
     }
 
+    if n == 0 {
+        return Ok(0);
+    }
+
     let stem = prefixed(prefix, "layer_");
     for name in st.names() {
         let Some(suffix) = name.strip_prefix(stem.as_str()) else {
