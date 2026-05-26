@@ -1,4 +1,20 @@
 #![warn(missing_docs)]
+// Test modules favor terse, exact assertions over clippy's production lints:
+// exact comparisons against known fixtures, single-char loop vars, `vec!`
+// literals, and `#[should_panic]` without a message (the panic contract, not
+// its text, is what's under test).
+#![cfg_attr(
+    test,
+    allow(
+        clippy::float_cmp,
+        clippy::identity_op,
+        clippy::many_single_char_names,
+        clippy::redundant_closure_for_method_calls,
+        clippy::should_panic_without_expect,
+        clippy::suboptimal_flops,
+        clippy::useless_vec
+    )
+)]
 
 //! Real-time CPU inference for small, pre-trained models.
 //!
@@ -29,30 +45,39 @@
 use std::cell::UnsafeCell;
 
 mod activation;
-mod dot;
+mod bnn;
+mod causal1d;
 mod error;
 mod gbdt;
+mod gru;
+mod kernel;
+mod lstm;
 mod lut;
 mod mlp;
 mod quantized_mlp;
-mod rnn;
-mod bnn;
 mod ssm;
-mod conv;
+mod stacked_gru;
+mod stacked_lstm;
+mod tcn;
+mod validate;
 
 #[cfg(any(feature = "loader-lightgbm", feature = "safetensors"))]
 mod loader;
 
 pub use activation::Activation;
 pub use bnn::Bnn;
-pub use conv::{Causal1dConv, TinyTcn};
+pub use causal1d::Causal1dConv;
 pub use error::LoadError;
 pub use gbdt::Gbdt;
+pub use gru::TinyGru;
+pub use lstm::TinyLstm;
 pub use lut::Lut;
 pub use mlp::Mlp;
 pub use quantized_mlp::QuantizedMlp;
-pub use rnn::{StackedGru, StackedLstm, TinyGru, TinyLstm};
 pub use ssm::LinearSsm;
+pub use stacked_gru::StackedGru;
+pub use stacked_lstm::StackedLstm;
+pub use tcn::TinyTcn;
 
 /// Inference model with mutable access.
 ///
@@ -85,6 +110,30 @@ pub trait Model {
 /// Stateless models (GBDT, MLP, LUT, BNN, QuantizedMLP) also provide
 /// inherent `predict(&self)` methods for use without exclusive access.
 pub trait StatelessModel: Model {}
+
+/// Generate the `Model` trait impl for a model type by delegating to its
+/// inherent `predict` / `predict_into` / `n_outputs` methods. Pass a trailing
+/// `, stateless` to also mark the type [`StatelessModel`].
+macro_rules! impl_model {
+    ($ty:ty) => {
+        impl $crate::Model for $ty {
+            fn predict(&mut self, input: &[f32]) -> f32 {
+                <$ty>::predict(self, input)
+            }
+            fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
+                <$ty>::predict_into(self, input, output);
+            }
+            fn n_outputs(&self) -> usize {
+                <$ty>::n_outputs(self)
+            }
+        }
+    };
+    ($ty:ty, stateless) => {
+        $crate::impl_model!($ty);
+        impl $crate::StatelessModel for $ty {}
+    };
+}
+pub(crate) use impl_model;
 
 /// Interior-mutable scratch buffer for stateless models.
 ///

@@ -1,3 +1,13 @@
+// Benchmark code prioritizes legibility over lint-cleanliness.
+#![allow(
+    clippy::format_push_string,
+    clippy::many_single_char_names,
+    clippy::redundant_closure_for_method_calls,
+    clippy::suboptimal_flops,
+    clippy::unreadable_literal,
+    unused_mut
+)]
+
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nexus_inference::{Activation, Bnn, Gbdt, Lut, Mlp, QuantizedMlp, TinyTcn};
 
@@ -267,6 +277,52 @@ fn bench_mlp_f32(c: &mut Criterion) {
     let mut model = Mlp::from_parts(&[64, 64, 64, 1], &w, &b, Activation::Relu).unwrap();
     c.bench_function("Mlp::predict 64→64→64→1 relu", |b| {
         b.iter(|| model.predict(black_box(&features_64)));
+    });
+}
+
+fn bench_mlp_f32_activations(c: &mut Criterion) {
+    let features_64: Vec<f32> = vec![0.5; 64];
+    let features_32: Vec<f32> = vec![0.5; 32];
+
+    let (w, b) = build_mlp_weights(&[64, 64, 1]);
+    let w: Vec<f32> = w.into_iter().map(|x| x as f32).collect();
+    let b: Vec<f32> = b.into_iter().map(|x| x as f32).collect();
+
+    let mut model = Mlp::from_parts(&[64, 64, 1], &w, &b, Activation::Tanh).unwrap();
+    c.bench_function("Mlp::predict 64→64→1 tanh", |b| {
+        b.iter(|| model.predict(black_box(&features_64)));
+    });
+
+    let (w, b) = build_mlp_weights(&[64, 64, 1]);
+    let w: Vec<f32> = w.into_iter().map(|x| x as f32).collect();
+    let b: Vec<f32> = b.into_iter().map(|x| x as f32).collect();
+    let mut model = Mlp::from_parts(&[64, 64, 1], &w, &b, Activation::Gelu).unwrap();
+    c.bench_function("Mlp::predict 64→64→1 gelu", |b| {
+        b.iter(|| model.predict(black_box(&features_64)));
+    });
+
+    let (w, b) = build_mlp_weights(&[64, 64, 1]);
+    let w: Vec<f32> = w.into_iter().map(|x| x as f32).collect();
+    let b: Vec<f32> = b.into_iter().map(|x| x as f32).collect();
+    let mut model = Mlp::from_parts(&[64, 64, 1], &w, &b, Activation::Swish).unwrap();
+    c.bench_function("Mlp::predict 64→64→1 swish", |b| {
+        b.iter(|| model.predict(black_box(&features_64)));
+    });
+
+    let (w, b) = build_mlp_weights(&[32, 32, 32, 32, 1]);
+    let w: Vec<f32> = w.into_iter().map(|x| x as f32).collect();
+    let b: Vec<f32> = b.into_iter().map(|x| x as f32).collect();
+    let mut model = Mlp::from_parts(&[32, 32, 32, 32, 1], &w, &b, Activation::Tanh).unwrap();
+    c.bench_function("Mlp::predict 32→32→32→32→1 tanh", |b| {
+        b.iter(|| model.predict(black_box(&features_32)));
+    });
+
+    let (w, b) = build_mlp_weights(&[32, 32, 32, 32, 1]);
+    let w: Vec<f32> = w.into_iter().map(|x| x as f32).collect();
+    let b: Vec<f32> = b.into_iter().map(|x| x as f32).collect();
+    let mut model = Mlp::from_parts(&[32, 32, 32, 32, 1], &w, &b, Activation::Gelu).unwrap();
+    c.bench_function("Mlp::predict 32→32→32→32→1 gelu", |b| {
+        b.iter(|| model.predict(black_box(&features_32)));
     });
 }
 
@@ -555,6 +611,7 @@ criterion_group!(
     bench_gbdt,
     bench_gbdt_random,
     bench_mlp_f32,
+    bench_mlp_f32_activations,
     bench_mlp_f32_layernorm,
     bench_lut,
     bench_bnn,

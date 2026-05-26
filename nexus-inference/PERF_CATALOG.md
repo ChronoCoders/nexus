@@ -10,7 +10,7 @@ with turbo boost disabled where noted.
 
 ---
 
-## Shared: dot product primitives (`src/dot/`)
+## Shared: dot product primitives (`src/kernel/dot/`)
 
 The foundation everything else builds on. All model types bottleneck on
 matrix-vector products, so dot product throughput is the single largest
@@ -130,21 +130,22 @@ needed — the operation is a division + array index per feature, already
 
 ---
 
-## MLP (`src/mlp.rs`)
+## MLP (`src/mlp.rs`, `src/kernel/gemv.rs`, `src/kernel/mlp.rs`)
 
 ### SIMD tiled path (f32 only)
 
-- `mlp_tiled_simd_f32`: `#[inline(never)]` free function processing the
-  `out_size_4` portion of each layer.
-- **Fused bias + activation + store** in SIMD registers. No scalar
-  round-trip between dot product and activation.
-- Relu path: `_mm_max_ps(bias + dots, zero)` (or `_mm256_max_ps` for dot8).
-- Identity/last-layer path: `bias + dots` directly.
+- `tiled_gemv` (`src/kernel/gemv.rs`): `#[inline(never)]` free function
+  processing the `out_size_4` portion of each layer. Shared by MLP and
+  Conv models.
+- **Fused bias + activation + store** in SIMD registers via
+  `activate_8wide` / `activate_4wide`. Handles Relu, Tanh, Sigmoid,
+  Gelu, Swish, LeakyRelu, and Identity in SIMD. Only ELU falls through
+  to scalar.
 - **dot8→dot4 cascade** with `in_size >= 32` threshold: groups of 8 use
   `dot8_f32_m256`, remainder of 4 uses `dot4_f32_m128`.
 ### 3-branch borrow checker pattern
 
-- `predict_into` dispatches to `mlp_tiled_simd_f32` with one of three
+- `predict_into` dispatches to `tiled_gemv` with one of three
   disjoint src/dst pairs: `(scratch_a → scratch_b)`,
   `(scratch_b → scratch_a)`, or `(scratch → output)`. Each branch is
   separate so Rust proves disjoint borrows. One branch per layer, not
@@ -243,7 +244,7 @@ Controlled A/B (turbo off, pinned) showed the optimization breakdown:
 
 ---
 
-## LSTM (`src/rnn/lstm.rs`, `src/rnn/avx2_gates.rs`, `src/rnn/avx512_gates.rs`)
+## LSTM (`src/lstm.rs`, `src/kernel/gates/avx2.rs`, `src/kernel/gates/avx512.rs`)
 
 ### Architecture
 
@@ -257,7 +258,7 @@ Two hot operations per step:
 
 ### SIMD gate processing (AVX2)
 
-- `lstm_gates_avx2`: processes 8 hidden units at a time.
+- `lstm_gates` (`src/kernel/gates/avx2.rs`): processes 8 hidden units at a time.
 - **Padé [7,6] rational approximation** for tanh — 7th degree numerator,
   6th degree denominator. Evaluated with FMA chains (3 FMA per
   num/den). Accuracy ~1e-5 max error over [-4.97, 4.97].
@@ -272,7 +273,7 @@ Two hot operations per step:
 
 ### SIMD gate processing (AVX-512)
 
-- `lstm_gates_avx512`: same algorithm, 16 lanes at a time.
+- `lstm_gates` (`src/kernel/gates/avx512.rs`): same algorithm, 16 lanes at a time.
 - `tanh_16wide` / `sigmoid_16wide` using `__m512` intrinsics.
 - NaN detection via `_mm512_cmp_ps_mask` + `_mm512_mask_blend_ps`
   (k-mask variant).
@@ -298,7 +299,7 @@ dot8→dot4 cascade. See Results section for measured deltas.
 
 ---
 
-## GRU (`src/rnn/gru.rs`, `src/rnn/avx2_gates.rs`, `src/rnn/avx512_gates.rs`)
+## GRU (`src/gru.rs`, `src/kernel/gates/avx2.rs`, `src/kernel/gates/avx512.rs`)
 
 ### Architecture
 
@@ -324,7 +325,7 @@ only the hh matvec (`in_size=64`) benefits. LSTM 16→64 gets
 
 ### SIMD gate processing
 
-- `gru_gates_avx2` / `gru_gates_avx512`: 8-wide / 16-wide processing.
+- `gru_gates` in `avx2.rs` / `avx512.rs`: 8-wide / 16-wide processing.
 - Same Padé tanh/sigmoid as LSTM (shared functions).
 - Reset gate: `r = sigmoid(ih + bias_ih + hh + bias_hh)` — 4 loads + 3
   adds + sigmoid.
@@ -347,7 +348,7 @@ measured deltas.
 
 ---
 
-## Causal 1D Convolution (`src/conv/causal1d.rs`)
+## Causal 1D Convolution (`src/causal1d.rs`)
 
 ### Architecture
 
@@ -365,13 +366,11 @@ Two phases per step:
 
 ### SIMD tiled convolution
 
-- `conv_tiled_simd`: `#[inline(never)]` free function.
+- Uses shared `tiled_gemv` (`src/kernel/gemv.rs`), same as MLP.
 - **dot8→dot4 cascade** with `conv_len >= 32` threshold.
-- **Fused bias + activation + store**: Relu path uses
-  `_mm256_max_ps(bias + dots, zero)` / `_mm_max_ps` variant. Identity
-  path skips the max.
-- Handles Relu and Identity activations in SIMD. Other activations fall
-  through to scalar.
+- **Fused bias + activation + store** via `activate_8wide` /
+  `activate_4wide`. Handles all activations except ELU in SIMD;
+  ELU falls through to scalar.
 
 ### Measured results
 
@@ -387,7 +386,7 @@ See Results section for before/after with dot8 cascade.
 
 ---
 
-## Stacked LSTM / Stacked GRU (`src/rnn/stacked_lstm.rs`, `src/rnn/stacked_gru.rs`)
+## Stacked LSTM / Stacked GRU (`src/stacked_lstm.rs`, `src/stacked_gru.rs`)
 
 Same optimizations as single-layer variants — they call the same
 `matvec_bias_f32` / `matvec_f32` and gate functions. The stacked models
@@ -521,10 +520,12 @@ optimizations — the savings are purely in the fp32 bookends.
 
 ### `#[inline(never)]` for SIMD helpers
 
-Both `mlp_tiled_simd_f32` and `conv_tiled_simd` use `#[inline(never)]`.
+`tiled_gemv` (`src/kernel/gemv.rs`), `layer_norm` (`src/kernel/mlp.rs`),
+`matvec_i8_i32` (`src/kernel/quantized.rs`), `output_from_bits_simd` and
+`matvec_bias_binarize` (`src/kernel/binary.rs`) all use `#[inline(never)]`.
 LLVM otherwise inlines these large functions into every call site,
 bloating the caller's instruction footprint. The function call overhead
-(~5 cycles) is negligible relative to the matvec work.
+(~5 cycles) is negligible relative to the compute work.
 
 ### Compile-time SIMD dispatch
 
@@ -541,14 +542,30 @@ Every SIMD function has a scalar fallback compiled on non-x86 or
 non-AVX2 targets. The scalar paths use the same algorithmic structure
 (dot4 tiling, multi-accumulator) so correctness tests cover both paths.
 
-### Activation functions
+### Activation functions (`src/kernel/activate.rs`)
 
-- Relu: `max(x, 0)` — trivially vectorized as `_mm*_max_ps(x, zero)`.
-- Identity: no-op — just bias-add.
-- Tanh/Sigmoid: Padé [7,6] rational approximation (LSTM/GRU gates).
-  Not yet vectorized in MLP/Conv paths — those use scalar `activate_f32`
-  for non-Relu activations. Vectorizing Tanh/Sigmoid for MLP would help
-  if those activations become common in deployed models.
+All activation kernels live in `src/kernel/activate.rs`. Scalar
+approximations (`tanh_f32`, `sigmoid_f32`, `exp_f32`, `activate_f32`)
+and SIMD variants (`tanh_8wide`, `sigmoid_8wide`, `gelu_8wide`,
+`swish_8wide`, `activate_8wide`, `activate_4wide`) plus AVX-512
+16-wide `tanh_16wide` / `sigmoid_16wide`.
+
+- **Relu**: `max(x, 0)` — `_mm256_max_ps(x, zero)`.
+- **LeakyRelu**: `blendv` with scaled negative lane.
+- **Identity**: no-op — just bias-add.
+- **Tanh**: Padé [7,6] rational approximation, FMA chains (3 FMA each
+  for numerator and denominator). NaN-preserving via `_CMP_UNORD_Q`
+  mask + `blendv`. Shared by LSTM/GRU gates and MLP/Conv via
+  `activate_8wide`.
+- **Sigmoid**: `0.5 + 0.5 * tanh(x * 0.5)` — one call to tanh, one FMA.
+- **Gelu**: tanh approximation: `0.5 * x * (1 + tanh(√(2/π) * (x + 0.044715 * x³)))`.
+- **Swish**: `x * sigmoid(x)`.
+- **ELU**: scalar only — `activate_8wide` returns `None`, caller falls
+  through to scalar `activate_f32`.
+
+The `tiled_gemv` function (MLP/Conv SIMD path) dispatches through
+`activate_8wide` for 8-lane chunks and `activate_4wide` for 4-lane
+tails. All activations except ELU run fully in SIMD.
 
 ---
 
@@ -654,17 +671,6 @@ The f32 speedup exceeds 2× for 64-wide layers — the SIMD tiled path
 fuses bias+relu in registers, and dot8 halves function call overhead.
 The 1.2× for 8→16→1 is purely from f32 halving bandwidth; no SIMD
 tiling fires (both dimensions below threshold).
-
-### MLP f64 (control)
-
-| Config | Before | After | Delta |
-|--------|--------|-------|-------|
-| 8→16→1 | 66ns | 65ns | ~0% |
-| 16→32→8→1 | 156ns | 170ns | ~0% (noise) |
-| 64→64→1 | 467ns | 455ns | ~0% |
-
-No SIMD changes for f64 — confirms the improvements are from the
-optimization work, not system state changes.
 
 ### QuantizedMlp (2026-05-25)
 
@@ -791,11 +797,10 @@ Ordered by expected impact, not effort.
    doubles the SIMD width — expect another 30-50% on matvec-bound
    models without code changes (just a different target CPU).
 
-2. **Vectorized Tanh/Sigmoid in MLP/Conv**: currently only LSTM/GRU
-   gates use the SIMD Padé approximation. MLP and Conv fall back to
-   scalar `activate_f32` for Tanh/Sigmoid/Gelu/Swish. If these
-   activations are deployed, the same 8-wide Padé can be applied in
-   the tiled helpers.
+2. ~~**Vectorized Tanh/Sigmoid in MLP/Conv**~~: **Done** — `tiled_gemv`
+   dispatches through `activate_8wide` / `activate_4wide` for all
+   activations except ELU. Tanh, Sigmoid, Gelu, Swish, and LeakyRelu
+   all run in SIMD on the MLP and Conv tiled paths.
 
 3. ~~**Int8 quantized matvec**~~: **Done** — `QuantizedMlp` implements
    4-row tiled i8 matmul with SIMD quantize/dequant. See section above.

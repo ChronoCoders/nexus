@@ -2,6 +2,7 @@
 //! Run with: taskset -c 0 cargo run --example gbdt_tail --release --features loader-lightgbm
 
 use nexus_inference::Gbdt;
+use std::fmt::Write;
 use std::time::Instant;
 
 const LIGHTGBM_HEADER: &str = "\
@@ -13,15 +14,15 @@ num_tree_per_iteration=1
 
 fn build_lightgbm_model(n_trees: usize, depth: usize, n_features: usize) -> String {
     let mut s = String::from(LIGHTGBM_HEADER);
-    s.push_str(&format!("max_feature_idx={}\n", n_features - 1));
+    writeln!(s, "max_feature_idx={}", n_features - 1).unwrap();
     s.push_str("average_output=0.0\n\n");
 
     for t in 0..n_trees {
         let num_leaves = 1usize << depth;
         let num_internal = num_leaves - 1;
 
-        s.push_str(&format!("Tree={t}\n"));
-        s.push_str(&format!("num_leaves={num_leaves}\n"));
+        writeln!(s, "Tree={t}").unwrap();
+        writeln!(s, "num_leaves={num_leaves}").unwrap();
         s.push_str("num_cat=0\n");
 
         s.push_str("split_feature=");
@@ -29,7 +30,7 @@ fn build_lightgbm_model(n_trees: usize, depth: usize, n_features: usize) -> Stri
             if i > 0 {
                 s.push(' ');
             }
-            s.push_str(&format!("{}", (t + i) % n_features));
+            write!(s, "{}", (t + i) % n_features).unwrap();
         }
         s.push('\n');
 
@@ -38,7 +39,7 @@ fn build_lightgbm_model(n_trees: usize, depth: usize, n_features: usize) -> Stri
             if i > 0 {
                 s.push(' ');
             }
-            s.push_str(&format!("{:.1}", (i as f64 + 1.0) * 0.5));
+            write!(s, "{:.1}", (i as f64 + 1.0) * 0.5).unwrap();
         }
         s.push('\n');
 
@@ -58,10 +59,10 @@ fn build_lightgbm_model(n_trees: usize, depth: usize, n_features: usize) -> Stri
             }
             let left = 2 * i + 1;
             if left < num_internal {
-                s.push_str(&format!("{left}"));
+                write!(s, "{left}").unwrap();
             } else {
                 let leaf_idx = left - num_internal;
-                s.push_str(&format!("-{}", leaf_idx + 1));
+                write!(s, "-{}", leaf_idx + 1).unwrap();
             }
         }
         s.push('\n');
@@ -73,10 +74,10 @@ fn build_lightgbm_model(n_trees: usize, depth: usize, n_features: usize) -> Stri
             }
             let right = 2 * i + 2;
             if right < num_internal {
-                s.push_str(&format!("{right}"));
+                write!(s, "{right}").unwrap();
             } else {
                 let leaf_idx = right - num_internal;
-                s.push_str(&format!("-{}", leaf_idx + 1));
+                write!(s, "-{}", leaf_idx + 1).unwrap();
             }
         }
         s.push('\n');
@@ -87,7 +88,7 @@ fn build_lightgbm_model(n_trees: usize, depth: usize, n_features: usize) -> Stri
                 s.push(' ');
             }
             let val = (i as f64 - num_leaves as f64 / 2.0) * 0.01;
-            s.push_str(&format!("{val:.4}"));
+            write!(s, "{val:.4}").unwrap();
         }
         s.push_str("\n\n");
     }

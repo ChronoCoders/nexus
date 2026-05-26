@@ -126,3 +126,34 @@ both and keep whichever trains better for your task.
 | 8→16→1 | 1,536 + 16 | 155 ns |
 | 8→32→1 | 5,120 + 32 | 351 ns |
 | 16→64→1 | 20,480 + 64 | 1,306 ns |
+
+## Stacked (multi-layer): StackedLstm
+
+`StackedLstm` is the multi-layer form — PyTorch `nn.LSTM(num_layers=N)`.
+Each layer's hidden state feeds as the next layer's input; the output
+projection is applied only to the final layer's hidden state. Use it when a
+single layer can't capture hierarchical temporal structure; otherwise
+prefer `TinyLstm` (one layer is usually enough at these widths).
+
+Construct with per-layer weight slices:
+
+```rust
+use nexus_inference::StackedLstm;
+
+let lstm = StackedLstm::from_parts(
+    input_size, hidden_size, output_size,
+    &layers_weight_ih, &layers_weight_hh,   // one (4H, ·) slice per layer
+    &layers_bias_ih,   &layers_bias_hh,     // one [4H] slice per layer
+    &w_out, &b_out,                          // projection on the final layer
+).unwrap();
+```
+
+`hidden_state(layer)` / `cell_state(layer)` expose per-layer state; `reset()`
+clears all layers. Cost scales ~linearly with layer count (non-first layers
+have a larger input dim, `hidden + hidden`, so slightly above the
+single-layer baseline):
+
+| Configuration | Latency |
+|--------------|--------:|
+| 8→32→1 × 2 layers | 739 ns |
+| 8→32→1 × 3 layers | 1239 ns |

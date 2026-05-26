@@ -1,5 +1,5 @@
 use crate::LoadError;
-use crate::dot::{matvec_bias_f32, matvec_f32};
+use crate::kernel::dot::{matvec_bias_f32, matvec_f32};
 
 #[cfg(not(all(
     target_arch = "x86_64",
@@ -9,7 +9,7 @@ use crate::dot::{matvec_bias_f32, matvec_f32};
     )
 )))]
 #[allow(unused_imports)]
-use super::{sigmoid_f32, tanh_f32};
+use crate::kernel::activate::{sigmoid_f32, tanh_f32};
 
 /// Single-layer GRU for streaming temporal inference.
 ///
@@ -90,15 +90,14 @@ impl TinyGru {
         w_out: &[f32],
         b_out: &[f32],
     ) -> Result<Self, LoadError> {
-        if input_size == 0 || hidden_size == 0 || output_size == 0 {
-            return Err(LoadError::Validation("sizes must be > 0"));
-        }
-        if input_size > u16::MAX as usize
-            || hidden_size > u16::MAX as usize
-            || output_size > u16::MAX as usize
-        {
-            return Err(LoadError::Validation("size exceeds u16::MAX"));
-        }
+        crate::validate::require_nonzero(
+            &[input_size, hidden_size, output_size],
+            "sizes must be > 0",
+        )?;
+        crate::validate::require_u16(
+            &[input_size, hidden_size, output_size],
+            "size exceeds u16::MAX",
+        )?;
 
         let gate_count = 3 * hidden_size;
 
@@ -121,18 +120,17 @@ impl TinyGru {
             return Err(LoadError::Validation("b_out length mismatch"));
         }
 
-        for &w in weight_ih
-            .iter()
-            .chain(weight_hh)
-            .chain(bias_ih)
-            .chain(bias_hh)
-            .chain(w_out)
-            .chain(b_out)
-        {
-            if !w.is_finite() {
-                return Err(LoadError::Validation("non-finite weight"));
-            }
-        }
+        crate::validate::require_all_finite(
+            weight_ih
+                .iter()
+                .chain(weight_hh)
+                .chain(bias_ih)
+                .chain(bias_hh)
+                .chain(w_out)
+                .chain(b_out)
+                .copied(),
+            "non-finite weight",
+        )?;
 
         Ok(Self {
             weight_ih: weight_ih.into(),
@@ -207,7 +205,7 @@ impl TinyGru {
             hi,
         );
 
-        super::apply_gru_gates(
+        crate::kernel::gates::apply_gru_gates(
             &self.ih_scratch,
             &self.hh_scratch,
             &self.bias_ih,
@@ -252,22 +250,12 @@ impl TinyGru {
     }
 }
 
-impl crate::Model for TinyGru {
-    fn predict(&mut self, input: &[f32]) -> f32 {
-        TinyGru::predict(self, input)
-    }
-    fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
-        TinyGru::predict_into(self, input, output);
-    }
-    fn n_outputs(&self) -> usize {
-        TinyGru::n_outputs(self)
-    }
-}
+crate::impl_model!(TinyGru);
 
 #[cfg(test)]
 mod tests {
-    use super::super::{sigmoid_f32, tanh_f32};
     use super::*;
+    use crate::kernel::activate::{sigmoid_f32, tanh_f32};
 
     fn make_gru(
         input: usize,

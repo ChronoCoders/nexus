@@ -1,6 +1,7 @@
 use crate::LoadError;
-use crate::activation::{Activation, activate_f32};
-use crate::dot::{dot_f32, dot4_f32, matvec_bias_f32};
+use crate::activation::Activation;
+use crate::kernel::activate::activate_f32;
+use crate::kernel::dot::{dot_f32, dot4_f32, matvec_bias_f32};
 
 #[derive(Debug, Clone)]
 struct TcnConvLayer {
@@ -109,16 +110,14 @@ impl TinyTcn {
                 "layers_w_conv and layers_b_conv must have the same length",
             ));
         }
-        if input_size == 0 || filters == 0 || kernel_size == 0 || output_size == 0 {
-            return Err(LoadError::Validation("sizes must be > 0"));
-        }
-        if input_size > u16::MAX as usize
-            || filters > u16::MAX as usize
-            || kernel_size > u16::MAX as usize
-            || output_size > u16::MAX as usize
-        {
-            return Err(LoadError::Validation("size exceeds u16::MAX"));
-        }
+        crate::validate::require_nonzero(
+            &[input_size, filters, kernel_size, output_size],
+            "sizes must be > 0",
+        )?;
+        crate::validate::require_u16(
+            &[input_size, filters, kernel_size, output_size],
+            "size exceeds u16::MAX",
+        )?;
         if w_out.len() != output_size * filters {
             return Err(LoadError::Validation("w_out length mismatch"));
         }
@@ -126,11 +125,10 @@ impl TinyTcn {
             return Err(LoadError::Validation("b_out length mismatch"));
         }
 
-        for &w in w_out.iter().chain(b_out) {
-            if !w.is_finite() {
-                return Err(LoadError::Validation("non-finite weight"));
-            }
-        }
+        crate::validate::require_all_finite(
+            w_out.iter().chain(b_out).copied(),
+            "non-finite weight",
+        )?;
 
         let mut layers = Vec::with_capacity(num_layers);
         let mut max_conv_len = 0;
@@ -145,11 +143,10 @@ impl TinyTcn {
                 .and_then(|v| v.checked_add(1))
                 .ok_or(LoadError::Validation("buffer size overflow"))?;
 
-            if dilation > u16::MAX as usize || buf_len > u16::MAX as usize {
-                return Err(LoadError::Validation(
-                    "dilation or buffer size exceeds u16::MAX",
-                ));
-            }
+            crate::validate::require_u16(
+                &[dilation, buf_len],
+                "dilation or buffer size exceeds u16::MAX",
+            )?;
 
             let conv_len = kernel_size * in_ch;
             if conv_len > max_conv_len {
@@ -163,11 +160,10 @@ impl TinyTcn {
                 return Err(LoadError::Validation("layer b_conv length mismatch"));
             }
 
-            for &w in layers_w_conv[k].iter().chain(layers_b_conv[k]) {
-                if !w.is_finite() {
-                    return Err(LoadError::Validation("non-finite weight"));
-                }
-            }
+            crate::validate::require_all_finite(
+                layers_w_conv[k].iter().chain(layers_b_conv[k]).copied(),
+                "non-finite weight",
+            )?;
 
             layers.push(TcnConvLayer {
                 w_conv: layers_w_conv[k].into(),
@@ -378,7 +374,7 @@ fn conv_from_buffer(
             all(target_feature = "avx2", target_feature = "fma"),
         )
     ))]
-    let mut f = super::causal1d::conv_tiled_simd(
+    let mut f = crate::kernel::gemv::tiled_gemv(
         &layer.w_conv,
         &layer.b_conv,
         lin,
@@ -422,17 +418,7 @@ fn conv_from_buffer(
     layer.write_idx = if next >= buf_len { 0 } else { next as u16 };
 }
 
-impl crate::Model for TinyTcn {
-    fn predict(&mut self, input: &[f32]) -> f32 {
-        TinyTcn::predict(self, input)
-    }
-    fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
-        TinyTcn::predict_into(self, input, output);
-    }
-    fn n_outputs(&self) -> usize {
-        TinyTcn::n_outputs(self)
-    }
-}
+crate::impl_model!(TinyTcn);
 
 #[cfg(test)]
 mod tests {

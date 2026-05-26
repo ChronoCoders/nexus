@@ -61,16 +61,16 @@ layer by layer. Same for biases.
 A single activation function is applied to all hidden layers.
 The output layer is always linear.
 
-| Activation | Formula | Feature required | Use case |
-|-----------|---------|-----------------|----------|
-| `Relu` | `max(0, x)` | None | Default, most common |
-| `LeakyRelu(alpha)` | `x >= 0 ? x : alpha*x` | None | Prevents dead neurons |
-| `Identity` | `x` | None | No transformation |
-| `Tanh` | `tanh(x)` | | Bounded output [-1, 1] |
-| `Sigmoid` | `1 / (1 + exp(-x))` | | Bounded output [0, 1] |
-| `Elu(alpha)` | `x >= 0 ? x : alpha*(exp(x)-1)` | | Smooth negative region |
-| `Gelu` | `0.5x(1 + tanh(√(2/π)(x + 0.044715x³)))` | | Transformer default |
-| `Swish` | `x * sigmoid(x)` | | aka SiLU in PyTorch |
+| Activation | Formula | Use case |
+|-----------|---------|----------|
+| `Relu` | `max(0, x)` | Default, most common |
+| `LeakyRelu(alpha)` | `x >= 0 ? x : alpha*x` | Prevents dead neurons |
+| `Identity` | `x` | No transformation |
+| `Tanh` | `tanh(x)` | Bounded output [-1, 1] |
+| `Sigmoid` | `1 / (1 + exp(-x))` | Bounded output [0, 1] |
+| `Elu(alpha)` | `x >= 0 ? x : alpha*(exp(x)-1)` | Smooth negative region |
+| `Gelu` | `0.5x(1 + tanh(√(2/π)(x + 0.044715x³)))` | Transformer default |
+| `Swish` | `x * sigmoid(x)` | aka SiLU in PyTorch |
 
 **Design note:** The current API uses a single activation for the
 entire model. Per-layer activations (e.g., relu hidden + tanh final
@@ -153,3 +153,32 @@ The cost is dominated by FMA count:
 With AVX2+FMA tiled GEMV (4 neurons sharing input loads), the
 hot path is load-port bound, not compute bound. Compile with
 `RUSTFLAGS="-C target-cpu=native"` for AVX2+FMA dispatch.
+
+## Int8 Quantization (QuantizedMlp)
+
+`QuantizedMlp` is the same feedforward architecture with **int8 weights**.
+The forward pass quantizes f32 inputs to i8, does an integer matmul with
+i32 accumulation, dequantizes back to f32, and applies the activation.
+Per-layer affine quantization; the `128*row_sum` and `input_zp*row_sum`
+corrections are precomputed into the bias at construction, so there's zero
+per-output correction overhead at inference.
+
+The AVX2 path uses `_mm256_maddubs_epi16` — **32 elements per instruction,
+4x the throughput of f32 FMA** — with a 4-row tiled kernel sharing input
+loads. The catch is fixed quantize/dequantize overhead per layer, so it is
+*not* a free win:
+
+| Configuration | Latency | vs `Mlp` |
+|--------------|--------:|---------:|
+| 8→16→1 relu | 113 ns | 2.1x slower |
+| 16→32→8→1 relu | 316 ns | 3.0x slower |
+| 64→64→1 relu | 387 ns | 2.1x slower |
+| 32→32→32→32→1 relu | 511 ns | 2.2x slower |
+
+**Use `QuantizedMlp` when the model is memory-bandwidth-bound** — large
+layers that spill to L2, where the 4x-denser i8 weights and matmul
+outweigh the quant overhead. For small models that fit in L1, the f32
+[`Mlp`](mlp.md) is faster. Construct via `QuantizedMlp::from_parts` with
+per-layer i8 weights plus scales and zero-points (export from a
+quantization-aware-trained or post-training-quantized PyTorch model — see
+[Exporting from Python](../guides/python-export.md)).

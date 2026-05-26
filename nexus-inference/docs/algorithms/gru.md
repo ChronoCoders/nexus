@@ -122,3 +122,29 @@ gru.reset();
 | 8→16→1 | 1,152 + 16 | 165 ns |
 | 8→32→1 | 3,840 + 32 | 356 ns |
 | 16→64→1 | 15,360 + 64 | 1,061 ns |
+
+## Stacked (multi-layer): StackedGru
+
+`StackedGru` is the multi-layer form — PyTorch `nn.GRU(num_layers=N)`. Each
+layer's hidden state feeds the next layer's input; the output projection
+applies to the final layer only. Reach for it when one layer can't capture
+hierarchical temporal structure; otherwise prefer `TinyGru`.
+
+```rust
+use nexus_inference::StackedGru;
+
+let gru = StackedGru::from_parts(
+    input_size, hidden_size, output_size,
+    &layers_weight_ih, &layers_weight_hh,   // per-layer GRU gate weights
+    &layers_bias_ih,   &layers_bias_hh,
+    &w_out, &b_out,                          // projection on the final layer
+).unwrap();
+```
+
+`hidden_state(layer)` exposes per-layer state; `reset()` clears all layers.
+Cost scales ~linearly with depth:
+
+| Configuration | Latency |
+|--------------|--------:|
+| 8→32→1 × 2 layers | 711 ns |
+| 8→32→1 × 3 layers | 1201 ns |

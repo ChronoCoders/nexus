@@ -1,10 +1,13 @@
-mod gru;
-mod lstm;
-mod stacked_gru;
-mod stacked_lstm;
+//! LSTM / GRU gate kernels.
+//!
+//! `apply_lstm_gates` / `apply_gru_gates` dispatch to the AVX-512, AVX2, or
+//! scalar implementation at compile time. The SIMD backends live in the
+//! sibling `avx2` / `avx512` modules.
+
+use crate::kernel::activate::{sigmoid_f32, tanh_f32};
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-mod avx512_gates;
+mod avx512;
 
 #[cfg(all(
     target_arch = "x86_64",
@@ -12,20 +15,13 @@ mod avx512_gates;
     target_feature = "fma",
     not(target_feature = "avx512f"),
 ))]
-mod avx2_gates;
-
-pub use gru::TinyGru;
-pub use lstm::TinyLstm;
-pub use stacked_gru::StackedGru;
-pub use stacked_lstm::StackedLstm;
-
-pub(crate) use crate::activation::{sigmoid_f32, tanh_f32};
+mod avx2;
 
 #[inline(always)]
 pub(crate) fn apply_lstm_gates(gates: &[f32], c: &mut [f32], h: &mut [f32], hidden_size: usize) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     {
-        avx512_gates::lstm_gates_avx512(gates, c, h, hidden_size);
+        avx512::lstm_gates(gates, c, h, hidden_size);
     }
 
     #[cfg(all(
@@ -35,7 +31,7 @@ pub(crate) fn apply_lstm_gates(gates: &[f32], c: &mut [f32], h: &mut [f32], hidd
         not(target_feature = "avx512f"),
     ))]
     {
-        avx2_gates::lstm_gates_avx2(gates, c, h, hidden_size);
+        avx2::lstm_gates(gates, c, h, hidden_size);
     }
 
     #[cfg(not(all(
@@ -69,7 +65,7 @@ pub(crate) fn apply_gru_gates(
 ) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     {
-        avx512_gates::gru_gates_avx512(ih_scratch, hh_scratch, bias_ih, bias_hh, h, hidden_size);
+        avx512::gru_gates(ih_scratch, hh_scratch, bias_ih, bias_hh, h, hidden_size);
     }
 
     #[cfg(all(
@@ -79,7 +75,7 @@ pub(crate) fn apply_gru_gates(
         not(target_feature = "avx512f"),
     ))]
     {
-        avx2_gates::gru_gates_avx2(ih_scratch, hh_scratch, bias_ih, bias_hh, h, hidden_size);
+        avx2::gru_gates(ih_scratch, hh_scratch, bias_ih, bias_hh, h, hidden_size);
     }
 
     #[cfg(not(all(

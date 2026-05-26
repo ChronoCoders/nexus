@@ -10,13 +10,20 @@
   │
   ├── A trained neural network (PyTorch)
   │   ├── Feedforward (nn.Linear layers)
-  │   │   └── MLP (export weights to from_parts)
+  │   │   ├── MLP (export weights to from_parts)
+  │   │   ├── int8-quantized → QuantizedMlp (i8 matmul; wins when memory-bound)
+  │   │   └── binarized (±1 weights) → BNN (XNOR+popcount; GBDT-beating latency)
   │   ├── LSTM (nn.LSTM)
-  │   │   └── TinyLstm (streaming step-by-step)
+  │   │   ├── single layer → TinyLstm
+  │   │   └── num_layers > 1 → StackedLstm
   │   ├── GRU (nn.GRU)
-  │   │   └── TinyGru (streaming step-by-step)
-  │   └── 1D convolution (nn.Conv1d, causal)
-  │       └── Causal1dConv (streaming step-by-step)
+  │   │   ├── single layer → TinyGru
+  │   │   └── num_layers > 1 → StackedGru
+  │   ├── 1D convolution (nn.Conv1d, causal)
+  │   │   ├── single layer / short window → Causal1dConv
+  │   │   └── dilated stack / longer reach → TinyTcn
+  │   └── State-space model (S4 / S4D)
+  │       └── LinearSsm (discretize to A,B,C,D; export via safetensors)
   │
   ├── A pre-computed function over a small grid
   │   └── LUT (tabulate in Python, load flat array)
@@ -32,11 +39,18 @@
       ├── Dense numeric inputs, nonlinear relationships
       │   └── MLP (universal function approximation)
       │
-      ├── Temporal patterns, long-range memory
+      ├── MLP-like nonlinearity but GBDT-beating latency / tiny memory
+      │   └── BNN (binary hidden layers; FPGA-friendly)
+      │
+      ├── Temporal, unbounded learned memory
       │   └── LSTM or GRU (hidden state accumulates over time)
       │
-      ├── Temporal patterns, fixed window
-      │   └── Causal1dConv (sees exactly last K timesteps)
+      ├── Temporal, very long-range memory (LSTM forget gates leak)
+      │   └── SSM (diagonal linear recurrence; fastest temporal model)
+      │
+      ├── Temporal, fixed known window
+      │   ├── short → Causal1dConv (sees exactly last K timesteps)
+      │   └── medium/long → TCN (exponential reach, linear cost in layers)
       │
       └── Simple monotonic relationship, 1-2 features
           └── LUT (precompute, avoid model complexity)
@@ -69,6 +83,18 @@
 | **Model source** | PyTorch `nn.LSTM` | PyTorch `nn.GRU` | PyTorch `nn.Conv1d` |
 | **API** | `predict` / `predict_into` | `predict` / `predict_into` | `predict` / `predict_into` |
 
+### Specialized variants
+
+Reach for these when a base type's variant fits the constraint better:
+
+| Type | Base | Reach for it when |
+|------|------|-------------------|
+| [BNN](../algorithms/bnn.md) | MLP | GBDT-beating latency, 32x less weight memory, FPGA-native — and you have a binary-trained net |
+| [QuantizedMlp](../algorithms/mlp.md) | MLP | int8 weights win when memory-bandwidth-bound (large layers / L2 spill) |
+| [SSM](../algorithms/ssm.md) | temporal | very long-range linear memory, fastest temporal, no transcendentals |
+| [TCN](../algorithms/tcn.md) | Causal1dConv | exponential receptive field from a few dilated layers; fixed, auditable lookback |
+| StackedLstm / StackedGru | LSTM / GRU | deeper temporal models (PyTorch `num_layers=N`) |
+
 ## When to Combine Types
 
 In trading systems, it's common to use multiple model types together:
@@ -98,3 +124,8 @@ The `predict_into` API makes composition straightforward
 | LSTM | 4→8→1 (105ns) | 8→16→1 (155ns) | 16→64→1 (1.3us) |
 | GRU | 8→16→1 (165ns) | 8→32→1 (356ns) | 16→64→1 (1.1us) |
 | Conv | 4ch×4k×8f (50ns) | 4ch×8k×16f (87ns) | 8ch×8k×32f (168ns) |
+| BNN | 8→64→1, 0 bin (83ns) | 8→64→1, 2 bin (309ns) | 8→128→1, 2 bin (666ns) |
+| QuantizedMlp | 8→16→1 (113ns) | 16→32→8→1 (316ns) | 32→32→32→32→1 (511ns) |
+| SSM | 4→8→1 (42ns) | 8→32→1 (74ns) | 16→64→1 (131ns) |
+| TCN | 2 layers (~150ns) | 3 layers (~250ns) | 4+ layers (~350ns+) |
+| Stacked LSTM/GRU | — | 8→32→1 ×2 (~720ns) | 8→32→1 ×3 (~1.2us) |

@@ -1,7 +1,7 @@
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 
-use crate::activation::simd::{sigmoid_8wide, tanh_8wide};
+use crate::kernel::activate::simd::{sigmoid_8wide, tanh_8wide};
 
 /// LSTM gate activation + cell/hidden update, 8 units at a time.
 ///
@@ -9,7 +9,7 @@ use crate::activation::simd::{sigmoid_8wide, tanh_8wide};
 /// Updates c and h in-place.
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::many_single_char_names)]
-pub(super) fn lstm_gates_avx2(gates: &[f32], c: &mut [f32], h: &mut [f32], hidden: usize) {
+pub(super) fn lstm_gates(gates: &[f32], c: &mut [f32], h: &mut [f32], hidden: usize) {
     let mut k = 0;
     let h8 = hidden & !7;
 
@@ -56,7 +56,7 @@ pub(super) fn lstm_gates_avx2(gates: &[f32], c: &mut [f32], h: &mut [f32], hidde
 /// Updates h in-place.
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::many_single_char_names)]
-pub(super) fn gru_gates_avx2(
+pub(super) fn gru_gates(
     ih: &[f32],
     hh: &[f32],
     bias_ih: &[f32],

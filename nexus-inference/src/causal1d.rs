@@ -1,63 +1,7 @@
 use crate::LoadError;
-use crate::activation::{Activation, activate_f32};
-use crate::dot::{dot_f32, dot4_f32, matvec_bias_f32};
-
-#[cfg(all(
-    target_arch = "x86_64",
-    any(
-        target_feature = "avx512f",
-        all(target_feature = "avx2", target_feature = "fma"),
-    )
-))]
-#[inline(never)]
-pub(super) fn conv_tiled_simd(
-    w_conv: &[f32],
-    b_conv: &[f32],
-    lin: &[f32],
-    filter_scratch: &mut [f32],
-    conv_len: usize,
-    filters_4: usize,
-    activation: Activation,
-) -> usize {
-    use crate::activation::simd::{activate_4wide, activate_8wide};
-    use crate::dot::{dot4_f32_m128, dot8_f32_m256};
-    use core::arch::x86_64::*;
-
-    let filters_8 = filters_4 & !7;
-    let mut f = 0;
-    // SAFETY: cfg guarantees SIMD availability.
-    // f + N <= filters_4 within respective loops; bias/scratch accesses are in bounds.
-    unsafe {
-        if conv_len >= 32 {
-            while f < filters_8 {
-                let rows = &w_conv[f * conv_len..(f + 8) * conv_len];
-                let dots = dot8_f32_m256(rows, lin);
-                let bias_v = _mm256_loadu_ps(b_conv.as_ptr().add(f));
-                let with_bias = _mm256_add_ps(dots, bias_v);
-                match activate_8wide(with_bias, activation) {
-                    Some(activated) => {
-                        _mm256_storeu_ps(filter_scratch.as_mut_ptr().add(f), activated)
-                    }
-                    None => return f,
-                }
-                f += 8;
-            }
-        }
-
-        while f < filters_4 {
-            let rows = &w_conv[f * conv_len..(f + 4) * conv_len];
-            let dots = dot4_f32_m128(rows, lin);
-            let bias_v = _mm_loadu_ps(b_conv.as_ptr().add(f));
-            let with_bias = _mm_add_ps(dots, bias_v);
-            match activate_4wide(with_bias, activation) {
-                Some(activated) => _mm_storeu_ps(filter_scratch.as_mut_ptr().add(f), activated),
-                None => return f,
-            }
-            f += 4;
-        }
-    }
-    f
-}
+use crate::activation::Activation;
+use crate::kernel::activate::activate_f32;
+use crate::kernel::dot::{dot_f32, dot4_f32, matvec_bias_f32};
 
 /// Streaming causal 1D convolution.
 ///
@@ -134,16 +78,14 @@ impl Causal1dConv {
         b_out: &[f32],
         activation: Activation,
     ) -> Result<Self, LoadError> {
-        if input_ch == 0 || kernel_size == 0 || filters == 0 || output_size == 0 {
-            return Err(LoadError::Validation("sizes must be > 0"));
-        }
-        if input_ch > u16::MAX as usize
-            || kernel_size > u16::MAX as usize
-            || filters > u16::MAX as usize
-            || output_size > u16::MAX as usize
-        {
-            return Err(LoadError::Validation("size exceeds u16::MAX"));
-        }
+        crate::validate::require_nonzero(
+            &[input_ch, kernel_size, filters, output_size],
+            "sizes must be > 0",
+        )?;
+        crate::validate::require_u16(
+            &[input_ch, kernel_size, filters, output_size],
+            "size exceeds u16::MAX",
+        )?;
 
         if w_conv.len() != filters * kernel_size * input_ch {
             return Err(LoadError::Validation("w_conv length mismatch"));
@@ -158,11 +100,15 @@ impl Causal1dConv {
             return Err(LoadError::Validation("b_out length mismatch"));
         }
 
-        for &w in w_conv.iter().chain(b_conv).chain(w_out).chain(b_out) {
-            if !w.is_finite() {
-                return Err(LoadError::Validation("non-finite weight"));
-            }
-        }
+        crate::validate::require_all_finite(
+            w_conv
+                .iter()
+                .chain(b_conv)
+                .chain(w_out)
+                .chain(b_out)
+                .copied(),
+            "non-finite weight",
+        )?;
 
         Ok(Self {
             w_conv: w_conv.into(),
@@ -231,7 +177,7 @@ impl Causal1dConv {
                 all(target_feature = "avx2", target_feature = "fma"),
             )
         ))]
-        let mut f = conv_tiled_simd(
+        let mut f = crate::kernel::gemv::tiled_gemv(
             &self.w_conv,
             &self.b_conv,
             lin,
@@ -322,17 +268,7 @@ impl Causal1dConv {
     }
 }
 
-impl crate::Model for Causal1dConv {
-    fn predict(&mut self, input: &[f32]) -> f32 {
-        Causal1dConv::predict(self, input)
-    }
-    fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
-        Causal1dConv::predict_into(self, input, output);
-    }
-    fn n_outputs(&self) -> usize {
-        Causal1dConv::n_outputs(self)
-    }
-}
+crate::impl_model!(Causal1dConv);
 
 #[cfg(test)]
 mod tests {
