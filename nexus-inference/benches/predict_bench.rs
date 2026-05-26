@@ -1,3 +1,13 @@
+// Benchmark code prioritizes legibility over lint-cleanliness.
+#![allow(
+    clippy::format_push_string,
+    clippy::many_single_char_names,
+    clippy::redundant_closure_for_method_calls,
+    clippy::suboptimal_flops,
+    clippy::unreadable_literal,
+    unused_mut
+)]
+
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nexus_inference::{Activation, Bnn, Gbdt, Lut, Mlp, QuantizedMlp, TinyTcn};
 

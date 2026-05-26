@@ -1,4 +1,5 @@
 #![cfg(feature = "loader-lightgbm")]
+#![allow(clippy::redundant_closure_for_method_calls)]
 
 use nexus_inference::*;
 

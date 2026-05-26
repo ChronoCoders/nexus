@@ -1,4 +1,20 @@
 #![warn(missing_docs)]
+// Test modules favor terse, exact assertions over clippy's production lints:
+// exact comparisons against known fixtures, single-char loop vars, `vec!`
+// literals, and `#[should_panic]` without a message (the panic contract, not
+// its text, is what's under test).
+#![cfg_attr(
+    test,
+    allow(
+        clippy::float_cmp,
+        clippy::identity_op,
+        clippy::many_single_char_names,
+        clippy::redundant_closure_for_method_calls,
+        clippy::should_panic_without_expect,
+        clippy::suboptimal_flops,
+        clippy::useless_vec
+    )
+)]
 
 //! Real-time CPU inference for small, pre-trained models.
 //!
