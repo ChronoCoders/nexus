@@ -1,124 +1,114 @@
 use nexus_stats_core::math::MulAdd;
-macro_rules! impl_spring {
-    ($name:ident, $ty:ty) => {
-        /// Critically damped spring — chase a target without overshoot.
-        ///
-        /// Uses a Padé approximant for stable behavior with variable dt.
-        /// The output smoothly approaches the target with no ringing.
-        ///
-        /// # Use Cases
-        /// - Camera smoothing in games
-        /// - Smooth parameter transitions
-        /// - Any "chase this value" without PID complexity
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            smooth_time: $ty,
-            omega: $ty,
-            value: $ty,
-            velocity: $ty,
-            initialized: bool,
-        }
 
-        impl $name {
-            /// Creates a new spring with the given smooth time.
-            ///
-            /// `smooth_time` controls how quickly the spring converges.
-            /// Larger = slower, smoother. Smaller = faster, more reactive.
-            #[inline]
-            pub fn new(smooth_time: $ty) -> Result<Self, nexus_stats_core::ConfigError> {
-                #[allow(clippy::neg_cmp_op_on_partial_ord)]
-                if !(smooth_time > 0.0 as $ty) {
-                    return Err(nexus_stats_core::ConfigError::Invalid(
-                        "smooth_time must be positive",
-                    ));
-                }
-                Ok(Self {
-                    smooth_time,
-                    omega: 2.0 as $ty / smooth_time,
-                    value: 0.0 as $ty,
-                    velocity: 0.0 as $ty,
-                    initialized: false,
-                })
-            }
-
-            /// Updates toward the target. Returns the new value.
-            ///
-            /// `dt` is the time since the last update, in the same units as `smooth_time`.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if target or dt is NaN, or
-            /// `DataError::Infinite` if either is infinite.
-            #[inline]
-            pub fn update(
-                &mut self,
-                target: $ty,
-                dt: $ty,
-            ) -> Result<$ty, nexus_stats_core::DataError> {
-                check_finite!(target);
-                check_finite!(dt);
-                if !self.initialized {
-                    self.value = target;
-                    self.initialized = true;
-                    return Ok(target);
-                }
-
-                // Critically damped spring using Padé approximant
-                let x = self.omega * dt;
-                // Padé(2,2) approximant to exp(-x): (1 - x/2 + x²/12) / (1 + x/2 + x²/12)
-                // Simplified: use exact exp(-x) via (1 + x + x²/2)⁻¹ approximation
-                let exp_neg = 1.0 as $ty / (x.fma(x.fma(0.5 as $ty, 1.0 as $ty), 1.0 as $ty));
-
-                let delta = self.value - target;
-                let temp = self.omega.fma(delta, self.velocity) * dt;
-                self.velocity = self.omega.fma(-temp, self.velocity) * exp_neg;
-                self.value = (delta + temp).fma(exp_neg, target);
-
-                Ok(self.value)
-            }
-
-            /// The configured smooth time.
-            #[inline]
-            #[must_use]
-            pub fn smooth_time(&self) -> $ty {
-                self.smooth_time
-            }
-
-            /// Current output value.
-            #[inline]
-            #[must_use]
-            pub fn value(&self) -> $ty {
-                self.value
-            }
-
-            /// Current velocity.
-            #[inline]
-            #[must_use]
-            pub fn velocity(&self) -> $ty {
-                self.velocity
-            }
-
-            /// Resets to uninitialized state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.value = 0.0 as $ty;
-                self.velocity = 0.0 as $ty;
-                self.initialized = false;
-            }
-
-            /// Resets to a specific value with zero velocity.
-            #[inline]
-            pub fn reset_to(&mut self, value: $ty) {
-                self.value = value;
-                self.velocity = 0.0 as $ty;
-                self.initialized = true;
-            }
-        }
-    };
+/// Critically damped spring — chase a target without overshoot.
+///
+/// Uses a Pade approximant for stable behavior with variable dt.
+/// The output smoothly approaches the target with no ringing.
+///
+/// # Use Cases
+/// - Camera smoothing in games
+/// - Smooth parameter transitions
+/// - Any "chase this value" without PID complexity
+#[derive(Debug, Clone)]
+pub struct SpringF64 {
+    smooth_time: f64,
+    omega: f64,
+    value: f64,
+    velocity: f64,
+    initialized: bool,
 }
 
-impl_spring!(SpringF64, f64);
-impl_spring!(SpringF32, f32);
+impl SpringF64 {
+    /// Creates a new spring with the given smooth time.
+    ///
+    /// `smooth_time` controls how quickly the spring converges.
+    /// Larger = slower, smoother. Smaller = faster, more reactive.
+    #[inline]
+    pub fn new(smooth_time: f64) -> Result<Self, nexus_stats_core::ConfigError> {
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !(smooth_time > 0.0) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "smooth_time must be positive",
+            ));
+        }
+        Ok(Self {
+            smooth_time,
+            omega: 2.0 / smooth_time,
+            value: 0.0,
+            velocity: 0.0,
+            initialized: false,
+        })
+    }
+
+    /// Updates toward the target. Returns the new value.
+    ///
+    /// `dt` is the time since the last update, in the same units as `smooth_time`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if target or dt is NaN, or
+    /// `DataError::Infinite` if either is infinite.
+    #[inline]
+    pub fn update(&mut self, target: f64, dt: f64) -> Result<f64, nexus_stats_core::DataError> {
+        check_finite!(target);
+        check_finite!(dt);
+        if !self.initialized {
+            self.value = target;
+            self.initialized = true;
+            return Ok(target);
+        }
+
+        // Critically damped spring using Pade approximant
+        let x = self.omega * dt;
+        // Pade(2,2) approximant to exp(-x): (1 - x/2 + x^2/12) / (1 + x/2 + x^2/12)
+        // Simplified: use exact exp(-x) via (1 + x + x^2/2)^-1 approximation
+        let exp_neg = 1.0 / x.fma(x.fma(0.5, 1.0), 1.0);
+
+        let delta = self.value - target;
+        let temp = self.omega.fma(delta, self.velocity) * dt;
+        self.velocity = self.omega.fma(-temp, self.velocity) * exp_neg;
+        self.value = (delta + temp).fma(exp_neg, target);
+
+        Ok(self.value)
+    }
+
+    /// The configured smooth time.
+    #[inline]
+    #[must_use]
+    pub fn smooth_time(&self) -> f64 {
+        self.smooth_time
+    }
+
+    /// Current output value.
+    #[inline]
+    #[must_use]
+    pub fn value(&self) -> f64 {
+        self.value
+    }
+
+    /// Current velocity.
+    #[inline]
+    #[must_use]
+    pub fn velocity(&self) -> f64 {
+        self.velocity
+    }
+
+    /// Resets to uninitialized state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.value = 0.0;
+        self.velocity = 0.0;
+        self.initialized = false;
+    }
+
+    /// Resets to a specific value with zero velocity.
+    #[inline]
+    pub fn reset_to(&mut self, value: f64) {
+        self.value = value;
+        self.velocity = 0.0;
+        self.initialized = true;
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -183,13 +173,6 @@ mod tests {
         s.reset_to(50.0);
         assert_eq!(s.value(), 50.0);
         assert_eq!(s.velocity(), 0.0);
-    }
-
-    #[test]
-    fn f32_basic() {
-        let mut s = SpringF32::new(0.5).unwrap();
-        let v = s.update(100.0, 0.016).unwrap();
-        assert!((v - 100.0).abs() < 0.01);
     }
 
     #[test]

@@ -11,13 +11,14 @@
 //!
 //! | Type | Description | Feature |
 //! |------|-------------|---------|
-//! | [`HoltF64`] / [`HoltF32`] | Double exponential smoothing (level + trend) | — |
-//! | [`SpringF64`] / [`SpringF32`] | Critically damped spring (chase without overshoot) | — |
-//! | [`Kalman1dF64`] / [`Kalman1dF32`] | 1D Kalman filter (position + velocity) | — |
+//! | [`HoltF64`] | Double exponential smoothing (level + trend) | — |
+//! | [`SpringF64`] | Critically damped spring (chase without overshoot) | — |
+//! | [`Kalman1dF64`] | 1D Kalman filter (position + velocity) | — |
 //! | [`HuberEmaF64`] | Outlier-robust EMA (bounded step per observation) | — |
-//! | [`KamaF64`] / [`KamaF32`] | Kaufman Adaptive Moving Average | `alloc` |
+//! | [`KamaF64`] | Kaufman Adaptive Moving Average | `alloc` |
 //! | [`HampelF64`] | Three-zone outlier filter (pass / Winsorize / reject) | `alloc` |
-//! | [`WindowedMedianF64`] / [`WindowedMedianF32`] | Running median over a sliding window | `alloc` |
+//! | [`WindowedMedianF64`] | Running median over a sliding window (f64) | `alloc` |
+//! | [`WindowedMedianI64`] | Running median over a sliding window (i64) | `alloc` |
 //!
 //! # Re-export
 //!
