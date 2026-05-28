@@ -7,7 +7,7 @@ for circuit breakers.
 |----------|-------|
 | Update cost | ~5 cycles |
 | Memory | ~24 bytes |
-| Types | `DrawdownF64`, `DrawdownF32`, `DrawdownI64`, `DrawdownI32` |
+| Types | `DrawdownF64`, `DrawdownI64` |
 | Output | Current drawdown value |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 

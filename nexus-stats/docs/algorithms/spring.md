@@ -8,7 +8,7 @@ utility functions in game development.
 |----------|-------|
 | Update cost | ~12 cycles |
 | Memory | ~16 bytes |
-| Types | `SpringF64`, `SpringF32` |
+| Types | `SpringF64` |
 | Output | Current smoothed value |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 

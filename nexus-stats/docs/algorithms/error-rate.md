@@ -6,7 +6,7 @@
 |----------|-------|
 | Update cost | ~6 cycles |
 | Memory | ~32 bytes |
-| Types | `ErrorRateF64`, `ErrorRateF32` |
+| Types | `ErrorRateF64` |
 | Output | `Option<Condition>` — `Healthy` or `Degraded` |
 
 ## What It Does

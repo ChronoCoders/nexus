@@ -1,6 +1,6 @@
 # KAMA — Kaufman Adaptive Moving Average
 
-**Types:** `KamaF64`, `KamaF32`
+**Types:** `KamaF64`
 **Import:** `use nexus_stats_smoothing::KamaF64;`
 **Feature flags:** `alloc` (uses an internal window).
 

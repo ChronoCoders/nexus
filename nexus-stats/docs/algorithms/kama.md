@@ -7,7 +7,7 @@ response when trending, heavy smoothing when noisy. Used by quant shops.
 |----------|-------|
 | Update cost | ~16 cycles |
 | Memory | ~N×8 bytes (lookback buffer) |
-| Types | `KamaF64`, `KamaF32` |
+| Types | `KamaF64` |
 | Requires | `alloc` feature (runtime window size) |
 | Priming | After N samples |
 | Output | `Option<T>` — smoothed value once primed |

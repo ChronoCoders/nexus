@@ -8,7 +8,7 @@ Signal-analysis primitives that answer "how does this stream relate to itself, o
 
 ## Autocorrelation
 
-**Types:** `AutocorrelationF64`, `AutocorrelationF32`, integer variants.
+**Types:** `AutocorrelationF64`, `AutocorrelationI64`.
 
 ### What it computes
 
@@ -47,7 +47,7 @@ let rho = ac.correlation().unwrap(); // -1.0 .. 1.0
 
 ## CrossCorrelation
 
-**Types:** `CrossCorrelationF64`, `CrossCorrelationF32`.
+**Type:** `CrossCorrelationF64`.
 
 ### What it computes
 

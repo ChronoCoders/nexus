@@ -8,7 +8,7 @@ These types all answer "is this system healthy?" questions in O(1) with fixed me
 
 | Type | What it does |
 |------|--------------|
-| `DrawdownF64` / `DrawdownF32` | Peak-to-trough decline, classic P&L metric |
+| `DrawdownF64` / `DrawdownI64` | Peak-to-trough decline, classic P&L metric |
 | `RunningMaxF64` / `RunningMinF64` | All-time max/min since last `reset()` |
 | `WindowedMaxF64` / `WindowedMinF64` | Sliding window max/min (monotone deque) |
 | `PeakHoldF64` / `PeakHoldF32` | Peak envelope with exponential decay |

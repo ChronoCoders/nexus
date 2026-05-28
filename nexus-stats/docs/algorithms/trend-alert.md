@@ -7,7 +7,7 @@ exponential smoothing. Signals when the trend component exceeds a threshold.
 |----------|-------|
 | Update cost | ~12 cycles |
 | Memory | ~40 bytes |
-| Types | `TrendAlertF64`, `TrendAlertF32` |
+| Types | `TrendAlertF64` |
 | Output | `Option<Direction>` — `Stable`, `Rising`, or `Falling` |
 
 ## What It Does

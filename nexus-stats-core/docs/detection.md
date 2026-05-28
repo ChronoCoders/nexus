@@ -8,7 +8,7 @@ For advanced detection (MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZScore
 
 | Type | Detects |
 |------|---------|
-| `CusumF64` / `CusumF32` / `CusumI64` | Persistent shifts in mean (Page 1954) |
+| `CusumF64` / `CusumI64` | Persistent shifts in mean (Page 1954) |
 | `DistributionShiftF64` | Change in distribution shape (skewness/kurtosis) |
 
 ---

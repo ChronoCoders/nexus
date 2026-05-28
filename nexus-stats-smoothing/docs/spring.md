@@ -1,6 +1,6 @@
 # Spring — Critically Damped Chase
 
-**Types:** `SpringF64`, `SpringF32`
+**Types:** `SpringF64`
 **Import:** `use nexus_stats_smoothing::SpringF64;`
 **Feature flags:** None required.
 

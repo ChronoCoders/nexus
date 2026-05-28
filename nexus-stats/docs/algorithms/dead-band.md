@@ -7,7 +7,7 @@ processing by suppressing small, irrelevant fluctuations.
 |----------|-------|
 | Update cost | ~2 cycles |
 | Memory | ~16 bytes |
-| Types | `DeadBandF64`, `DeadBandF32`, `DeadBandI64`, `DeadBandI32` |
+| Types | `DeadBandF64`, `DeadBandI64` |
 | Output | `Option<T>` — `Some(value)` if changed enough, `None` if suppressed |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 

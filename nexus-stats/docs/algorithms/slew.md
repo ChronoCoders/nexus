@@ -7,7 +7,7 @@ smoothing — this is a hard constraint, not a filter.
 |----------|-------|
 | Update cost | ~3 cycles |
 | Memory | ~16 bytes |
-| Types | `SlewF64`, `SlewF32`, `SlewI64`, `SlewI32` |
+| Types | `SlewF64`, `SlewI64` |
 | Output | Rate-limited value |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 

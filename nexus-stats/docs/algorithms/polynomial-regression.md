@@ -10,8 +10,8 @@ For linear regression (degree 1), see [LinearRegression](linear-regression.md)
 |----------|-------|
 | Update cost | ~25 cycles (quadratic), ~35 cycles (degree 4) |
 | Memory | ~208 bytes (fixed, independent of degree) |
-| Types | `PolynomialRegressionF64`, `PolynomialRegressionF32` |
-| EW types | `EwPolynomialRegressionF64`, `EwPolynomialRegressionF32` |
+| Types | `PolynomialRegressionF64` |
+| EW types | `EwPolynomialRegressionF64` |
 | Transformed | `ExponentialRegressionF64`, `LogarithmicRegressionF64`, `PowerRegressionF64` |
 | Priming | degree + 1 observations (with intercept), degree without |
 | Output | `coefficients()`, `r_squared()`, `predict(x)` |

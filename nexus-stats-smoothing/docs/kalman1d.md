@@ -1,6 +1,6 @@
 # Kalman1d — Scalar Kalman Filter
 
-**Types:** `Kalman1dF64`, `Kalman1dF32`
+**Types:** `Kalman1dF64`
 **Import:** `use nexus_stats_smoothing::Kalman1dF64;`
 **Feature flags:** None required.
 

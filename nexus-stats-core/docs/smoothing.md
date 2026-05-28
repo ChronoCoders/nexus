@@ -6,8 +6,8 @@ Base smoothing primitives. Module path: `nexus_stats_core::smoothing`. For anyth
 
 | Type | What it does | Notes |
 |------|--------------|-------|
-| `EmaF64` / `EmaF32` | Classic exponentially-weighted moving average | Builder, halflife or alpha |
-| `EmaI64` / `EmaI32` | Integer-fixed-point EMA | No NaN check, no Result on update |
+| `EmaF64` | Classic exponentially-weighted moving average | Builder, halflife or alpha |
+| `EmaI64` | Integer-fixed-point EMA | No NaN check, no Result on update |
 | `AsymEmaF64` / `AsymEmaI64` | Different alpha for rising vs falling samples | Drawdown-aware |
 | `SlewLimiterF64` / `SlewLimiterI64` | Hard rate-of-change clamp | Not statistical — deterministic |
 
@@ -73,7 +73,7 @@ for setpoint in targets {
 
 ## Integer variants
 
-`EmaI64` / `EmaI32` / `AsymEmaI64` / `SlewLimiterI64` use fixed-point arithmetic for hot paths where you can't afford float ops (hard real-time budgets, SIMD-heavy loops). Interface is the same, but:
+`EmaI64` / `AsymEmaI64` / `SlewLimiterI64` use fixed-point arithmetic for hot paths where you can't afford float ops (hard real-time budgets, SIMD-heavy loops). Interface is the same, but:
 
 - `update` does not return `Result` (no NaN to guard against).
 - Internal precision is governed by a shift factor, documented on each type.

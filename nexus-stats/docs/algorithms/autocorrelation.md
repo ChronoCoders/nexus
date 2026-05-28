@@ -7,7 +7,7 @@ Online autocorrelation coefficient at a configurable lag.
 |----------|-------|
 | Update cost | ~12 cycles |
 | Memory | `8×LAG + 32` bytes |
-| Types | `AutocorrelationF64`, `AutocorrelationF32`, `AutocorrelationI64`, `AutocorrelationI32` |
+| Types | `AutocorrelationF64`, `AutocorrelationI64` |
 | Priming | After `LAG + 2` samples |
 | Output | `correlation()` in [-1, 1], `covariance()` — both `Option` |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
@@ -141,7 +141,7 @@ if let Some(r) = ac.correlation() {
 
 ## Integer Variants
 
-`AutocorrelationI64` and `AutocorrelationI32` accept integer samples,
+`AutocorrelationI64` accepts integer samples,
 convert to f64 internally, and return f64 correlation values. Use these
 when your input is naturally integer (tick counts, queue depths) and
 you want to avoid the caller-side cast.

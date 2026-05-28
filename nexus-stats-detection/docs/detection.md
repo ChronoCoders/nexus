@@ -6,7 +6,7 @@ Module path: `nexus_stats_detection::detection`.
 
 ## MOSUM — Moving Sum
 
-**Types:** `MosumF64`, `MosumF32`. Requires `alloc`.
+**Types:** `MosumF64`, `MosumI64`. Requires `alloc`.
 
 ### What it does
 
@@ -139,7 +139,7 @@ for &x in &stream {
 
 ## AdaptiveThreshold — EMA-based z-score
 
-**Types:** `AdaptiveThresholdF64`, `AdaptiveThresholdF32`. Requires `std` or `libm`.
+**Type:** `AdaptiveThresholdF64`. Requires `std` or `libm`.
 
 ### What it does
 
@@ -193,7 +193,7 @@ for &load in &cpu_samples {
 
 ## RobustZScore — MAD-based anomaly score
 
-**Types:** `RobustZScoreF64`, `RobustZScoreF32`.
+**Type:** `RobustZScoreF64`.
 
 ### What it does
 
@@ -244,7 +244,7 @@ for &price in &prices {
 
 ## TrendAlert — Forecast-based detection
 
-**Types:** `TrendAlertF64`, `TrendAlertF32`.
+**Type:** `TrendAlertF64`.
 
 ### What it does
 
@@ -297,7 +297,7 @@ for &latency in &stream {
 
 ## MultiGate — Layered severity
 
-**Types:** `MultiGateF64`, `MultiGateF32`.
+**Type:** `MultiGateF64`.
 
 ### What it does
 

@@ -6,7 +6,7 @@ Online Shannon entropy estimation. "How predictable is this signal?"
 |----------|-------|
 | Update cost | ~3 cycles |
 | Memory | `8×K + 8` bytes |
-| Types | `EntropyF64`, `EntropyF32` |
+| Types | `EntropyF64` |
 | Priming | After 1 observation |
 | Output | `entropy()`, `entropy_bits()`, `surprise(cat)`, `probability(cat)` — all `Option` |
 | Feature | `std` or `libm` (needs `ln`) |

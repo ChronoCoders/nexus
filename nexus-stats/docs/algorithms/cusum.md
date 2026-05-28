@@ -7,7 +7,7 @@ mean of a streaming process.
 |----------|-------|
 | Update cost | ~5 cycles |
 | Memory | ~56 bytes |
-| Types | `CusumF64`, `CusumF32`, `CusumI64`, `CusumI32` |
+| Types | `CusumF64`, `CusumI64` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<Direction>` — `Upper`, `Lower`, or `None` |
 

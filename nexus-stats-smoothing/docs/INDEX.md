@@ -14,10 +14,10 @@ All types follow the ecosystem conventions: O(1) per update, fixed memory, no al
 
 | Page | Types | Use When |
 |------|-------|----------|
-| [Holt](holt.md) | `HoltF64` / `HoltF32` | Signal has a trend (drift) you want separated from the level. |
-| [KAMA](kama.md) | `KamaF64` / `KamaF32` | Trending markets you need to follow aggressively, ranging markets you need to smooth heavily. |
-| [Kalman1d](kalman1d.md) | `Kalman1dF64` / `Kalman1dF32` | You have an observation-noise model and want optimal position + velocity estimates. |
-| [Spring](spring.md) | `SpringF64` / `SpringF32` | UI / animation / chase targets without overshoot. |
+| [Holt](holt.md) | `HoltF64` | Signal has a trend (drift) you want separated from the level. |
+| [KAMA](kama.md) | `KamaF64` | Trending markets you need to follow aggressively, ranging markets you need to smooth heavily. |
+| [Kalman1d](kalman1d.md) | `Kalman1dF64` | You have an observation-noise model and want optimal position + velocity estimates. |
+| [Spring](spring.md) | `SpringF64` | UI / animation / chase targets without overshoot. |
 | [HuberEMA](huber-ema.md) | `HuberEmaF64` | EMA but with per-step bounded influence — robust to outliers without throwing data away. |
 | [Hampel](hampel.md) | `HampelF64` | Three-zone outlier filter — pass, Winsorize, or reject based on MAD distance. |
 | [ConditionalEMA](conditional-ema.md) | `ConditionalEmaF64` | EMA that only updates when a side-condition (e.g. "queue non-empty") is true. |

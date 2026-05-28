@@ -7,7 +7,7 @@
 |----------|-------|
 | Update cost | ~11 cycles |
 | Memory | ~32 bytes |
-| Types | `HoltF64`, `HoltF32` |
+| Types | `HoltF64` |
 | Priming | After 2 samples (needs 2 for initial trend) |
 | Output | `Option<(T, T)>` — (level, trend) |
 

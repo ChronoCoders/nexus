@@ -8,7 +8,7 @@ automatically when they leave the window.
 |----------|-------|
 | Update cost | ~6 cycles |
 | Memory | ~N×8 bytes (ring buffer) |
-| Types | `MosumF64`, `MosumF32`, `MosumI64`, `MosumI32` |
+| Types | `MosumF64`, `MosumI64` |
 | Requires | `alloc` feature (runtime window size) |
 | Priming | After N samples (window full) |
 | Output | `Option<Direction>` — same as CUSUM |

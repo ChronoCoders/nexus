@@ -24,7 +24,7 @@ w.reset();
 - **`update(sample)` → `Result<_, DataError>`** for float types. NaN/Inf inputs return an error. The caller decides whether to propagate, log, or swallow.
 - **`is_primed()` / `count()` / `reset()`** on every type.
 - **O(1) per update.** Fixed memory. No allocation on the hot path after construction.
-- **`f64` and `f32` variants** for most types. Pick based on memory and SIMD needs.
+- **`f64` variants** for float types; `i64` integer variants exist for the cheap primitives (EMA, DeadBand, etc.).
 - **Builder or `new(...)` for construction.** Types with many parameters (CUSUM, EwmaVar, AsymEma) use a builder; simple types (Welford, LevelCrossing, DeadBand, SlewLimiter) have a plain `new`.
 
 ## Error Types
@@ -50,7 +50,7 @@ pub enum ConfigError {
 ## Module Layout
 
 - `nexus_stats_core::statistics` — Welford, Moments, EwmaVar, Covariance, OnlineCovariance, HarmonicMean, Percentile, BucketAccumulator, AmihudF64, HitRate, HalfLife, HurstF64, VarianceRatio.
-- `nexus_stats_core::smoothing` — `EmaF64`, `EmaF32`, `EmaI64`, `EmaI32`, `AsymEmaF64`, `AsymEmaI64`, `SlewLimiterF64`, `SlewLimiterI64`.
+- `nexus_stats_core::smoothing` — `EmaF64`, `EmaI64`, `AsymEmaF64`, `AsymEmaI64`, `SlewLimiterF64`, `SlewLimiterI64`.
 - `nexus_stats_core::monitoring` — Drawdown, RunningMax/Min, WindowedMax/Min (several time types), PeakHold, MaxGauge, Liveness, EventRate, CoDel, Saturation, ErrorRate, Jitter.
 - `nexus_stats_core::detection` — CUSUM, DistributionShift.
 - `nexus_stats_core::control` — DeadBand, Hysteresis, Debounce, LevelCrossing, FirstDiff, SecondDiff.
@@ -86,7 +86,7 @@ Time-aware types (`Liveness`, `EventRate`, `CoDel`, `Windowed*`) offer both `Ins
 
 For latency-critical hot paths where float ops are cycles you don't have, integer variants exist for the cheap primitives:
 
-- `EmaI64`, `EmaI32`, `AsymEmaI64`, `SlewLimiterI64`
+- `EmaI64`, `AsymEmaI64`, `SlewLimiterI64`
 - `DeadBandI64`, `HysteresisI64`, `LevelCrossingI64`, `FirstDiffI64`, `SecondDiffI64`
 - `RunningMaxI64`, `RunningMinI64`, `WindowedMaxI64`, `WindowedMinI64`
 

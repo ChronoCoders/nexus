@@ -38,7 +38,7 @@ skip both `std` and `libm` features entirely.
 
 ## Integer Variants for Embedded
 
-The integer EMA (`EmaI64`, `EmaI32`) uses the Linux kernel's fixed-point
+The integer EMA (`EmaI64`) uses the Linux kernel's fixed-point
 pattern — bit-shift arithmetic with no floating point at all. This is
 ideal for Cortex-M and other platforms without FPU.
 

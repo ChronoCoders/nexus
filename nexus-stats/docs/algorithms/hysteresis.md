@@ -7,7 +7,7 @@ Prevents oscillation when a noisy signal hovers near a decision boundary.
 |----------|-------|
 | Update cost | ~2-3 cycles |
 | Memory | ~24 bytes |
-| Types | `HysteresisF64`, `HysteresisF32`, `HysteresisI64`, `HysteresisI32` |
+| Types | `HysteresisF64`, `HysteresisI64` |
 | Output | `bool` — current state (high/low) |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 

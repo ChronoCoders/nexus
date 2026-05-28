@@ -7,7 +7,7 @@ Online Pearson correlation between two streams at multiple lags.
 |----------|-------|
 | Update cost | ~39 cycles (LAG=10) |
 | Memory | `16×LAG + 48` bytes |
-| Types | `CrossCorrelationF64`, `CrossCorrelationF32` |
+| Types | `CrossCorrelationF64` |
 | Priming | After `LAG + 2` paired observations |
 | Output | `correlation(lag)`, `covariance(lag)`, `peak_lag()` — all `Option` |
 | Feature | `std` or `libm` (needs `sqrt` for correlation) |

@@ -7,7 +7,7 @@ fast, decrease slow" — or vice versa.
 |----------|-------|
 | Update cost | ~11 cycles |
 | Memory | ~16 bytes |
-| Types | `AsymEmaF64`, `AsymEmaF32`, `AsymEmaI64`, `AsymEmaI32` |
+| Types | `AsymEmaF64`, `AsymEmaI64` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<T>` — smoothed value once primed |
 

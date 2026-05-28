@@ -8,7 +8,7 @@ noise — reactive when uncertain, stable when confident.
 |----------|-------|
 | Update cost | ~25 cycles |
 | Memory | ~56 bytes |
-| Types | `Kalman1dF64`, `Kalman1dF32` |
+| Types | `Kalman1dF64` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<(T, T)>` — (position, velocity) |
 

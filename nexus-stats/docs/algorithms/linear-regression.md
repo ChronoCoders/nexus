@@ -8,8 +8,8 @@ no matrix elimination.
 |----------|-------|
 | Update cost | ~6 cycles |
 | Memory | ~48 bytes |
-| Types | `LinearRegressionF64`, `LinearRegressionF32` |
-| EW types | `EwLinearRegressionF64`, `EwLinearRegressionF32` |
+| Types | `LinearRegressionF64` |
+| EW types | `EwLinearRegressionF64` |
 | Priming | 2 observations (with intercept), 1 (through origin) |
 | Output | `slope()`, `intercept_value()`, `r_squared()`, `predict(x)` |
 

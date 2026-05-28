@@ -1,6 +1,6 @@
 # Holt (Double Exponential Smoothing)
 
-**Types:** `HoltF64`, `HoltF32`
+**Types:** `HoltF64`
 **Import:** `use nexus_stats_smoothing::HoltF64;`
 **Feature flags:** None required.
 

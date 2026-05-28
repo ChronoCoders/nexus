@@ -7,7 +7,7 @@ exponentially weighting recent samples more heavily than older ones.
 |----------|-------|
 | Update cost | ~5 cycles (float), ~5 cycles (integer) |
 | Memory | ~24 bytes (float), ~32 bytes (integer) |
-| Types | `EmaF64`, `EmaF32`, `EmaI64`, `EmaI32` |
+| Types | `EmaF64`, `EmaI64` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<T>` — smoothed value once primed |
 
@@ -263,7 +263,6 @@ if let (Some(slow), Some(fast_val)) = (baseline.update(x), fast.update(x)) {
 |-----------|-----|-----|
 | `EmaF64::update` | 5 cycles | 6 cycles |
 | `EmaI64::update` | 5 cycles | 5 cycles |
-| `EmaF32::update` | 5 cycles | 6 cycles |
 
 The float variant uses `mul_add` (FMA instruction). The integer variant
 uses bit-shift arithmetic with no floating point.

@@ -6,7 +6,7 @@
 |----------|-------|
 | Update cost | ~6 cycles |
 | Memory | ~24 bytes |
-| Types | `SaturationF64`, `SaturationF32` |
+| Types | `SaturationF64` |
 | Output | `Option<Condition>` — `Normal` or `Saturated` |
 
 ## What It Does

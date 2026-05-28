@@ -7,7 +7,7 @@ standard for filtering bad data in real-time systems.
 |----------|-------|
 | Update cost | ~12 cycles |
 | Memory | ~56 bytes |
-| Types | `MultiGateF64`, `MultiGateF32` |
+| Types | `MultiGateF64` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<Verdict>` — `Accept`, `Unusual`, `Suspect`, `Reject` |
 
