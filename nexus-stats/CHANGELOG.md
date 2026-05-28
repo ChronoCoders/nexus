@@ -8,7 +8,26 @@ with the project-specific allowance that a minor bump may carry small,
 narrowly-scoped breaking changes when external blast radius is
 contained.
 
-## [Unreleased]
+## [6.0.0] — 2026-05-28
+
+Type-variant audit: removed F32, I32, and I128 type variants across all
+sub-crates. Use the F64/I64 equivalents. See each sub-crate's CHANGELOG
+for the full removal list.
+
+### Removed
+
+- **nexus-stats-core 3.0.0** — 46 removed types (smoothing, control,
+  monitoring, statistics modules). See core CHANGELOG.
+- **nexus-stats-smoothing 2.0.0** — `HoltF32`, `SpringF32`, `Kalman1dF32`,
+  `KamaF32`, `WindowedMedianF32`, `WindowedMedianI32` and their builders.
+- **nexus-stats-detection 2.0.0** — `TrendAlertF32`, `MosumF32/I32/I128`,
+  `MultiGateF32`, `PageHinkleyF32`, `AdwinF32`, `DistDriftF32`,
+  `AutocorrelationF32/I32`, `CrossCorrelationF32`, `EntropyF32`,
+  `PredictiveInfoBoundF32` and their builders.
+- **nexus-stats-regression 2.0.0** — 20 removed types across regression,
+  estimation, and learning modules. See regression CHANGELOG.
+- **nexus-stats-control 2.0.0** — `PeakDetectorF32`, `PeakDetectorI32`,
+  `PeakDetectorI128`.
 
 ## [5.1.0] — 2026-05-26
 

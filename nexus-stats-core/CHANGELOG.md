@@ -8,9 +8,42 @@ with the project-specific allowance that a minor bump may carry small,
 narrowly-scoped breaking changes when external blast radius is
 contained.
 
-## [Unreleased]
+## [3.0.0] — 2026-05-28
 
-## [2.2.0] — 2026-05-26
+### Removed
+
+- `EmaF32`, `EmaF32Builder`, `EmaI32`, `EmaI32Builder` — use `EmaF64` / `EmaI64`
+- `AsymEmaF32`, `AsymEmaF32Builder`, `AsymEmaI32`, `AsymEmaI32Builder` — use `AsymEmaF64` / `AsymEmaI64`
+- `SlewF32`, `SlewI32`, `SlewI128` — use `SlewF64` / `SlewI64`
+- `CusumF32`, `CusumF32Builder`, `CusumI32`, `CusumI32Builder`, `CusumI128`, `CusumI128Builder` — use `CusumF64` / `CusumI64`
+- `DistributionShiftF32`, `DistributionShiftI32`, `DistributionShiftI128` — use `DistributionShiftF64` / `DistributionShiftI64`
+- `DeadBandF32`, `DeadBandI32`, `DeadBandI128` — use `DeadBandF64` / `DeadBandI64`
+- `DebounceF32` — use `DebounceF64`
+- `HysteresisF32`, `HysteresisI32`, `HysteresisI128` — use `HysteresisF64` / `HysteresisI64`
+- `LevelCrossingF32`, `LevelCrossingI32`, `LevelCrossingI128` — use `LevelCrossingF64` / `LevelCrossingI64`
+- `FirstDiffF32`, `FirstDiffI32`, `FirstDiffI128` — use `FirstDiffF64` / `FirstDiffI64`
+- `SecondDiffF32`, `SecondDiffI32`, `SecondDiffI128` — use `SecondDiffF64` / `SecondDiffI64`
+- `DrawdownF32`, `DrawdownI32`, `DrawdownI128` — use `DrawdownF64` / `DrawdownI64`
+- `ErrorRateF32`, `ErrorRateF32Builder` — use `ErrorRateF64`
+- `SaturationF32`, `SaturationF32Builder` — use `SaturationF64`
+- `EventRateF32`, `EventRateF32Builder`, `EventRateI32`, `EventRateI32Builder` — use `EventRateF64` / `EventRateI64`
+- `LivenessF32`, `LivenessF32Builder`, `LivenessI32`, `LivenessI32Builder` — use `LivenessF64` / `LivenessI64`
+- `JitterF32`, `JitterF32Builder`, `JitterI32`, `JitterI32Builder` — use `JitterF64` / `JitterI64`
+- `MaxGaugeF32`, `MaxGaugeI32`, `MaxGaugeI128` — use `MaxGaugeF64` / `MaxGaugeI64`
+- `PeakHoldF32`, `PeakHoldF32Builder`, `PeakHoldI32`, `PeakHoldI32Builder`, `PeakHoldI128`, `PeakHoldI128Builder` — use `PeakHoldF64` / `PeakHoldI64`
+- `RunningMaxF32`, `RunningMaxI32`, `RunningMaxI128` — use `RunningMaxF64` / `RunningMaxI64`
+- `RunningMinF32`, `RunningMinI32`, `RunningMinI128` — use `RunningMinF64` / `RunningMinI64`
+- `WindowedMaxF32`, `WindowedMaxI32`, `WindowedMaxI128` — use `WindowedMaxF64` / `WindowedMaxI64`
+- `WindowedMinF32`, `WindowedMinI32`, `WindowedMinI128` — use `WindowedMinF64` / `WindowedMinI64`
+- `CoDelF32`, `CoDelF32Builder`, `CoDelI32`, `CoDelI32Builder`, `CoDelI128`, `CoDelI128Builder` — use `CoDelF64` / `CoDelI64`
+- `HawkesIntensityF32`, `HawkesIntensityF32Builder` — use `HawkesIntensityF64`
+- `RollSpreadF32`, `RollSpreadF32Builder` — use `RollSpreadF64`
+- `WelfordF32` — use `WelfordF64`
+- `MomentsF32`, `MomentsI32` — use `MomentsF64` / `MomentsI64`
+- `CovarianceF32` — use `CovarianceF64`
+- `HarmonicMeanF32` — use `HarmonicMeanF64`
+- `LpmF32`, `LpmF32Builder` — use `LpmF64`
+- `CvarF32`, `CvarF32Builder` — use `CvarF64`
 
 ## [2.2.0] — 2026-05-20
 
