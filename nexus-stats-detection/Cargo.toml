@@ -1,6 +1,6 @@
 [package]
 name = "nexus-stats-detection"
-version = "1.2.0"
+version = "2.0.0"
 description = "Advanced change detection and signal analysis for nexus-stats"
 readme = "README.md"
 edition.workspace = true
@@ -17,8 +17,8 @@ alloc = ["nexus-stats-core/alloc", "nexus-stats-smoothing/alloc"]
 libm = ["nexus-stats-core/libm"]
 
 [dependencies]
-nexus-stats-core = { version = "2.2.0", path = "../nexus-stats-core", default-features = false }
-nexus-stats-smoothing = { version = "1.2.3", path = "../nexus-stats-smoothing", default-features = false }
+nexus-stats-core = { version = "3.0.0", path = "../nexus-stats-core", default-features = false }
+nexus-stats-smoothing = { version = "2.0.0", path = "../nexus-stats-smoothing", default-features = false }
 
 [lints]
 workspace = true

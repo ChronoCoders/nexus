@@ -8,7 +8,7 @@ with the project-specific allowance that a minor bump may carry small,
 narrowly-scoped breaking changes when external blast radius is
 contained.
 
-## [Unreleased]
+## [2.0.0] — 2026-05-28
 
 ### Removed
 
@@ -29,12 +29,6 @@ contained.
 ### Changed
 
 - `TrendAlertF64Builder::build` now rejects negative and non-finite trend thresholds
-
-## [1.2.0] — 2026-05-26
-
-## [1.2.0] — 2026-05-26
-
-## [1.2.0] — 2026-05-26
 
 ## [1.2.0] — 2026-05-20
 
