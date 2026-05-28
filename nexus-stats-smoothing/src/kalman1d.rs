@@ -236,14 +236,14 @@ impl Kalman1dF64Builder {
         let r = self
             .r
             .ok_or(nexus_stats_core::ConfigError::Missing("measurement_noise"))?;
-        if q <= 0.0 {
+        if !q.is_finite() || q <= 0.0 {
             return Err(nexus_stats_core::ConfigError::Invalid(
-                "process_noise must be positive",
+                "process_noise must be finite and positive",
             ));
         }
-        if r <= 0.0 {
+        if !r.is_finite() || r <= 0.0 {
             return Err(nexus_stats_core::ConfigError::Invalid(
-                "measurement_noise must be positive",
+                "measurement_noise must be finite and positive",
             ));
         }
 

@@ -641,15 +641,17 @@ impl WindowedMedianI64 {
     }
 
     /// Modified z-score: `0.6745 * (x - median) / MAD`.
+    ///
+    /// Returns `f64` because the `0.6745` scale factor is fractional.
     #[inline]
     #[must_use]
-    pub fn modified_z_score(&self, sample: i64) -> Option<i64> {
+    pub fn modified_z_score(&self, sample: i64) -> Option<f64> {
         let median = self.median()?;
         let mad = self.mad()?;
         if mad == 0 {
             return None;
         }
-        Some((sample - median) / mad)
+        Some(0.6745 * (sample - median) as f64 / mad as f64)
     }
 
     /// Window size.

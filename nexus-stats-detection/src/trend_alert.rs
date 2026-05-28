@@ -204,6 +204,20 @@ impl TrendAlertF64Builder {
                 "TrendAlert requires a trend threshold",
             ));
         }
+        if let Some(t) = self.trend_threshold_abs
+            && (!t.is_finite() || t < 0.0)
+        {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "absolute trend threshold must be finite and non-negative",
+            ));
+        }
+        if let Some(t) = self.trend_threshold_rel
+            && (!t.is_finite() || t < 0.0)
+        {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "relative trend threshold must be finite and non-negative",
+            ));
+        }
 
         let holt = HoltF64::builder()
             .alpha(alpha)

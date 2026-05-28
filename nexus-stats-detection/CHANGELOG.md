@@ -10,6 +10,14 @@ contained.
 
 ## [Unreleased]
 
+### Removed
+
+- `TrendAlertF32`, `TrendAlertF32Builder` — use `TrendAlertF64` (dependency `HoltF32` removed from smoothing crate)
+
+### Changed
+
+- `TrendAlertF64Builder::build` now rejects negative and non-finite trend thresholds
+
 ## [1.2.0] — 2026-05-26
 
 ## [1.2.0] — 2026-05-26
