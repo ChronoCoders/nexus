@@ -1,235 +1,227 @@
 use nexus_stats_core::math::MulAdd;
-macro_rules! impl_holt {
-    ($name:ident, $builder:ident, $ty:ty) => {
-        /// Holt's Double Exponential Smoothing — level + trend tracking.
-        ///
-        /// Separates the signal into level (current smoothed value) and trend
-        /// (rate of change). Detects not just "value is high" but "value is
-        /// getting worse over time."
-        ///
-        /// # Use Cases
-        /// - Trend detection ("latency is increasing linearly")
-        /// - Capacity planning and degradation forecasting
-        /// - Adaptive baselines that track drift
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            alpha: $ty,
-            beta: $ty,
-            one_minus_alpha: $ty,
-            one_minus_beta: $ty,
-            level: $ty,
-            trend: $ty,
-            count: u64,
-            min_samples: u64,
-        }
 
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
-        #[derive(Debug, Clone)]
-        pub struct $builder {
-            alpha: Option<$ty>,
-            beta: Option<$ty>,
-            min_samples: u64,
-            seed_level: Option<$ty>,
-            seed_trend: Option<$ty>,
-        }
-
-        impl $name {
-            /// Creates a builder.
-            #[inline]
-            #[must_use]
-            pub fn builder() -> $builder {
-                $builder {
-                    alpha: Option::None,
-                    beta: Option::None,
-                    min_samples: 2,
-                    seed_level: Option::None,
-                    seed_trend: Option::None,
-                }
-            }
-
-            /// Feeds a sample. Returns `(level, trend)` once primed.
-            ///
-            /// First sample sets the level. Second sample initializes the trend.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the sample is NaN, or
-            /// `DataError::Infinite` if the sample is infinite.
-            #[inline]
-            pub fn update(
-                &mut self,
-                sample: $ty,
-            ) -> Result<Option<($ty, $ty)>, nexus_stats_core::DataError> {
-                check_finite!(sample);
-                self.count += 1;
-
-                if self.count == 1 {
-                    self.level = sample;
-                    self.trend = 0.0 as $ty;
-                } else if self.count == 2 {
-                    let prev_level = self.level;
-                    self.level = sample;
-                    self.trend = sample - prev_level;
-                } else {
-                    let prev_level = self.level;
-                    // Level: alpha * sample + (1 - alpha) * (prev_level + prev_trend)
-                    self.level = self
-                        .alpha
-                        .fma(sample, self.one_minus_alpha * (prev_level + self.trend));
-                    // Trend: beta * (level - prev_level) + (1 - beta) * prev_trend
-                    self.trend = self
-                        .beta
-                        .fma(self.level - prev_level, self.one_minus_beta * self.trend);
-                }
-
-                if self.count >= self.min_samples {
-                    Ok(Option::Some((self.level, self.trend)))
-                } else {
-                    Ok(Option::None)
-                }
-            }
-
-            /// Current smoothed level, or `None` if not primed.
-            #[inline]
-            #[must_use]
-            pub fn level(&self) -> Option<$ty> {
-                if self.count >= self.min_samples {
-                    Option::Some(self.level)
-                } else {
-                    Option::None
-                }
-            }
-
-            /// Current trend (rate of change), or `None` if not primed.
-            #[inline]
-            #[must_use]
-            pub fn trend(&self) -> Option<$ty> {
-                if self.count >= self.min_samples {
-                    Option::Some(self.trend)
-                } else {
-                    Option::None
-                }
-            }
-
-            /// Forecast: `level + steps * trend`. Or `None` if not primed.
-            #[inline]
-            #[must_use]
-            pub fn forecast(&self, steps: u64) -> Option<$ty> {
-                if self.count >= self.min_samples {
-                    Option::Some(self.trend.fma(steps as $ty, self.level))
-                } else {
-                    Option::None
-                }
-            }
-
-            /// Number of samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether Holt's has reached `min_samples`.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count >= self.min_samples
-            }
-
-            /// Resets to uninitialized state. Parameters unchanged.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.level = 0.0 as $ty;
-                self.trend = 0.0 as $ty;
-                self.count = 0;
-            }
-        }
-
-        impl $builder {
-            /// Level smoothing factor. Must be in (0, 1) exclusive.
-            #[inline]
-            #[must_use]
-            pub fn alpha(mut self, alpha: $ty) -> Self {
-                self.alpha = Option::Some(alpha);
-                self
-            }
-
-            /// Trend smoothing factor. Must be in (0, 1) exclusive.
-            #[inline]
-            #[must_use]
-            pub fn beta(mut self, beta: $ty) -> Self {
-                self.beta = Option::Some(beta);
-                self
-            }
-
-            /// Minimum samples before values are valid. Default: 2.
-            #[inline]
-            #[must_use]
-            pub fn min_samples(mut self, min: u64) -> Self {
-                self.min_samples = min;
-                self
-            }
-
-            /// Pre-loads the level and trend from calibration data.
-            ///
-            /// When seeded, `is_primed()` returns true immediately.
-            #[inline]
-            #[must_use]
-            pub fn seed(mut self, level: $ty, trend: $ty) -> Self {
-                self.seed_level = Option::Some(level);
-                self.seed_trend = Option::Some(trend);
-                self
-            }
-
-            /// Builds the Holt's smoother.
-            ///
-            /// # Errors
-            ///
-            /// - Alpha and beta must have been set.
-            /// - Both must be in (0, 1) exclusive.
-            #[inline]
-            pub fn build(self) -> Result<$name, nexus_stats_core::ConfigError> {
-                let alpha = self
-                    .alpha
-                    .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
-                let beta = self
-                    .beta
-                    .ok_or(nexus_stats_core::ConfigError::Missing("beta"))?;
-                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
-                    return Err(nexus_stats_core::ConfigError::Invalid(
-                        "Holt alpha must be in (0, 1)",
-                    ));
-                }
-                if !(beta > 0.0 as $ty && beta < 1.0 as $ty) {
-                    return Err(nexus_stats_core::ConfigError::Invalid(
-                        "Holt beta must be in (0, 1)",
-                    ));
-                }
-
-                let (level, trend, count) = match (self.seed_level, self.seed_trend) {
-                    (Some(l), Some(t)) => (l, t, self.min_samples),
-                    _ => (0.0 as $ty, 0.0 as $ty, 0),
-                };
-
-                Ok($name {
-                    alpha,
-                    beta,
-                    one_minus_alpha: 1.0 as $ty - alpha,
-                    one_minus_beta: 1.0 as $ty - beta,
-                    level,
-                    trend,
-                    count,
-                    min_samples: self.min_samples,
-                })
-            }
-        }
-    };
+/// Holt's Double Exponential Smoothing — level + trend tracking.
+///
+/// Separates the signal into level (current smoothed value) and trend
+/// (rate of change). Detects not just "value is high" but "value is
+/// getting worse over time."
+///
+/// # Use Cases
+/// - Trend detection ("latency is increasing linearly")
+/// - Capacity planning and degradation forecasting
+/// - Adaptive baselines that track drift
+#[derive(Debug, Clone)]
+pub struct HoltF64 {
+    alpha: f64,
+    beta: f64,
+    one_minus_alpha: f64,
+    one_minus_beta: f64,
+    level: f64,
+    trend: f64,
+    count: u64,
+    min_samples: u64,
 }
 
-impl_holt!(HoltF64, HoltF64Builder, f64);
-impl_holt!(HoltF32, HoltF32Builder, f32);
+/// Builder for [`HoltF64`].
+#[derive(Debug, Clone)]
+pub struct HoltF64Builder {
+    alpha: Option<f64>,
+    beta: Option<f64>,
+    min_samples: u64,
+    seed_level: Option<f64>,
+    seed_trend: Option<f64>,
+}
+
+impl HoltF64 {
+    /// Creates a builder.
+    #[inline]
+    #[must_use]
+    pub fn builder() -> HoltF64Builder {
+        HoltF64Builder {
+            alpha: None,
+            beta: None,
+            min_samples: 2,
+            seed_level: None,
+            seed_trend: None,
+        }
+    }
+
+    /// Feeds a sample. Returns `(level, trend)` once primed.
+    ///
+    /// First sample sets the level. Second sample initializes the trend.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    #[inline]
+    pub fn update(
+        &mut self,
+        sample: f64,
+    ) -> Result<Option<(f64, f64)>, nexus_stats_core::DataError> {
+        check_finite!(sample);
+        self.count += 1;
+
+        if self.count == 1 {
+            self.level = sample;
+            self.trend = 0.0;
+        } else if self.count == 2 {
+            let prev_level = self.level;
+            self.level = sample;
+            self.trend = sample - prev_level;
+        } else {
+            let prev_level = self.level;
+            // Level: alpha * sample + (1 - alpha) * (prev_level + prev_trend)
+            self.level = self
+                .alpha
+                .fma(sample, self.one_minus_alpha * (prev_level + self.trend));
+            // Trend: beta * (level - prev_level) + (1 - beta) * prev_trend
+            self.trend = self
+                .beta
+                .fma(self.level - prev_level, self.one_minus_beta * self.trend);
+        }
+
+        if self.count >= self.min_samples {
+            Ok(Some((self.level, self.trend)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Current smoothed level, or `None` if not primed.
+    #[inline]
+    #[must_use]
+    pub fn level(&self) -> Option<f64> {
+        if self.count >= self.min_samples {
+            Some(self.level)
+        } else {
+            None
+        }
+    }
+
+    /// Current trend (rate of change), or `None` if not primed.
+    #[inline]
+    #[must_use]
+    pub fn trend(&self) -> Option<f64> {
+        if self.count >= self.min_samples {
+            Some(self.trend)
+        } else {
+            None
+        }
+    }
+
+    /// Forecast: `level + steps * trend`. Or `None` if not primed.
+    #[inline]
+    #[must_use]
+    pub fn forecast(&self, steps: u64) -> Option<f64> {
+        if self.count >= self.min_samples {
+            Some(self.trend.fma(steps as f64, self.level))
+        } else {
+            None
+        }
+    }
+
+    /// Number of samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether Holt's has reached `min_samples`.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= self.min_samples
+    }
+
+    /// Resets to uninitialized state. Parameters unchanged.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.level = 0.0;
+        self.trend = 0.0;
+        self.count = 0;
+    }
+}
+
+impl HoltF64Builder {
+    /// Level smoothing factor. Must be in (0, 1) exclusive.
+    #[inline]
+    #[must_use]
+    pub fn alpha(mut self, alpha: f64) -> Self {
+        self.alpha = Some(alpha);
+        self
+    }
+
+    /// Trend smoothing factor. Must be in (0, 1) exclusive.
+    #[inline]
+    #[must_use]
+    pub fn beta(mut self, beta: f64) -> Self {
+        self.beta = Some(beta);
+        self
+    }
+
+    /// Minimum samples before values are valid. Default: 2.
+    #[inline]
+    #[must_use]
+    pub fn min_samples(mut self, min: u64) -> Self {
+        self.min_samples = min;
+        self
+    }
+
+    /// Pre-loads the level and trend from calibration data.
+    ///
+    /// When seeded, `is_primed()` returns true immediately.
+    #[inline]
+    #[must_use]
+    pub fn seed(mut self, level: f64, trend: f64) -> Self {
+        self.seed_level = Some(level);
+        self.seed_trend = Some(trend);
+        self
+    }
+
+    /// Builds the Holt's smoother.
+    ///
+    /// # Errors
+    ///
+    /// - Alpha and beta must have been set.
+    /// - Both must be in (0, 1) exclusive.
+    #[inline]
+    pub fn build(self) -> Result<HoltF64, nexus_stats_core::ConfigError> {
+        let alpha = self
+            .alpha
+            .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
+        let beta = self
+            .beta
+            .ok_or(nexus_stats_core::ConfigError::Missing("beta"))?;
+        if !(alpha > 0.0 && alpha < 1.0) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "Holt alpha must be in (0, 1)",
+            ));
+        }
+        if !(beta > 0.0 && beta < 1.0) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "Holt beta must be in (0, 1)",
+            ));
+        }
+
+        let (level, trend, count) = match (self.seed_level, self.seed_trend) {
+            (Some(l), Some(t)) => (l, t, self.min_samples),
+            _ => (0.0, 0.0, 0),
+        };
+
+        Ok(HoltF64 {
+            alpha,
+            beta,
+            one_minus_alpha: 1.0 - alpha,
+            one_minus_beta: 1.0 - beta,
+            level,
+            trend,
+            count,
+            min_samples: self.min_samples,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -302,14 +294,6 @@ mod tests {
         assert_eq!(h.count(), 0);
         assert!(h.level().is_none());
         assert!(h.trend().is_none());
-    }
-
-    #[test]
-    fn f32_basic() {
-        let mut h = HoltF32::builder().alpha(0.3).beta(0.1).build().unwrap();
-        h.update(10.0).unwrap();
-        let result = h.update(20.0).unwrap();
-        assert!(result.is_some());
     }
 
     #[test]

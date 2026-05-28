@@ -1,281 +1,273 @@
 use nexus_stats_core::math::MulAdd;
-macro_rules! impl_kalman1d {
-    ($name:ident, $builder:ident, $ty:ty) => {
-        /// 1D Kalman filter with constant-velocity model.
-        ///
-        /// Tracks position and velocity from noisy measurements.
-        /// Automatically balances process noise (system uncertainty) against
-        /// measurement noise (sensor uncertainty).
-        ///
-        /// # Timing assumption
-        ///
-        /// This filter assumes **dt = 1** between consecutive measurements.
-        /// For variable-interval data, either:
-        /// - Scale `process_noise` proportionally to the actual interval
-        /// - Pre-normalize timestamps so samples arrive at uniform intervals
-        ///
-        /// # Use Cases
-        /// - Smoothing noisy position/latency measurements
-        /// - Estimating rate of change (velocity) from noisy data
-        /// - Predictive filtering (forecast next value)
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            // State: [position, velocity]
-            x0: $ty,
-            x1: $ty,
-            // Covariance: symmetric 2x2 → 3 values (P00, P01, P11)
-            p00: $ty,
-            p01: $ty,
-            p11: $ty,
-            // Noise parameters
-            q: $ty, // process noise
-            r: $ty, // measurement noise
-            count: u64,
-            min_samples: u64,
-            initialized: bool,
-        }
 
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
-        #[derive(Debug, Clone)]
-        pub struct $builder {
-            q: Option<$ty>,
-            r: Option<$ty>,
-            min_samples: u64,
-            seed_pos: Option<$ty>,
-            seed_vel: Option<$ty>,
-        }
-
-        impl $name {
-            /// Creates a builder.
-            #[inline]
-            #[must_use]
-            pub fn builder() -> $builder {
-                $builder {
-                    q: Option::None,
-                    r: Option::None,
-                    min_samples: 1,
-                    seed_pos: Option::None,
-                    seed_vel: Option::None,
-                }
-            }
-
-            /// Feeds a measurement. Returns `(position, velocity)` once primed.
-            ///
-            /// Assumes dt = 1 between measurements. For variable dt, scale
-            /// the process noise or pre-process timestamps.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the measurement is NaN, or
-            /// `DataError::Infinite` if the measurement is infinite.
-            #[inline]
-            pub fn update(
-                &mut self,
-                measurement: $ty,
-            ) -> Result<Option<($ty, $ty)>, nexus_stats_core::DataError> {
-                check_finite!(measurement);
-                self.count += 1;
-
-                if !self.initialized {
-                    // Initialize from first measurement
-                    self.x0 = measurement;
-                    self.x1 = 0.0 as $ty;
-                    self.p00 = self.r;
-                    self.p01 = 0.0 as $ty;
-                    self.p11 = 1.0 as $ty;
-                    self.initialized = true;
-
-                    return if self.count >= self.min_samples {
-                        Ok(Option::Some((self.x0, self.x1)))
-                    } else {
-                        Ok(Option::None)
-                    };
-                }
-
-                // Predict step (constant velocity model, dt=1)
-                // x_pred = F * x = [x0 + x1, x1]
-                let pred_x0 = self.x0 + self.x1;
-                let pred_x1 = self.x1;
-
-                // P_pred = F * P * F' + Q
-                let pred_p00 = (2.0 as $ty).fma(self.p01, self.p00) + self.p11 + self.q;
-                let pred_p01 = self.p01 + self.p11;
-                let pred_p11 = self.p11 + self.q;
-
-                // Update step
-                // Innovation: y = z - H * x_pred (H = [1, 0])
-                let y = measurement - pred_x0;
-
-                // Innovation covariance: S = H * P_pred * H' + R = P00 + R
-                let s_inv = (1.0 as $ty) / (pred_p00 + self.r).max(<$ty>::EPSILON);
-
-                // Kalman gain: K = P_pred * H' / S = [P00/S, P01/S]
-                let k0 = pred_p00 * s_inv;
-                let k1 = pred_p01 * s_inv;
-
-                // State update: x = x_pred + K * y
-                self.x0 = k0.fma(y, pred_x0);
-                self.x1 = k1.fma(y, pred_x1);
-
-                // Covariance update: P = (I - K*H) * P_pred
-                let one_minus_k0 = 1.0 as $ty - k0;
-                self.p00 = one_minus_k0 * pred_p00;
-                self.p01 = one_minus_k0 * pred_p01;
-                self.p11 = pred_p11 - k1 * pred_p01;
-
-                if self.count >= self.min_samples {
-                    Ok(Option::Some((self.x0, self.x1)))
-                } else {
-                    Ok(Option::None)
-                }
-            }
-
-            /// Estimated position, or `None` if not primed.
-            #[inline]
-            #[must_use]
-            pub fn position(&self) -> Option<$ty> {
-                if self.count >= self.min_samples {
-                    Option::Some(self.x0)
-                } else {
-                    Option::None
-                }
-            }
-
-            /// Estimated velocity, or `None` if not primed.
-            #[inline]
-            #[must_use]
-            pub fn velocity(&self) -> Option<$ty> {
-                if self.count >= self.min_samples {
-                    Option::Some(self.x1)
-                } else {
-                    Option::None
-                }
-            }
-
-            /// Position uncertainty (P00).
-            #[inline]
-            #[must_use]
-            pub fn uncertainty(&self) -> $ty {
-                self.p00
-            }
-
-            /// Number of measurements processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether the filter has reached `min_samples`.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count >= self.min_samples
-            }
-
-            /// Resets to uninitialized state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.x0 = 0.0 as $ty;
-                self.x1 = 0.0 as $ty;
-                self.p00 = 1.0 as $ty;
-                self.p01 = 0.0 as $ty;
-                self.p11 = 1.0 as $ty;
-                self.count = 0;
-                self.initialized = false;
-            }
-        }
-
-        impl $builder {
-            /// Process noise variance. Higher = more reactive to changes.
-            ///
-            /// The filter assumes dt=1 between samples. For variable-interval
-            /// data, scale this value proportionally to the actual interval.
-            #[inline]
-            #[must_use]
-            pub fn process_noise(mut self, q: $ty) -> Self {
-                self.q = Option::Some(q);
-                self
-            }
-
-            /// Measurement noise variance. Higher = smoother output.
-            #[inline]
-            #[must_use]
-            pub fn measurement_noise(mut self, r: $ty) -> Self {
-                self.r = Option::Some(r);
-                self
-            }
-
-            /// Minimum measurements before output is valid. Default: 1.
-            #[inline]
-            #[must_use]
-            pub fn min_samples(mut self, min: u64) -> Self {
-                self.min_samples = min;
-                self
-            }
-
-            /// Pre-load position and velocity from calibration.
-            #[inline]
-            #[must_use]
-            pub fn seed(mut self, position: $ty, velocity: $ty) -> Self {
-                self.seed_pos = Option::Some(position);
-                self.seed_vel = Option::Some(velocity);
-                self
-            }
-
-            /// Builds the Kalman filter.
-            ///
-            /// # Errors
-            ///
-            /// - process_noise and measurement_noise must have been set.
-            /// - Both must be positive.
-            #[inline]
-            pub fn build(self) -> Result<$name, nexus_stats_core::ConfigError> {
-                let q = self
-                    .q
-                    .ok_or(nexus_stats_core::ConfigError::Missing("process_noise"))?;
-                let r = self
-                    .r
-                    .ok_or(nexus_stats_core::ConfigError::Missing("measurement_noise"))?;
-                if q <= 0.0 as $ty {
-                    return Err(nexus_stats_core::ConfigError::Invalid(
-                        "process_noise must be positive",
-                    ));
-                }
-                if r <= 0.0 as $ty {
-                    return Err(nexus_stats_core::ConfigError::Invalid(
-                        "measurement_noise must be positive",
-                    ));
-                }
-
-                let (x0, x1, count, initialized) =
-                    if let (Some(pos), Some(vel)) = (self.seed_pos, self.seed_vel) {
-                        (pos, vel, self.min_samples, true)
-                    } else {
-                        (0.0 as $ty, 0.0 as $ty, 0, false)
-                    };
-
-                Ok($name {
-                    x0,
-                    x1,
-                    p00: 1.0 as $ty,
-                    p01: 0.0 as $ty,
-                    p11: 1.0 as $ty,
-                    q,
-                    r,
-                    count,
-                    min_samples: self.min_samples,
-                    initialized,
-                })
-            }
-        }
-    };
+/// 1D Kalman filter with constant-velocity model.
+///
+/// Tracks position and velocity from noisy measurements.
+/// Automatically balances process noise (system uncertainty) against
+/// measurement noise (sensor uncertainty).
+///
+/// # Timing assumption
+///
+/// This filter assumes **dt = 1** between consecutive measurements.
+/// For variable-interval data, either:
+/// - Scale `process_noise` proportionally to the actual interval
+/// - Pre-normalize timestamps so samples arrive at uniform intervals
+///
+/// # Use Cases
+/// - Smoothing noisy position/latency measurements
+/// - Estimating rate of change (velocity) from noisy data
+/// - Predictive filtering (forecast next value)
+#[derive(Debug, Clone)]
+pub struct Kalman1dF64 {
+    // State: [position, velocity]
+    x0: f64,
+    x1: f64,
+    // Covariance: symmetric 2x2 -> 3 values (P00, P01, P11)
+    p00: f64,
+    p01: f64,
+    p11: f64,
+    // Noise parameters
+    q: f64, // process noise
+    r: f64, // measurement noise
+    count: u64,
+    min_samples: u64,
+    initialized: bool,
 }
 
-impl_kalman1d!(Kalman1dF64, Kalman1dF64Builder, f64);
-impl_kalman1d!(Kalman1dF32, Kalman1dF32Builder, f32);
+/// Builder for [`Kalman1dF64`].
+#[derive(Debug, Clone)]
+pub struct Kalman1dF64Builder {
+    q: Option<f64>,
+    r: Option<f64>,
+    min_samples: u64,
+    seed_pos: Option<f64>,
+    seed_vel: Option<f64>,
+}
+
+impl Kalman1dF64 {
+    /// Creates a builder.
+    #[inline]
+    #[must_use]
+    pub fn builder() -> Kalman1dF64Builder {
+        Kalman1dF64Builder {
+            q: None,
+            r: None,
+            min_samples: 1,
+            seed_pos: None,
+            seed_vel: None,
+        }
+    }
+
+    /// Feeds a measurement. Returns `(position, velocity)` once primed.
+    ///
+    /// Assumes dt = 1 between measurements. For variable dt, scale
+    /// the process noise or pre-process timestamps.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the measurement is NaN, or
+    /// `DataError::Infinite` if the measurement is infinite.
+    #[inline]
+    pub fn update(
+        &mut self,
+        measurement: f64,
+    ) -> Result<Option<(f64, f64)>, nexus_stats_core::DataError> {
+        check_finite!(measurement);
+        self.count += 1;
+
+        if !self.initialized {
+            // Initialize from first measurement
+            self.x0 = measurement;
+            self.x1 = 0.0;
+            self.p00 = self.r;
+            self.p01 = 0.0;
+            self.p11 = 1.0;
+            self.initialized = true;
+
+            return if self.count >= self.min_samples {
+                Ok(Some((self.x0, self.x1)))
+            } else {
+                Ok(None)
+            };
+        }
+
+        // Predict step (constant velocity model, dt=1)
+        // x_pred = F * x = [x0 + x1, x1]
+        let pred_x0 = self.x0 + self.x1;
+        let pred_x1 = self.x1;
+
+        // P_pred = F * P * F' + Q
+        let pred_p00 = 2.0f64.fma(self.p01, self.p00) + self.p11 + self.q;
+        let pred_p01 = self.p01 + self.p11;
+        let pred_p11 = self.p11 + self.q;
+
+        // Update step
+        // Innovation: y = z - H * x_pred (H = [1, 0])
+        let y = measurement - pred_x0;
+
+        // Innovation covariance: S = H * P_pred * H' + R = P00 + R
+        let s_inv = 1.0 / (pred_p00 + self.r).max(f64::EPSILON);
+
+        // Kalman gain: K = P_pred * H' / S = [P00/S, P01/S]
+        let k0 = pred_p00 * s_inv;
+        let k1 = pred_p01 * s_inv;
+
+        // State update: x = x_pred + K * y
+        self.x0 = k0.fma(y, pred_x0);
+        self.x1 = k1.fma(y, pred_x1);
+
+        // Covariance update: P = (I - K*H) * P_pred
+        let one_minus_k0 = 1.0 - k0;
+        self.p00 = one_minus_k0 * pred_p00;
+        self.p01 = one_minus_k0 * pred_p01;
+        self.p11 = pred_p11 - k1 * pred_p01;
+
+        if self.count >= self.min_samples {
+            Ok(Some((self.x0, self.x1)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Estimated position, or `None` if not primed.
+    #[inline]
+    #[must_use]
+    pub fn position(&self) -> Option<f64> {
+        if self.count >= self.min_samples {
+            Some(self.x0)
+        } else {
+            None
+        }
+    }
+
+    /// Estimated velocity, or `None` if not primed.
+    #[inline]
+    #[must_use]
+    pub fn velocity(&self) -> Option<f64> {
+        if self.count >= self.min_samples {
+            Some(self.x1)
+        } else {
+            None
+        }
+    }
+
+    /// Position uncertainty (P00).
+    #[inline]
+    #[must_use]
+    pub fn uncertainty(&self) -> f64 {
+        self.p00
+    }
+
+    /// Number of measurements processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether the filter has reached `min_samples`.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= self.min_samples
+    }
+
+    /// Resets to uninitialized state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.x0 = 0.0;
+        self.x1 = 0.0;
+        self.p00 = 1.0;
+        self.p01 = 0.0;
+        self.p11 = 1.0;
+        self.count = 0;
+        self.initialized = false;
+    }
+}
+
+impl Kalman1dF64Builder {
+    /// Process noise variance. Higher = more reactive to changes.
+    ///
+    /// The filter assumes dt=1 between samples. For variable-interval
+    /// data, scale this value proportionally to the actual interval.
+    #[inline]
+    #[must_use]
+    pub fn process_noise(mut self, q: f64) -> Self {
+        self.q = Some(q);
+        self
+    }
+
+    /// Measurement noise variance. Higher = smoother output.
+    #[inline]
+    #[must_use]
+    pub fn measurement_noise(mut self, r: f64) -> Self {
+        self.r = Some(r);
+        self
+    }
+
+    /// Minimum measurements before output is valid. Default: 1.
+    #[inline]
+    #[must_use]
+    pub fn min_samples(mut self, min: u64) -> Self {
+        self.min_samples = min;
+        self
+    }
+
+    /// Pre-load position and velocity from calibration.
+    #[inline]
+    #[must_use]
+    pub fn seed(mut self, position: f64, velocity: f64) -> Self {
+        self.seed_pos = Some(position);
+        self.seed_vel = Some(velocity);
+        self
+    }
+
+    /// Builds the Kalman filter.
+    ///
+    /// # Errors
+    ///
+    /// - process_noise and measurement_noise must have been set.
+    /// - Both must be positive.
+    #[inline]
+    pub fn build(self) -> Result<Kalman1dF64, nexus_stats_core::ConfigError> {
+        let q = self
+            .q
+            .ok_or(nexus_stats_core::ConfigError::Missing("process_noise"))?;
+        let r = self
+            .r
+            .ok_or(nexus_stats_core::ConfigError::Missing("measurement_noise"))?;
+        if !q.is_finite() || q <= 0.0 {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "process_noise must be finite and positive",
+            ));
+        }
+        if !r.is_finite() || r <= 0.0 {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "measurement_noise must be finite and positive",
+            ));
+        }
+
+        let (x0, x1, count, initialized) =
+            if let (Some(pos), Some(vel)) = (self.seed_pos, self.seed_vel) {
+                (pos, vel, self.min_samples, true)
+            } else {
+                (0.0, 0.0, 0, false)
+            };
+
+        Ok(Kalman1dF64 {
+            x0,
+            x1,
+            p00: 1.0,
+            p01: 0.0,
+            p11: 1.0,
+            q,
+            r,
+            count,
+            min_samples: self.min_samples,
+            initialized,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -394,18 +386,6 @@ mod tests {
         }
         kf.reset();
         assert_eq!(kf.count(), 0);
-    }
-
-    #[test]
-    fn f32_basic() {
-        let mut kf = Kalman1dF32::builder()
-            .process_noise(0.1)
-            .measurement_noise(1.0)
-            .build()
-            .unwrap();
-
-        kf.update(50.0).unwrap();
-        assert!(kf.position().is_some());
     }
 
     #[test]
