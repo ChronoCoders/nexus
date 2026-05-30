@@ -56,5 +56,19 @@ pub use wire::AsyncReadAdapter;
 #[cfg(feature = "nexus")]
 pub use wire::NexusAsyncReadAdapter;
 
-// Re-export nexus-net types for convenience
-pub use nexus_net;
+// Re-export nexus-net types that appear in our public API.
+// Users who need deeper access can depend on nexus-net directly.
+pub use nexus_net::ws::{
+    CloseCode, CloseFrame, Error as WsError, FrameReader, FrameReaderBuilder, FrameWriter,
+    HandshakeError, Message, OwnedCloseFrame, OwnedMessage, Role,
+};
+pub use nexus_net::{WireStream, buf::WriteBuf};
+
+/// REST types used in [`rest::HttpConnection`] and [`rest::ClientSlot`].
+pub mod rest_types {
+    pub use nexus_net::http::ResponseReader;
+    pub use nexus_net::rest::{Request, RequestWriter, RestError, RestResponse};
+}
+
+#[cfg(feature = "tls")]
+pub use nexus_net::tls::{TlsConfig, TlsError};
