@@ -20,7 +20,7 @@
 //!
 //! # Custom transports
 //!
-//! `WsStream<S>` / `HttpConnection<S>` consume a
+//! `WsReader`/`WsWriter` and `HttpConnection<S>` accept any
 //! [`WireStream`](nexus_net::WireStream) — the canonical `MaybeTls`
 //! transport implements it directly. To plug a custom
 //! `AsyncRead+AsyncWrite` transport into the same API, wrap it at
@@ -31,7 +31,7 @@
 //!
 //! ```ignore
 //! let tcp = tokio::net::TcpStream::connect(addr).await?;
-//! let ws = WsStreamBuilder::new()
+//! let (mut reader, mut writer, mut conn) = WsStreamBuilder::new()
 //!     .connect_with(AsyncReadAdapter::new(tcp), url)
 //!     .await?;
 //! ```

@@ -1,7 +1,8 @@
 //! Async WebSocket — nexus-async-rt backend.
 //!
-//! Same FrameReader, same zero-copy Message, same performance.
-//! The only difference is `.await` on socket I/O.
+//! Provides [`WsStreamBuilder`] for connection setup. The primary API
+//! types ([`WsReader`](super::WsReader) / [`WsWriter`](super::WsWriter))
+//! are re-exported from the parent `ws` module.
 
 mod stream;
 
