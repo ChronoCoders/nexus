@@ -4,6 +4,7 @@ use std::os::fd::{AsFd, BorrowedFd};
 use std::path::Path;
 use std::ptr::NonNull;
 
+use nix::errno::Errno;
 use nix::sys::mman::{MapFlags, ProtFlags, mmap, munmap};
 
 use crate::error::ShmError;
@@ -52,6 +53,10 @@ impl Mapping {
             flags |= MapFlags::MAP_HUGETLB;
         }
 
+        // SAFETY: `len` is non-zero; the kernel chooses the address (`None`).
+        // `file` is a valid open fd held for the mapping's lifetime via the
+        // returned `Mapping`, and the mapped length matches the file length set
+        // by the caller.
         let ptr = unsafe {
             mmap(
                 None,
@@ -63,11 +68,12 @@ impl Mapping {
             )
         }
         .map_err(|e| {
-            let io = std::io::Error::from_raw_os_error(e as i32);
-            if opts.huge_pages {
-                ShmError::HugePagesUnavailable(io)
+            // ENOMEM with MAP_HUGETLB means the huge-page pool is exhausted;
+            // other errnos are unrelated failures, not a huge-pages verdict.
+            if opts.huge_pages && e == Errno::ENOMEM {
+                ShmError::HugePagesUnavailable(e.into())
             } else {
-                ShmError::Os(io)
+                ShmError::Os(e.into())
             }
         })?;
 
@@ -89,11 +95,17 @@ impl Mapping {
 
 impl Drop for Mapping {
     fn drop(&mut self) {
+        // SAFETY: `ptr` and `len` come from the successful `mmap` in `map` and
+        // are unchanged since construction, so they are a valid mapping to unmap.
         unsafe {
             let _ = munmap(self.ptr.cast(), self.len.get());
         }
     }
 }
 
+// SAFETY: a mapping is a raw pointer plus its backing fd; the bytes live in
+// shared memory, not thread-local state. Concurrent access to the contents is
+// governed by the atomics in the control block, so the handle itself is safe to
+// move and share across threads.
 unsafe impl Send for Mapping {}
 unsafe impl Sync for Mapping {}

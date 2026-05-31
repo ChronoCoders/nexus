@@ -15,4 +15,4 @@ pub use error::ShmError;
 pub use lock::Liveness;
 pub use pod::Pod;
 pub use region::MapOptions;
-pub use segment::{PeerStatus, Segment};
+pub use segment::{Segment, Status};

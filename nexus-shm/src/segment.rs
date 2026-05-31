@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::Path;
 
 use crate::control::{ControlBlock, status};
@@ -5,15 +6,23 @@ use crate::error::ShmError;
 use crate::lock::{self, Liveness};
 use crate::region::{MapOptions, Mapping};
 
-const HEADER: usize = size_of::<ControlBlock>();
+const HEADER: NonZeroUsize = match NonZeroUsize::new(size_of::<ControlBlock>()) {
+    Some(n) => n,
+    None => panic!("control block is zero-sized"),
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PeerStatus {
+pub enum Status {
     Uninit,
     Alive,
     Dead,
 }
 
+/// A mapped shared-memory segment: a control block followed by a payload.
+///
+/// File lifecycle (unlink, rotate, archive) is the caller's responsibility. The
+/// backing file persists after drop so a restarting peer can run crash
+/// recovery; segment owns only the mapping and its liveness signals.
 pub struct Segment {
     mapping: Mapping,
     creator: bool,
@@ -21,15 +30,19 @@ pub struct Segment {
 
 impl Segment {
     pub fn create(path: &Path, data_len: usize, opts: MapOptions) -> Result<Self, ShmError> {
-        let total = (HEADER + data_len)
-            .try_into()
-            .map_err(|_| ShmError::EmptySegment)?;
+        if data_len == 0 {
+            return Err(ShmError::EmptySegment);
+        }
+        let total = HEADER.checked_add(data_len).ok_or(ShmError::SizeOverflow)?;
         let mapping = Mapping::create(path, total, opts)?;
 
         if !lock::acquire_owner(mapping.as_fd())? {
             return Err(ShmError::OwnerActive);
         }
 
+        // SAFETY: we hold the OFD owner lock acquired above, so no other process
+        // is writing the control block; mmap returns page-aligned memory (hence
+        // ControlBlock-aligned) covering at least the header.
         let cb = unsafe { &mut *mapping.as_ptr().cast::<ControlBlock>() };
         let generation = cb.generation().wrapping_add(1);
         cb.write_header(flags(opts), generation, std::process::id(), data_len as u64);
@@ -49,11 +62,16 @@ impl Segment {
         })
     }
 
-    pub fn peer_status(&self) -> PeerStatus {
+    /// Tier-1 liveness from the atomic status field.
+    ///
+    /// `Dead` is authoritative. `Alive` may be stale if the owner died without
+    /// running its drop guard (`SIGKILL`, `panic=abort`); confirm with
+    /// [`Segment::peer_liveness`], which consults the kernel-held OFD lock.
+    pub fn status(&self) -> Status {
         match self.control().status() {
-            s if s == status::ALIVE => PeerStatus::Alive,
-            s if s == status::DEAD => PeerStatus::Dead,
-            _ => PeerStatus::Uninit,
+            s if s == status::ALIVE => Status::Alive,
+            s if s == status::DEAD => Status::Dead,
+            _ => Status::Uninit,
         }
     }
 
@@ -61,8 +79,16 @@ impl Segment {
         lock::owner_liveness(self.mapping.as_fd())
     }
 
+    /// Pointer to the payload region, valid for [`Segment::data_len`] bytes for
+    /// as long as this `Segment` lives.
+    ///
+    /// Reads and writes through it must be synchronized by the caller — the
+    /// foundation provides no ordering for the payload (the control block's
+    /// atomics cover only liveness). The primitives built on top supply their
+    /// own sequencing.
     pub fn data(&self) -> *mut u8 {
-        unsafe { self.mapping.as_ptr().add(HEADER) }
+        // SAFETY: the mapping is HEADER + data_len bytes, so HEADER is in bounds.
+        unsafe { self.mapping.as_ptr().add(HEADER.get()) }
     }
 
     pub fn data_len(&self) -> usize {
@@ -74,6 +100,9 @@ impl Segment {
     }
 
     fn control_of(mapping: &Mapping) -> &ControlBlock {
+        // SAFETY: mmap maps whole pages, so the control block (<= one page) is
+        // mapped and page-aligned. All control-block fields are atomic or
+        // written once before sharing, so shared `&` access is sound.
         unsafe { &*mapping.as_ptr().cast::<ControlBlock>() }
     }
 }
@@ -92,7 +121,8 @@ fn flags(opts: MapOptions) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{PeerStatus, Segment};
+    use super::{Segment, Status};
+    use crate::error::ShmError;
     use crate::lock::Liveness;
     use crate::region::MapOptions;
 
@@ -107,13 +137,13 @@ mod tests {
 
         let seg = Segment::create(&path, 4096, MapOptions::default()).unwrap();
         assert_eq!(seg.data_len(), 4096);
-        assert_eq!(seg.peer_status(), PeerStatus::Alive);
+        assert_eq!(seg.status(), Status::Alive);
 
         unsafe { seg.data().write(0xAB) };
 
         let peer = Segment::attach(&path, MapOptions::default()).unwrap();
         assert_eq!(peer.data_len(), 4096);
-        assert_eq!(peer.peer_status(), PeerStatus::Alive);
+        assert_eq!(peer.status(), Status::Alive);
         assert_eq!(unsafe { peer.data().read() }, 0xAB);
 
         std::fs::remove_file(&path).unwrap();
@@ -128,9 +158,19 @@ mod tests {
         drop(seg);
 
         let peer = Segment::attach(&path, MapOptions::default()).unwrap();
-        assert_eq!(peer.peer_status(), PeerStatus::Dead);
+        assert_eq!(peer.status(), Status::Dead);
 
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn rejects_zero_data_len() {
+        let path = temp_path("zero");
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(
+            Segment::create(&path, 0, MapOptions::default()),
+            Err(ShmError::EmptySegment)
+        ));
     }
 
     #[test]

@@ -6,6 +6,7 @@ pub enum ShmError {
     BadMagic { found: u32 },
     UnsupportedLayout { found: u16, expected: u16 },
     EmptySegment,
+    SizeOverflow,
     HugePagesUnavailable(std::io::Error),
     OwnerActive,
     Os(std::io::Error),
@@ -18,7 +19,8 @@ impl fmt::Display for ShmError {
             Self::UnsupportedLayout { found, expected } => {
                 write!(f, "unsupported layout version {found}, expected {expected}")
             }
-            Self::EmptySegment => write!(f, "segment has zero length"),
+            Self::EmptySegment => write!(f, "segment has zero data length"),
+            Self::SizeOverflow => write!(f, "segment size overflows usize"),
             Self::HugePagesUnavailable(e) => write!(f, "huge pages unavailable: {e}"),
             Self::OwnerActive => write!(f, "segment already owned by a live process"),
             Self::Os(e) => write!(f, "{e}"),

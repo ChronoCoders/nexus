@@ -17,6 +17,8 @@ pub enum Liveness {
 }
 
 fn owner_flock(l_type: libc::c_short) -> libc::flock {
+    // SAFETY: `flock` is a plain C struct of integers; all-zero is a valid
+    // value, and every field is set before use.
     let mut lk: libc::flock = unsafe { std::mem::zeroed() };
     lk.l_type = l_type;
     lk.l_whence = libc::SEEK_SET as libc::c_short;
@@ -30,7 +32,7 @@ pub(crate) fn acquire_owner(fd: BorrowedFd<'_>) -> Result<bool, ShmError> {
     match fcntl(fd, FcntlArg::F_OFD_SETLK(&lk)) {
         Ok(_) => Ok(true),
         Err(Errno::EACCES | Errno::EAGAIN) => Ok(false),
-        Err(e) => Err(ShmError::Os(std::io::Error::from_raw_os_error(e as i32))),
+        Err(e) => Err(ShmError::Os(e.into())),
     }
 }
 
