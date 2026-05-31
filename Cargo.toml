@@ -14,6 +14,7 @@ members = [
 	"nexus-logbuf",
 	"nexus-pool",
 	"nexus-queue",
+	"nexus-shm",
 	"nexus-slab",
 	"nexus-slot",
 	"nexus-smartptr",

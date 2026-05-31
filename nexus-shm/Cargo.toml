@@ -1,0 +1,24 @@
+[package]
+name = "nexus-shm"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Shared-memory IPC primitives for multi-process trading systems"
+repository.workspace = true
+keywords = ["shared-memory", "ipc", "mmap", "low-latency", "lock-free"]
+categories = ["concurrency", "data-structures", "os::unix-apis"]
+
+[lints]
+workspace = true
+
+[dependencies]
+crossbeam-utils.workspace = true
+nix = { version = "0.30", features = ["mman", "fs"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "ofd_liveness"
+harness = false
