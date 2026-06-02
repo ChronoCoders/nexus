@@ -10,6 +10,8 @@ contained.
 
 ## [Unreleased]
 
+## [2.4.1] — 2026-06-02
+
 ### Added
 
 - `SeqMut::reset()` — reset the sequence counter to 0 and return `Sequence::ZERO`.
