@@ -77,7 +77,7 @@ fn bench_read(c: &mut Criterion) {
         b.iter_batched(
             || Journal::<FixHeader>::open(&base, cfg(1 << 20)).unwrap(),
             |(w, mut r)| {
-                while let Some(rec) = r.next_record() {
+                while let Some(rec) = r.next_record().unwrap() {
                     black_box(rec.payload());
                 }
                 drop((w, r));

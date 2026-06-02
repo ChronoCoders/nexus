@@ -20,7 +20,7 @@ impl fmt::Display for JournalError {
                     "record frame {frame} exceeds segment capacity {capacity}"
                 )
             }
-            Self::EmptyRecord => write!(f, "record frames to zero bytes"),
+            Self::EmptyRecord => write!(f, "empty record"),
             Self::Shm(e) => write!(f, "{e}"),
             Self::Os(e) => write!(f, "{e}"),
         }

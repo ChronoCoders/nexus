@@ -4,9 +4,10 @@ use std::sync::atomic::Ordering;
 use crate::segment::Segment;
 
 use super::error::JournalError;
-use super::frame::{LEN_SIZE, footprint, marker};
+use super::frame::{FRAME_HEADER, TYPE_DATA, TYPE_PAD, commit_len, footprint, write_kind};
 use super::header::RecordHeader;
 
+/// Append half of a journal: claims and commits records to the active segment.
 pub struct Writer<H: RecordHeader> {
     pub(super) base: std::path::PathBuf,
     pub(super) segment_size: usize,
@@ -18,6 +19,8 @@ pub struct Writer<H: RecordHeader> {
 }
 
 impl<H: RecordHeader> Writer<H> {
+    /// Reserve space for a record carrying `header` and `payload_len` bytes,
+    /// rolling to a new segment if it does not fit the current one.
     pub fn try_claim(
         &mut self,
         header: H,
@@ -28,7 +31,7 @@ impl<H: RecordHeader> Writer<H> {
             return Err(JournalError::EmptyRecord);
         }
         let foot = footprint(body);
-        if body > i32::MAX as usize || foot > self.segment_size {
+        if body > u32::MAX as usize || foot > self.segment_size {
             return Err(JournalError::RecordTooLarge {
                 frame: foot,
                 capacity: self.segment_size,
@@ -49,11 +52,13 @@ impl<H: RecordHeader> Writer<H> {
 
     fn roll(&mut self) -> Result<(), JournalError> {
         let remaining = self.segment_size - self.tail;
-        if remaining >= LEN_SIZE {
+        if remaining >= FRAME_HEADER {
             let data = self.active.data();
-            // SAFETY: tail is a 4-aligned offset within the mapped data region.
-            let m = unsafe { marker(data.add(self.tail)) };
-            m.store(-((remaining - LEN_SIZE) as i32), Ordering::Release);
+            // SAFETY: tail is an 8-aligned offset within the mapped data region.
+            unsafe {
+                write_kind(data.add(self.tail), TYPE_PAD);
+                commit_len(data.add(self.tail)).store(remaining as u32, Ordering::Release);
+            }
         }
         self.index += 1;
         let path = super::segment_path(&self.base, self.index);
@@ -63,6 +68,9 @@ impl<H: RecordHeader> Writer<H> {
     }
 }
 
+/// A reserved, not-yet-published record. Fill the payload, then [`commit`].
+///
+/// [`commit`]: WriteClaim::commit
 pub struct WriteClaim<'a, H: RecordHeader> {
     writer: &'a mut Writer<H>,
     off: usize,
@@ -73,30 +81,34 @@ pub struct WriteClaim<'a, H: RecordHeader> {
 }
 
 impl<H: RecordHeader> WriteClaim<'_, H> {
+    /// The payload region to fill before committing.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        let start = self.off + LEN_SIZE + size_of::<H>();
+        let start = self.off + FRAME_HEADER + size_of::<H>();
         let data = self.writer.active.data();
         // SAFETY: the region is reserved for this claim, lies within the mapped
         // data, and is exclusively borrowed through `&mut self`.
         unsafe { std::slice::from_raw_parts_mut(data.add(start), self.payload_len) }
     }
 
+    /// Publish the record: write the header and frame kind, then release the
+    /// commit length so readers observe a fully-written record.
     pub fn commit(self) {
         let data = self.writer.active.data();
         // SAFETY: the header slot is reserved for this claim and within the
         // mapped data; `H: Pod`, so an unaligned byte write is valid.
-        unsafe { std::ptr::write_unaligned(data.add(self.off + LEN_SIZE).cast::<H>(), self.header) }
-
-        let next = self.off + self.foot;
-        if next + LEN_SIZE <= self.writer.segment_size {
-            // SAFETY: `next` is a 4-aligned offset within the mapped data.
-            let m = unsafe { marker(data.add(next)) };
-            m.store(0, Ordering::Relaxed);
+        unsafe {
+            std::ptr::write_unaligned(data.add(self.off + FRAME_HEADER).cast::<H>(), self.header);
+            write_kind(data.add(self.off), TYPE_DATA);
         }
 
-        // SAFETY: the marker slot is 4-aligned and within the mapped data.
-        let m = unsafe { marker(data.add(self.off)) };
-        m.store(self.body as i32, Ordering::Release);
+        let next = self.off + self.foot;
+        if next + FRAME_HEADER <= self.writer.segment_size {
+            // SAFETY: `next` is an 8-aligned offset within the mapped data.
+            unsafe { commit_len(data.add(next)).store(0, Ordering::Relaxed) }
+        }
+
+        // SAFETY: the commit-length slot is 8-aligned and within the mapped data.
+        unsafe { commit_len(data.add(self.off)).store(self.body as u32, Ordering::Release) }
         self.writer.tail = next;
     }
 }
