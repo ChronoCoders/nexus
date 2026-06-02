@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-06-01
+
 ### Deprecated
 
 - **This crate is deprecated.** It is being renamed to `nexus-async-web`
