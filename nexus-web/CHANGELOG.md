@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-06-02
+
 Initial release. WebSocket, HTTP/1.1, and REST protocol implementations
 extracted from nexus-net 0.7.x
 ([#413](https://github.com/Abso1ut3Zer0/nexus/issues/413)).
