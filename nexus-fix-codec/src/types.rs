@@ -241,28 +241,32 @@ impl FixTimestamp {
         self.0
     }
 
-    /// Microseconds since unix epoch (truncates sub-microsecond).
+    /// Microseconds since the Unix epoch (floored toward negative infinity,
+    /// consistent with [`subsec_nanos`](Self::subsec_nanos)).
     #[inline]
     pub const fn as_micros(self) -> i128 {
-        self.0 / 1_000
+        self.0.div_euclid(1_000)
     }
 
-    /// Milliseconds since unix epoch (truncates sub-millisecond).
+    /// Milliseconds since the Unix epoch (floored toward negative infinity).
     #[inline]
     pub const fn as_millis(self) -> i128 {
-        self.0 / 1_000_000
+        self.0.div_euclid(1_000_000)
     }
 
-    /// Seconds since unix epoch (truncates sub-second).
+    /// Whole seconds since the Unix epoch (floored, matching
+    /// [`decompose`](Self::decompose)).
     #[inline]
     pub const fn as_secs(self) -> i64 {
-        (self.0 / Self::NANOS_PER_SEC) as i64
+        self.0.div_euclid(Self::NANOS_PER_SEC) as i64
     }
 
-    /// Sub-second nanos component (0..999_999_999).
+    /// Sub-second component in `0..1_000_000_000` for **any** instant — the
+    /// Euclidean remainder, so `as_secs() * 1e9 + subsec_nanos() == as_nanos()`
+    /// holds for negative (pre-epoch) timestamps too.
     #[inline]
     pub const fn subsec_nanos(self) -> u32 {
-        (self.0.unsigned_abs() % Self::NANOS_PER_SEC as u128) as u32
+        self.0.rem_euclid(Self::NANOS_PER_SEC) as u32
     }
 
     /// Decompose into date and time-of-day components.
@@ -799,17 +803,23 @@ fn parse_tz_offset(bytes: &[u8]) -> Result<i16, FixValueError> {
 
 /// Encode a timezone offset (minutes east of UTC) as `Z` or `±HH:MM`.
 /// Returns the number of bytes written (1 or 6).
+///
+/// # Panics
+/// Panics if `|offset_minutes|` exceeds `23:59` (the widest `±HH:MM` form).
+/// `unsigned_abs` keeps the magnitude total over the full `i16` domain (no
+/// negation overflow on `i16::MIN`), and the range check turns an invalid
+/// constructed offset into a clear panic instead of an out-of-bounds index.
 fn encode_tz_offset(offset_minutes: i16, buf: &mut [u8]) -> usize {
     if offset_minutes == 0 {
         buf[0] = b'Z';
         return 1;
     }
-    let (sign, mag) = if offset_minutes < 0 {
-        (b'-', (-offset_minutes) as u16)
-    } else {
-        (b'+', offset_minutes as u16)
-    };
-    buf[0] = sign;
+    let mag = offset_minutes.unsigned_abs();
+    assert!(
+        mag <= 23 * 60 + 59,
+        "encode_tz_offset: offset {offset_minutes} out of range (±23:59 max)"
+    );
+    buf[0] = if offset_minutes < 0 { b'-' } else { b'+' };
     encode_2_digits(&mut buf[1..], (mag / 60) as u8);
     buf[3] = b':';
     encode_2_digits(&mut buf[4..], (mag % 60) as u8);
@@ -820,11 +830,10 @@ fn write_tz_offset(f: &mut fmt::Formatter<'_>, offset_minutes: i16) -> fmt::Resu
     if offset_minutes == 0 {
         return f.write_str("Z");
     }
-    let (sign, mag) = if offset_minutes < 0 {
-        ('-', (-offset_minutes) as u16)
-    } else {
-        ('+', offset_minutes as u16)
-    };
+    // `unsigned_abs` is total over the full i16 domain (no `i16::MIN` overflow);
+    // Display stays panic-free even for an out-of-range constructed offset.
+    let sign = if offset_minutes < 0 { '-' } else { '+' };
+    let mag = offset_minutes.unsigned_abs();
     write!(f, "{sign}{:02}:{:02}", mag / 60, mag % 60)
 }
 
@@ -1428,14 +1437,17 @@ fn parse_time_of_day(bytes: &[u8]) -> Result<(FixTime, usize), FixValueError> {
             }
         }
 
-        // Scale to nanoseconds (pad with zeros if fewer than 9 digits)
-        if frac_digits > 0 {
-            while frac_digits < 9 {
-                frac *= 10;
-                frac_digits += 1;
-            }
-            nanos += frac;
+        // A '.' must be followed by at least one fractional digit.
+        if frac_digits == 0 {
+            return Err(FixValueError::BadFormat);
         }
+
+        // Scale to nanoseconds (pad with zeros if fewer than 9 digits).
+        while frac_digits < 9 {
+            frac *= 10;
+            frac_digits += 1;
+        }
+        nanos += frac;
     }
 
     Ok((
@@ -3011,6 +3023,65 @@ mod tests {
                 core::str::from_utf8(input).unwrap()
             );
         }
+    }
+
+    // -- Copilot review fixes --
+
+    #[test]
+    fn timestamp_accessors_negative_instant() {
+        // pre-epoch instant -1.5s: accessors must agree with each other and
+        // with decompose() (Euclidean — sub-second stays in 0..1e9).
+        let ts = FixTimestamp(-1_500_000_000);
+        assert_eq!(ts.as_secs(), -2);
+        assert_eq!(ts.subsec_nanos(), 500_000_000);
+        assert_eq!(ts.as_millis(), -1500);
+        assert_eq!(
+            ts.as_secs() as i128 * 1_000_000_000 + ts.subsec_nanos() as i128,
+            ts.as_nanos()
+        );
+        let (_d, t) = ts.decompose();
+        assert_eq!(t.subsec_nanos(), ts.subsec_nanos());
+    }
+
+    #[test]
+    fn time_rejects_bare_trailing_dot() {
+        // a '.' with no fractional digits is malformed
+        assert_eq!(FixTime::parse(b"14:30:00."), Err(FixValueError::BadFormat));
+    }
+
+    #[test]
+    fn tz_time_rejects_bare_trailing_dot() {
+        assert_eq!(
+            FixTzTime::parse(b"14:30:00.+01:00").err(),
+            Some(FixValueError::BadFormat)
+        );
+    }
+
+    #[test]
+    fn tz_offset_display_total_over_i16() {
+        // i16::MIN offset is out of range, but Display must not panic
+        // (unsigned_abs, not negation).
+        let t = FixTzTime {
+            time: FixTime {
+                nanos_since_midnight: 0,
+            },
+            offset_minutes: i16::MIN,
+        };
+        let _ = t.to_string();
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn tz_offset_encode_rejects_out_of_range() {
+        // out-of-range offset is a clear panic, not an OOB index in the LUT
+        let t = FixTzTime {
+            time: FixTime {
+                nanos_since_midnight: 0,
+            },
+            offset_minutes: i16::MIN,
+        };
+        let mut buf = [0u8; 24];
+        t.encode(&mut buf);
     }
 
     // -- nexus-decimal conversions --

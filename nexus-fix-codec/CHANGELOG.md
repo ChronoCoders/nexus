@@ -65,3 +65,11 @@ contained.
   normalize to `Z`); the minutes-omitted `±HH` form is not accepted.
 - `FixDate::to_epoch_days` doc no longer claims it returns `None` for
   pre-epoch dates (it always returns `Some`).
+- `FixTime`/`FixTzTime`/`FixTimestamp` reject a `.` with no fractional digits
+  (`"14:30:00."`, or `"14:30:00.+01:00"` via a TZ offset).
+- `FixTimestamp::as_secs`/`as_millis`/`as_micros`/`subsec_nanos` are Euclidean,
+  so they agree with each other and with `decompose()` for pre-epoch (negative)
+  instants (previously a negative timestamp reported a wrong sub-second part).
+- `encode_tz_offset`/`write_tz_offset` use `unsigned_abs` (no `i16::MIN`
+  negation panic); an out-of-range offset is a clear assert, not an
+  out-of-bounds LUT index.
