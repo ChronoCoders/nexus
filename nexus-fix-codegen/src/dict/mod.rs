@@ -6,8 +6,11 @@ pub use parse::{ParseError, parse};
 pub enum FieldType {
     Data,
     Length,
+    NumInGroup,
     Int,
-    Other,
+    SeqNum,
+    Bool,
+    Ascii,
 }
 
 impl FieldType {
@@ -15,8 +18,11 @@ impl FieldType {
         match s {
             "DATA" | "XMLDATA" => Self::Data,
             "LENGTH" => Self::Length,
-            "INT" | "NUMINGROUP" | "SEQNUM" => Self::Int,
-            _ => Self::Other,
+            "NUMINGROUP" => Self::NumInGroup,
+            "INT" => Self::Int,
+            "SEQNUM" => Self::SeqNum,
+            "BOOLEAN" => Self::Bool,
+            _ => Self::Ascii,
         }
     }
 }

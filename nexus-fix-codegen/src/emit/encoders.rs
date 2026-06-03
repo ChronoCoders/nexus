@@ -88,7 +88,7 @@ fn emit_field_setter(s: &mut String, f: &RField) {
         } else {
             let _ = write!(
                 s,
-                "    pub fn {name}_value(mut self, value: super::fields::{ty}) -> Self {{\n        self.w.field(super::fields::TAG_{tag}, value.as_bytes());\n        self\n    }}\n\n"
+                "    pub fn {name}_value(mut self, value: super::fields::{ty}<'_>) -> Self {{\n        self.w.field(super::fields::TAG_{tag}, value.as_bytes());\n        self\n    }}\n\n"
             );
         }
     }
@@ -100,6 +100,6 @@ fn emit_data_setter(s: &mut String, len: &RField, data: &RField) {
     let len_tag = screaming(&len.name);
     let _ = write!(
         s,
-        "    pub fn {name}(mut self, value: &[u8]) -> Self {{\n        let len = value.len().to_string();\n        self.w.field(super::fields::TAG_{len_tag}, len.as_bytes());\n        self.w.field(super::fields::TAG_{data_tag}, value);\n        self\n    }}\n\n"
+        "    pub fn {name}(mut self, value: &[u8]) -> Self {{\n        let mut tmp = [0u8; 20];\n        let len = nexus_fix_codec::format_uint(&mut tmp, value.len() as u64);\n        self.w.field(super::fields::TAG_{len_tag}, len);\n        self.w.field(super::fields::TAG_{data_tag}, value);\n        self\n    }}\n\n"
     );
 }

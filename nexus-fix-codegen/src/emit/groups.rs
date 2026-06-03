@@ -2,7 +2,8 @@ use std::collections::HashSet;
 use std::fmt::Write;
 
 use super::{
-    HEADER, RGroup, RMember, RMessage, group_type, pascal, screaming, snake, subtree_tags,
+    HEADER, RGroup, RMember, RMessage, emit_group_accessor, emit_value_accessor, group_type,
+    pascal, screaming, snake, subtree_tags, tag_or,
 };
 
 pub fn emit(messages: &[RMessage]) -> String {
@@ -69,7 +70,7 @@ fn emit_entry(s: &mut String, base: &str, entry: &str, g: &RGroup) {
 
     let mut tags = Vec::new();
     subtree_tags(&g.members, &mut tags);
-    let tag_list = tag_array(&tags);
+    let pat = tag_or(&tags);
 
     let _ = writeln!(s, "impl<'buf> {entry}<'buf> {{");
     s.push_str(
@@ -102,62 +103,71 @@ fn emit_entry(s: &mut String, base: &str, entry: &str, g: &RGroup) {
     s.push_str("            let Some(f) = r.next_field() else { break };\n");
     let _ = writeln!(
         s,
-        "            if (f.tag == {} && !first) || ![{tag_list}].contains(&f.tag) {{\n                return (e, mark);\n            }}",
+        "            if (f.tag == {} && !first) || !matches!(f.tag, {pat}) {{\n                return (e, mark);\n            }}",
         g.delimiter
     );
     s.push_str("            first = false;\n");
 
-    let mut arms: Vec<String> = Vec::new();
+    let mut arms: Vec<(String, String)> = Vec::new();
     let mut seen_arm = HashSet::new();
     for mem in &g.members {
         match mem {
             RMember::Field(f) if seen_arm.insert(f.number) => {
-                arms.push(format!(
-                    "f.tag == super::fields::TAG_{} {{\n                e.{} = f.value;\n            }}",
+                arms.push((
                     screaming(&f.name),
-                    snake(&f.name)
+                    format!("                e.{} = f.value;\n", snake(&f.name)),
                 ));
             }
             RMember::Group(inner) if seen_arm.insert(inner.number) => {
-                arms.push(nested_arm(inner));
+                arms.push((screaming(&inner.name), nested_body(inner)));
             }
             _ => {}
         }
     }
-    let _ = writeln!(s, "            if {}", arms.join(" else if "));
+    emit_entry_dispatch(s, &arms);
     s.push_str("        }\n        (e, r.pos())\n    }\n\n");
 
     emit_entry_accessors(s, base, g);
     s.push_str("}\n\n");
 }
 
-fn nested_arm(inner: &RGroup) -> String {
+fn emit_entry_dispatch(s: &mut String, arms: &[(String, String)]) {
+    if let [(tag, body)] = arms {
+        let _ = writeln!(s, "            if f.tag == super::fields::TAG_{tag} {{");
+        s.push_str(body);
+        s.push_str("            }\n");
+    } else {
+        s.push_str("            match f.tag {\n");
+        for (tag, body) in arms {
+            let _ = writeln!(s, "                super::fields::TAG_{tag} => {{");
+            s.push_str(body);
+            s.push_str("                }\n");
+        }
+        s.push_str("                _ => {}\n            }\n");
+    }
+}
+
+fn nested_body(inner: &RGroup) -> String {
     let mut tags = Vec::new();
     subtree_tags(&inner.members, &mut tags);
-    let tag_list = tag_array(&tags);
+    let pat = tag_or(&tags);
     let mut b = String::new();
-    let _ = writeln!(
-        b,
-        "f.tag == super::fields::TAG_{} {{",
-        screaming(&inner.name)
-    );
     b.push_str(
         "                let (count, _) = nexus_fix_codec::parse_tag(f.value.slice(buf));\n",
     );
     let _ = writeln!(
         b,
-        "                e.{} = nexus_fix_codec::GroupSpan::new(r.pos() as u32, count as u16);",
+        "                e.{} = nexus_fix_codec::GroupSpan::new(r.pos() as u32, count.min(u16::MAX as u32) as u16);",
         snake(&inner.name)
     );
     b.push_str("                loop {\n                    let nmark = r.pos();\n");
     b.push_str("                    match r.next_field() {\n");
     let _ = writeln!(
         b,
-        "                        Some(nf) if [{tag_list}].contains(&nf.tag) => {{}}"
+        "                        Some(nf) if matches!(nf.tag, {pat}) => {{}}"
     );
     b.push_str("                        _ => {\n                            r = nexus_fix_codec::FieldReader::new(buf, nmark);\n                            break;\n                        }\n");
     b.push_str("                    }\n                }\n");
-    b.push_str("            }");
     b
 }
 
@@ -165,50 +175,12 @@ fn emit_entry_accessors(s: &mut String, base: &str, g: &RGroup) {
     let mut seen = HashSet::new();
     for mem in &g.members {
         match mem {
-            RMember::Field(f) if seen.insert(f.number) => {
-                let name = snake(&f.name);
-                let _ = write!(
-                    s,
-                    "    pub fn {name}(&self) -> Option<&'buf [u8]> {{\n        if self.{name}.is_present() {{ Some(self.{name}.slice(self.buf)) }} else {{ None }}\n    }}\n\n"
-                );
-                if f.is_enum {
-                    let ty = pascal(&f.name);
-                    if f.single_char {
-                        let _ = write!(
-                            s,
-                            "    pub fn {name}_enum(&self) -> Option<super::fields::{ty}> {{\n        super::fields::{ty}::from_byte(*self.{name}()?.first()?)\n    }}\n\n"
-                        );
-                    } else {
-                        let _ = write!(
-                            s,
-                            "    pub fn {name}_enum(&self) -> Option<super::fields::{ty}> {{\n        super::fields::{ty}::from_bytes(self.{name}()?)\n    }}\n\n"
-                        );
-                    }
-                }
-            }
+            RMember::Field(f) if seen.insert(f.number) => emit_value_accessor(s, f),
             RMember::Group(inner) if seen.insert(inner.number) => {
-                let name = snake(&inner.name);
                 let iter = format!("{}Iter", group_type(base, &inner.name));
-                let _ = write!(
-                    s,
-                    "    pub fn {name}(&self) -> super::groups::{iter}<'buf> {{\n        super::groups::{iter}::new(self.buf, self.{name})\n    }}\n\n"
-                );
+                emit_group_accessor(s, &snake(&inner.name), &iter);
             }
             _ => {}
         }
     }
-}
-
-fn tag_array(tags: &[u32]) -> String {
-    tags.iter()
-        .enumerate()
-        .map(|(i, t)| {
-            if i == 0 {
-                format!("{t}u32")
-            } else {
-                t.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
 }

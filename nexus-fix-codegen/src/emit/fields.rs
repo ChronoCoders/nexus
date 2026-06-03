@@ -28,57 +28,75 @@ pub fn emit(dict: &Dictionary) -> String {
 
 fn emit_enum(s: &mut String, f: &FieldDef) {
     let ty = pascal(&f.name);
+    if f.single_char() {
+        emit_single_char_enum(s, f, &ty);
+    } else {
+        emit_multi_char_enum(s, f, &ty);
+    }
+}
+
+fn emit_single_char_enum(s: &mut String, f: &FieldDef, ty: &str) {
     s.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n");
     let _ = writeln!(s, "pub enum {ty} {{");
     for v in &f.values {
         let _ = writeln!(s, "    {},", pascal(&v.name));
     }
-    s.push_str("}\n\n");
+    s.push_str("    Unknown(u8),\n}\n\n");
 
     let _ = writeln!(s, "impl {ty} {{");
-    if f.single_char() {
-        s.push_str("    pub fn from_byte(b: u8) -> Option<Self> {\n        match b {\n");
-        for v in &f.values {
-            let _ = writeln!(
-                s,
-                "            {} => Some(Self::{}),",
-                char_lit(&v.value),
-                pascal(&v.name)
-            );
-        }
-        s.push_str("            _ => None,\n        }\n    }\n\n");
-        s.push_str("    pub fn as_byte(self) -> u8 {\n        match self {\n");
-        for v in &f.values {
-            let _ = writeln!(
-                s,
-                "            Self::{} => {},",
-                pascal(&v.name),
-                char_lit(&v.value)
-            );
-        }
-    } else {
-        s.push_str("    pub fn from_bytes(b: &[u8]) -> Option<Self> {\n        match b {\n");
-        for v in &f.values {
-            let _ = writeln!(
-                s,
-                "            {} => Some(Self::{}),",
-                byte_lit(&v.value),
-                pascal(&v.name)
-            );
-        }
-        s.push_str("            _ => None,\n        }\n    }\n\n");
-        s.push_str("    pub fn as_bytes(self) -> &'static [u8] {\n        match self {\n");
-        for v in &f.values {
-            let _ = writeln!(
-                s,
-                "            Self::{} => {},",
-                pascal(&v.name),
-                byte_lit(&v.value)
-            );
-        }
+    s.push_str("    pub fn from_byte(b: u8) -> Self {\n        match b {\n");
+    for v in &f.values {
+        let _ = writeln!(
+            s,
+            "            {} => Self::{},",
+            char_lit(&v.value),
+            pascal(&v.name)
+        );
     }
-    s.push_str("        }\n    }\n");
-    s.push_str("}\n\n");
+    s.push_str("            other => Self::Unknown(other),\n        }\n    }\n\n");
+    s.push_str("    pub fn as_byte(self) -> u8 {\n        match self {\n");
+    for v in &f.values {
+        let _ = writeln!(
+            s,
+            "            Self::{} => {},",
+            pascal(&v.name),
+            char_lit(&v.value)
+        );
+    }
+    s.push_str("            Self::Unknown(b) => b,\n        }\n    }\n}\n\n");
+}
+
+fn emit_multi_char_enum(s: &mut String, f: &FieldDef, ty: &str) {
+    s.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n");
+    let _ = writeln!(s, "pub enum {ty}<'buf> {{");
+    for v in &f.values {
+        let _ = writeln!(s, "    {},", pascal(&v.name));
+    }
+    s.push_str("    Unknown(&'buf nexus_fix_codec::AsciiTextStr),\n}\n\n");
+
+    let _ = writeln!(s, "impl<'buf> {ty}<'buf> {{");
+    s.push_str(
+        "    pub fn from_bytes(b: &'buf nexus_fix_codec::AsciiTextStr) -> Self {\n        match b.as_bytes() {\n",
+    );
+    for v in &f.values {
+        let _ = writeln!(
+            s,
+            "            {} => Self::{},",
+            byte_lit(&v.value),
+            pascal(&v.name)
+        );
+    }
+    s.push_str("            _ => Self::Unknown(b),\n        }\n    }\n\n");
+    s.push_str("    pub fn as_bytes(self) -> &'buf [u8] {\n        match self {\n");
+    for v in &f.values {
+        let _ = writeln!(
+            s,
+            "            Self::{} => {},",
+            pascal(&v.name),
+            byte_lit(&v.value)
+        );
+    }
+    s.push_str("            Self::Unknown(b) => b.as_bytes(),\n        }\n    }\n}\n\n");
 }
 
 fn char_lit(s: &str) -> String {

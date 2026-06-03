@@ -39,7 +39,7 @@ fn emits_message_decoder_and_group() {
     let messages = file(&files, "messages.rs");
     assert!(messages.contains("pub struct NewOrderSingle<'buf>"));
     assert!(messages.contains("pub fn decode(buf: &'buf [u8]) -> Self"));
-    assert!(messages.contains("pub const REQUIRED: &'static [u32]"));
+    assert!(messages.contains("pub fn is_complete(&self) -> bool"));
     let groups = file(&files, "groups.rs");
     assert!(groups.contains("NewOrderSingleNoPartyIDsEntry"));
     assert!(groups.contains("NewOrderSingleNoPartyIDsNoPartySubIDsEntry"));

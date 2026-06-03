@@ -8,20 +8,26 @@ and encoders that sit directly on the codec primitives.
 
 Per dictionary, five files:
 
-- `fields.rs` — `TAG_*` constants and typed enums (`from_byte`/`as_byte` or
-  `from_bytes`/`as_bytes`).
+- `fields.rs` — `TAG_*` constants and typed enums. Constructors are infallible
+  (`from_byte`/`from_bytes` return `Self`); values outside the dictionary become
+  `Unknown(u8)` / `Unknown(&AsciiTextStr)`.
 - `messages.rs` — per-`MsgType` flyweight decoders. A single forward pass over
-  `FieldReader` dispatches each tag into a `FieldSpan` slot; accessors are pure
-  reads. DATA fields are read length-delimited so an embedded `0x01` never
-  mis-splits.
+  `FieldReader` dispatches each tag (via `match`) into a `FieldSpan` slot.
+  Accessors are typed by FIX type: `&AsciiTextStr` for string-like fields,
+  `i64`/`u32` for integers, `bool` for booleans, `&[u8]` for DATA. DATA is read
+  length-delimited so an embedded `0x01` never mis-splits. `is_complete()`
+  checks required fields are present.
 - `groups.rs` — repeating-group iterators and per-entry decoders, recursive.
-- `encoders.rs` — consume-self builders over `FieldWriter`.
+- `encoders.rs` — consume-self builders over `FieldWriter`. Repeating groups are
+  not yet supported on the encode side.
 - `mod.rs` — re-exports, `BEGIN_STRING`, and `MsgType` dispatch.
 
 ## CLI
 
+The CLI is behind the `cli` feature (so `build.rs` users don't compile `clap`):
+
 ```bash
-cargo run -p nexus-fix-codegen -- --dict dict/FIX44.xml --out src/generated/
+cargo run -p nexus-fix-codegen --features cli -- --dict dict/FIX44.xml --out src/generated/
 ```
 
 ## build.rs

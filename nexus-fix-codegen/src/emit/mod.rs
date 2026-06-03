@@ -195,6 +195,106 @@ pub fn subtree_tags(members: &[RMember], out: &mut Vec<u32>) {
     }
 }
 
+pub fn tag_or(tags: &[u32]) -> String {
+    let mut v: Vec<u32> = tags.to_vec();
+    v.sort_unstable();
+    v.dedup();
+    let mut parts = Vec::new();
+    let mut i = 0;
+    while i < v.len() {
+        let mut j = i;
+        while j + 1 < v.len() && v[j + 1] == v[j] + 1 {
+            j += 1;
+        }
+        if j > i {
+            parts.push(format!("{}..={}", v[i], v[j]));
+        } else {
+            parts.push(v[i].to_string());
+        }
+        i = j + 1;
+    }
+    parts.join(" | ")
+}
+
+enum AccKind {
+    Bytes,
+    Ascii,
+    I64,
+    U32,
+    Bool,
+}
+
+fn acc_kind(ft: FieldType) -> AccKind {
+    match ft {
+        FieldType::Data => AccKind::Bytes,
+        FieldType::Length | FieldType::NumInGroup => AccKind::U32,
+        FieldType::Int | FieldType::SeqNum => AccKind::I64,
+        FieldType::Bool => AccKind::Bool,
+        FieldType::Ascii => AccKind::Ascii,
+    }
+}
+
+pub fn emit_value_accessor(s: &mut String, f: &RField) {
+    let name = snake(&f.name);
+    match acc_kind(f.ftype) {
+        AccKind::Bytes => {
+            let _ = write!(
+                s,
+                "    pub fn {name}(&self) -> Option<&'buf [u8]> {{\n        if self.{name}.is_present() {{ Some(self.{name}.slice(self.buf)) }} else {{ None }}\n    }}\n\n"
+            );
+        }
+        AccKind::Ascii => {
+            let _ = write!(
+                s,
+                "    pub fn {name}(&self) -> Option<&'buf nexus_fix_codec::AsciiTextStr> {{\n        if self.{name}.is_present() {{ nexus_fix_codec::AsciiTextStr::try_from_bytes(self.{name}.slice(self.buf)).ok() }} else {{ None }}\n    }}\n\n"
+            );
+        }
+        AccKind::I64 => {
+            let _ = write!(
+                s,
+                "    pub fn {name}(&self) -> Option<i64> {{\n        if self.{name}.is_present() {{ nexus_fix_codec::parse_fix_int(self.{name}.slice(self.buf)) }} else {{ None }}\n    }}\n\n"
+            );
+        }
+        AccKind::U32 => {
+            let _ = write!(
+                s,
+                "    pub fn {name}(&self) -> Option<u32> {{\n        if self.{name}.is_present() {{ nexus_fix_codec::parse_fix_uint(self.{name}.slice(self.buf)) }} else {{ None }}\n    }}\n\n"
+            );
+        }
+        AccKind::Bool => {
+            let _ = write!(
+                s,
+                "    pub fn {name}(&self) -> Option<bool> {{\n        if self.{name}.is_present() {{ nexus_fix_codec::parse_fix_bool(self.{name}.slice(self.buf)) }} else {{ None }}\n    }}\n\n"
+            );
+        }
+    }
+    if f.is_enum {
+        emit_enum_accessor(s, f, &name);
+    }
+}
+
+fn emit_enum_accessor(s: &mut String, f: &RField, name: &str) {
+    let ty = pascal(&f.name);
+    if f.single_char {
+        let _ = write!(
+            s,
+            "    pub fn {name}_enum(&self) -> Option<super::fields::{ty}> {{\n        self.{name}.slice(self.buf).first().map(|&b| super::fields::{ty}::from_byte(b))\n    }}\n\n"
+        );
+    } else {
+        let _ = write!(
+            s,
+            "    pub fn {name}_enum(&self) -> Option<super::fields::{ty}<'buf>> {{\n        if self.{name}.is_present() {{ nexus_fix_codec::AsciiTextStr::try_from_bytes(self.{name}.slice(self.buf)).ok().map(super::fields::{ty}::from_bytes) }} else {{ None }}\n    }}\n\n"
+        );
+    }
+}
+
+pub fn emit_group_accessor(s: &mut String, name: &str, iter: &str) {
+    let _ = write!(
+        s,
+        "    pub fn {name}(&self) -> super::groups::{iter}<'buf> {{\n        super::groups::{iter}::new(self.buf, self.{name})\n    }}\n\n"
+    );
+}
+
 fn emit_mod(messages: &[RMessage], major: &str, minor: &str) -> String {
     let mut s = String::new();
     s.push_str(HEADER);
