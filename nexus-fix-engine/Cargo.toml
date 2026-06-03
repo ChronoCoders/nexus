@@ -1,0 +1,17 @@
+[package]
+name = "nexus-fix-engine"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Sans-IO FIX session layer: state machine, framing, persistence"
+readme = "README.md"
+repository.workspace = true
+keywords = ["fix", "protocol", "session", "sans-io", "trading"]
+categories = ["network-programming", "finance"]
+
+[lints]
+workspace = true
+
+[dependencies]
+nexus-fix-codec = { path = "../nexus-fix-codec" }
