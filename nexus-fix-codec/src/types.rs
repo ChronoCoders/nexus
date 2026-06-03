@@ -204,6 +204,10 @@ impl FixTimestamp {
     /// The entire input must be consumed — trailing bytes are rejected, since
     /// the field value is SOH-delimited and any trailing byte is part of it.
     ///
+    /// The leap second `23:59:60` is accepted; since Unix time has no leap
+    /// seconds it is stored as the equivalent instant (`00:00:00` the next
+    /// day) and re-encodes as such.
+    ///
     /// # Errors
     /// - [`FixValueError::BadFormat`] if too short, the `-` separator is
     ///   missing, or trailing bytes remain
@@ -429,6 +433,10 @@ impl FixTime {
     const NANOS_PER_SEC: u64 = 1_000_000_000;
     const NANOS_PER_MIN: u64 = 60 * Self::NANOS_PER_SEC;
     const NANOS_PER_HOUR: u64 = 3600 * Self::NANOS_PER_SEC;
+    /// One full day. A `nanos_since_midnight` at or beyond this encodes the
+    /// leap second `23:59:60` (the only valid `SS=60`); the components below
+    /// special-case that range so it reports `23:59:60` and round-trips.
+    const NANOS_PER_DAY: u64 = 86_400 * Self::NANOS_PER_SEC;
 
     /// Parse `HH:MM:SS[.sss[sss[sss]]]` from wire bytes.
     ///
@@ -448,28 +456,44 @@ impl FixTime {
         Ok(time)
     }
 
-    /// Hours component (0..23).
+    /// Hours component (`0..=23`).
     #[inline]
     pub const fn hour(&self) -> u8 {
-        (self.nanos_since_midnight / Self::NANOS_PER_HOUR) as u8
+        if self.nanos_since_midnight >= Self::NANOS_PER_DAY {
+            23 // leap second 23:59:60
+        } else {
+            (self.nanos_since_midnight / Self::NANOS_PER_HOUR) as u8
+        }
     }
 
-    /// Minutes component (0..59).
+    /// Minutes component (`0..=59`).
     #[inline]
     pub const fn minute(&self) -> u8 {
-        ((self.nanos_since_midnight % Self::NANOS_PER_HOUR) / Self::NANOS_PER_MIN) as u8
+        if self.nanos_since_midnight >= Self::NANOS_PER_DAY {
+            59 // leap second 23:59:60
+        } else {
+            ((self.nanos_since_midnight % Self::NANOS_PER_HOUR) / Self::NANOS_PER_MIN) as u8
+        }
     }
 
-    /// Seconds component (0..59).
+    /// Seconds component (`0..=60`; `60` only for the leap second `23:59:60`).
     #[inline]
     pub const fn second(&self) -> u8 {
-        ((self.nanos_since_midnight % Self::NANOS_PER_MIN) / Self::NANOS_PER_SEC) as u8
+        if self.nanos_since_midnight >= Self::NANOS_PER_DAY {
+            60 // leap second 23:59:60
+        } else {
+            ((self.nanos_since_midnight % Self::NANOS_PER_MIN) / Self::NANOS_PER_SEC) as u8
+        }
     }
 
-    /// Sub-second nanos (0..999_999_999).
+    /// Sub-second nanos (`0..=999_999_999`).
     #[inline]
     pub const fn subsec_nanos(&self) -> u32 {
-        (self.nanos_since_midnight % Self::NANOS_PER_SEC) as u32
+        if self.nanos_since_midnight >= Self::NANOS_PER_DAY {
+            (self.nanos_since_midnight - Self::NANOS_PER_DAY) as u32
+        } else {
+            (self.nanos_since_midnight % Self::NANOS_PER_SEC) as u32
+        }
     }
 
     /// Encode as `HH:MM:SS[.sss[sss[sss]]]` wire bytes.
@@ -754,10 +778,9 @@ impl fmt::Display for FixTenor {
 
 /// Parse a timezone offset suffix in canonical form: `Z` or `±HH:MM`.
 ///
-/// Returns the offset east of UTC in minutes (`Z` => 0). Only the canonical
-/// `±HH:MM` form is accepted (not `±HH`), so values re-encode byte-for-byte.
-/// A zero offset always re-encodes as `Z`, so `+00:00`/`-00:00` would not
-/// round-trip — they are rejected here to keep the byte-exact guarantee.
+/// Returns the offset east of UTC in minutes (`Z` => 0). Accepts the `±HH:MM`
+/// form (not the minutes-omitted `±HH`) and `Z`. `+00:00`/`-00:00` parse to a
+/// zero offset and re-encode as `Z` (a zero offset is canonically `Z`).
 fn parse_tz_offset(bytes: &[u8]) -> Result<i16, FixValueError> {
     if bytes == b"Z" {
         return Ok(0);
@@ -771,10 +794,6 @@ fn parse_tz_offset(bytes: &[u8]) -> Result<i16, FixValueError> {
         return Err(FixValueError::OutOfRange);
     }
     let total = hh as i16 * 60 + mm as i16;
-    if total == 0 {
-        // "+00:00"/"-00:00" — UTC must be expressed as "Z" (canonical).
-        return Err(FixValueError::BadFormat);
-    }
     Ok(if bytes[0] == b'-' { -total } else { total })
 }
 
@@ -1375,9 +1394,14 @@ fn parse_time_of_day(bytes: &[u8]) -> Result<(FixTime, usize), FixValueError> {
     }
     let second = parse_digits_u8(&bytes[6..8])?;
 
-    // Reject second == 60 (leap second): the nanos-since-midnight model would
-    // alias it to 24:00:00, silently rolling the day forward on re-encode.
-    if hour > 23 || minute > 59 || second > 59 {
+    if hour > 23 || minute > 59 || second > 60 {
+        return Err(FixValueError::OutOfRange);
+    }
+    // FIX permits the leap second SS=60, but only at 23:59:60 — the resulting
+    // nanos land in the [NANOS_PER_DAY, +1s) range that the FixTime accessors
+    // and encoder special-case. A :60 anywhere else (e.g. 00:00:60) would
+    // alias a normal time (00:01:00), so reject it.
+    if second == 60 && (hour != 23 || minute != 59) {
         return Err(FixValueError::OutOfRange);
     }
 
@@ -1846,9 +1870,40 @@ mod tests {
     }
 
     #[test]
-    fn time_parse_rejects_leap_second() {
-        // SS=60 would alias to 24:00:00 in nanos-since-midnight; rejected.
-        assert_eq!(FixTime::parse(b"23:59:60"), Err(FixValueError::OutOfRange));
+    fn time_parse_leap_second() {
+        // FIX permits the leap second 23:59:60 — accept and report it faithfully.
+        let t = FixTime::parse(b"23:59:60").unwrap();
+        assert_eq!(t.hour(), 23);
+        assert_eq!(t.minute(), 59);
+        assert_eq!(t.second(), 60);
+        assert_eq!(t.subsec_nanos(), 0);
+    }
+
+    #[test]
+    fn time_leap_second_roundtrips() {
+        for input in &[
+            &b"23:59:60"[..],
+            &b"23:59:60.500"[..],
+            &b"23:59:60.123456789"[..],
+        ] {
+            let t = FixTime::parse(input).unwrap();
+            let mut buf = [0u8; 18];
+            let n = t.encode(&mut buf);
+            assert_eq!(
+                &buf[..n],
+                *input,
+                "leap-second roundtrip failed for {:?}",
+                core::str::from_utf8(input).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn time_parse_rejects_misplaced_60() {
+        // :60 only valid as the leap second 23:59:60; elsewhere it would alias
+        // a normal time (00:00:60 == 00:01:00), so reject.
+        assert_eq!(FixTime::parse(b"00:00:60"), Err(FixValueError::OutOfRange));
+        assert_eq!(FixTime::parse(b"12:30:60"), Err(FixValueError::OutOfRange));
     }
 
     #[test]
@@ -1936,6 +1991,15 @@ mod tests {
             FixTimestamp::parse(b"20260602-14:30:00X"),
             Err(FixValueError::BadFormat)
         );
+    }
+
+    #[test]
+    fn timestamp_leap_second_normalizes() {
+        // FIX permits 23:59:60; in Unix time (no leap seconds) it is the same
+        // instant as 00:00:00 the next day. Accept it; do not crash/corrupt.
+        let leap = FixTimestamp::parse(b"20261231-23:59:60").unwrap();
+        let next = FixTimestamp::parse(b"20270101-00:00:00").unwrap();
+        assert_eq!(leap.as_nanos(), next.as_nanos());
     }
 
     // -- parse_fix_int --
@@ -2880,12 +2944,14 @@ mod tests {
     }
 
     #[test]
-    fn tz_time_zero_offset_must_be_zulu() {
-        // "+00:00" is rejected; UTC is canonically "Z"
-        assert_eq!(
-            FixTzTime::parse(b"14:30:00+00:00").err(),
-            Some(FixValueError::BadFormat)
-        );
+    fn tz_time_plus_zero_normalizes_to_zulu() {
+        // "+00:00" is valid FIX (== UTC); accept it. A zero offset re-encodes
+        // canonically as "Z".
+        let t = FixTzTime::parse(b"14:30:00+00:00").unwrap();
+        assert_eq!(t.offset_minutes, 0);
+        let mut buf = [0u8; 24];
+        let n = t.encode(&mut buf);
+        assert_eq!(&buf[..n], b"14:30:00Z");
     }
 
     #[test]

@@ -52,13 +52,16 @@ contained.
 - `FixDecimal::Display` no longer panics at scale 19 (`10^19` overflows the
   `i64` divisor it used); it now divides in `u64` and carries the sign
   separately. Reachable from `parse("0.0000000000000000001")`.
-- Leap second `SS=60` is now rejected (`OutOfRange`). It previously parsed to
-  a full day of nanoseconds, so `hour()` returned 24 and re-encoding rolled
-  the instant forward a day.
+- Leap second `23:59:60` is now supported faithfully. It previously parsed to
+  a full day of nanoseconds (`hour()` returned 24 and re-encoding rolled the
+  instant forward a day). `FixTime` now reports `23:59:60` and round-trips it;
+  `FixTimestamp` stores the equivalent Unix instant (Unix time has no leap
+  seconds). A `:60` anywhere other than `23:59` is rejected (it would alias a
+  normal time, e.g. `00:00:60` == `00:01:00`).
 - `FixTime`, `FixTimestamp`, and `FixDate` now reject trailing/over-length
   bytes (the field value is SOH-delimited, so trailing bytes belong to it)
   rather than silently parsing a prefix.
-- TZ offsets accept only canonical `Z` / `±HH:MM`; `+00:00`/`-00:00` are
-  rejected so a zero offset round-trips byte-exactly as `Z`.
+- TZ offsets accept `Z` and `±HH:MM`, including `+00:00`/`-00:00` (which
+  normalize to `Z`); the minutes-omitted `±HH` form is not accepted.
 - `FixDate::to_epoch_days` doc no longer claims it returns `None` for
   pre-epoch dates (it always returns `Some`).

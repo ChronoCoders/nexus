@@ -226,9 +226,20 @@ said no" — are in [PERF_CATALOG.md](./PERF_CATALOG.md#rejected-approaches).
 
 ## Verification
 
-- 275 unit tests (264 default + 11 behind `nexus-decimal`) + 9 doc-tests pass
+- 278 unit tests (267 default + 11 behind `nexus-decimal`) + 9 doc-tests pass
   on both SSE2 and AVX2.
+- **12 property tests** (`tests/property.rs`, proptest): every value parser is
+  proven to never panic on arbitrary / printable-ASCII / structured wire bytes,
+  and every type round-trips (`construct → encode → parse`) across its full
+  domain — all `i64`×scale decimals, all dates, all times including the
+  leap-second band, all tenors, every `MonthYear` form, and the TZ types.
 - `cargo clippy --all-targets --all-features -- -D warnings`: clean on both tiers.
 - The writer's `unsafe` is miri-clean and was adversarially reviewed
   (full input-grid brute-force + all 2³² tag values). The value layer's one
   new `unsafe` (the `MultipleStringValue` borrowing iterator) is miri-clean.
+
+The cycle harness (`benches/perf_parse_cycles.rs`) and the criterion suite
+(`benches/parse_types.rs`) both cover parse **and** encode for every new type
+(`FixMonthYear`, `FixTenor`, `FixTzTime`/`FixTzTimestamp`, `char`/text/
+multi-value, plus the leap-second path). Numbers still need a controlled
+(`taskset`, turbo-off) run to be authoritative.
