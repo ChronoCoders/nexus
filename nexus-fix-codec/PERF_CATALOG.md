@@ -218,6 +218,43 @@ that narrow gain.
 
 ---
 
+## Value-type layer: error contract + encode unification
+
+The FIX 5.0 SP2 domain-type batch (`FixMonthYear`, `FixTenor`,
+`FixTzTime`/`FixTzTimestamp`, `char`/text/multi-value parsers) plus the
+`Option → Result` migration. The perf-relevant decisions:
+
+- **`Option<T>` → `Result<T, FixValueError>` is free on the happy path.**
+  `Ok(v)` lowers identically to `Some(v)`; `FixValueError` is a one-byte,
+  `Copy`, fieldless enum, and an error value is only *constructed* on the cold
+  failure path. A successful parse has the same codegen as before — the
+  type-parser numbers in BENCHMARKS.md are expected to be unchanged by this
+  migration (re-confirm with a controlled run).
+
+- **Encode unification: the writer's unchecked pattern does NOT transfer.**
+  The plan was to apply `encode_field`'s "single up-front `assert!` +
+  unchecked interior" to `FixDecimal`/`Date`/`Time`/`Timestamp::encode`. On
+  inspection that win doesn't exist here: those encoders route digits through
+  `encode_u64`/`encode_u64_padded`, which build into a fixed stack buffer and
+  emit **one** `copy_from_slice` — there is no per-output-byte bounds-check
+  loop like the old writer had. So the change made is the single up-front
+  capacity `assert!` only: it gives an atomic, clearly-messaged failure
+  (replacing a mid-write index panic) and hands LLVM the length invariant to
+  elide the handful of in-method `buf[pos]` checks. Hand-written `unsafe`
+  stores were deliberately NOT added — they would buy a couple of
+  cross-function copy-length checks at the cost of real UB risk. The data
+  structure already avoids the per-byte tax.
+
+- **New types reuse the spine.** Every numeric/temporal type routes its digit
+  run through `parse_unsigned_digits` (SWAR) and emits through the shared
+  `DIGIT_PAIRS` LUT; fixed-width codes validate via one
+  `AsciiTextStr::try_from_bytes` printable scan; multi-value parsers validate
+  once then yield borrowing iterators (the `MultipleStringValue` iterator uses
+  `AsciiTextStr::from_bytes_unchecked` on validated subslices — miri-clean).
+
+Fresh cycle numbers for the new types and the encode paths require a
+controlled `taskset`/turbo-disabled run and are **not** captured in this batch.
+
 ## Open / deferred
 
 - **Runtime SIMD detection.** Dispatch is compile-time only (no

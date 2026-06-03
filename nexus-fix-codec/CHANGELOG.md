@@ -21,3 +21,44 @@ contained.
 - `encode_field`, `format_checksum` writer helpers
 - `DecodeError` and `ChecksumError` error types
 - Cycle-level benchmarks (`examples/perf_scan.rs`)
+- Value-type parsers/encoders: `FixDecimal`, `FixDate`, `FixTime`,
+  `FixTimestamp`; `parse_fix_int`/`uint`/`seqnum`/`bool` and their encoders
+- `parse_fix_char` / `encode_fix_char` — FIX `char` → `AsciiChar`
+- `parse_fix_text` / `encode_fix_text` — FIX `String`/`Currency`/`Exchange`/
+  `Country`/`Language`/`Symbol` as a zero-copy printable-ASCII `AsciiTextStr`
+- `parse_fix_day_of_month` — `DayOfMonth` (`1..=31`)
+- `FixMonthYear` — `YYYYMM` / `YYYYMMDD` / `YYYYMM`+`wW`, byte-exact round-trip
+- `FixTenor` and `TenorUnit` — FIX 5.0 SP2 `Tenor` (`[DWMY]<n>`, canonical form)
+- `parse_fix_multi_char` / `parse_fix_multi_string` — `MultipleCharValue` /
+  `MultipleStringValue` as zero-allocation borrowing iterators
+- `FixTzTime` / `FixTzTimestamp` — `TZTimeOnly` / `TZTimestamp`, offset-preserving
+- `FixValueError` — value-level parse error (`Empty`, `NotNumeric`, `Overflow`,
+  `OutOfRange`, `BadFormat`, `NotPrintable`)
+- Re-exports of `nexus_ascii::{AsciiChar, AsciiText, AsciiTextStr}`
+- Type-parser benchmarks (`benches/parse_types.rs`, `benches/perf_parse_cycles.rs`)
+
+### Changed
+
+- Value parsers now return `Result<T, FixValueError>` instead of `Option<T>`,
+  surfacing the granular failure reason. Field *absence* is unchanged — it
+  remains an `Option` at the lookup layer (`find_tag`), never a parse error.
+- `FixDecimal`/`FixTimestamp`/`FixDate`/`FixTime` `encode` methods now perform
+  a single up-front capacity `assert!` (atomic, clearly-messaged failure)
+  rather than panicking mid-write.
+- `nexus-ascii` is now a core (non-optional) dependency.
+
+### Fixed
+
+- `FixDecimal::Display` no longer panics at scale 19 (`10^19` overflows the
+  `i64` divisor it used); it now divides in `u64` and carries the sign
+  separately. Reachable from `parse("0.0000000000000000001")`.
+- Leap second `SS=60` is now rejected (`OutOfRange`). It previously parsed to
+  a full day of nanoseconds, so `hour()` returned 24 and re-encoding rolled
+  the instant forward a day.
+- `FixTime`, `FixTimestamp`, and `FixDate` now reject trailing/over-length
+  bytes (the field value is SOH-delimited, so trailing bytes belong to it)
+  rather than silently parsing a prefix.
+- TZ offsets accept only canonical `Z` / `±HH:MM`; `+00:00`/`-00:00` are
+  rejected so a zero offset round-trips byte-exactly as `Z`.
+- `FixDate::to_epoch_days` doc no longer claims it returns `None` for
+  pre-epoch dates (it always returns `Some`).

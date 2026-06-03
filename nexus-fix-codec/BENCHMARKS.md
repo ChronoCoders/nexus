@@ -92,6 +92,13 @@ Domain type parsers for FIX field values. All numeric parsing uses SWAR
 multiply+shift stages. Measured with `rdtscp`, 100K samples after 10K
 warmup, `taskset -c 0`.
 
+> **Note:** these rows predate the `Option → Result<_, FixValueError>`
+> migration and the FIX 5.0 SP2 type additions (`FixMonthYear`, `FixTenor`,
+> `FixTzTime`/`FixTzTimestamp`, `char`/text/multi-value). The migration is
+> happy-path-neutral (`Ok` lowers like `Some`), so these numbers should hold;
+> the new types and the encode paths need a controlled re-run to populate.
+> See [PERF_CATALOG.md](./PERF_CATALOG.md).
+
 ```bash
 cargo build --release --bench perf_parse_cycles -p nexus-fix-codec
 taskset -c 0 ./target/release/deps/perf_parse_cycles-*
@@ -219,7 +226,9 @@ said no" — are in [PERF_CATALOG.md](./PERF_CATALOG.md#rejected-approaches).
 
 ## Verification
 
-- 212 unit tests + 9 doc-tests pass on both SSE2 and AVX2.
-- `cargo clippy --lib -- -D warnings`: clean on both tiers.
+- 275 unit tests (264 default + 11 behind `nexus-decimal`) + 9 doc-tests pass
+  on both SSE2 and AVX2.
+- `cargo clippy --all-targets --all-features -- -D warnings`: clean on both tiers.
 - The writer's `unsafe` is miri-clean and was adversarially reviewed
-  (full input-grid brute-force + all 2³² tag values).
+  (full input-grid brute-force + all 2³² tag values). The value layer's one
+  new `unsafe` (the `MultipleStringValue` borrowing iterator) is miri-clean.

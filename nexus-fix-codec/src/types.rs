@@ -1,4 +1,8 @@
-use core::fmt;
+use core::{fmt, num::NonZeroU32};
+
+use nexus_ascii::{AsciiChar, AsciiTextStr};
+
+use crate::error::FixValueError;
 
 /// Parsed FIX decimal value (FLOAT, PRICE, QTY, AMT, PERCENTAGE, PRICEOFFSET).
 ///
@@ -22,14 +26,19 @@ impl FixDecimal {
     /// Parse a FIX decimal from wire bytes.
     ///
     /// Accepts: optional sign, digits, optional `.` + fractional digits.
-    /// Returns `None` on empty input, non-digit characters, or overflow.
     ///
     /// Uses SWAR (SIMD Within A Register) to parse up to 8 ASCII digits
     /// in parallel per block — three multiply+shift stages vs one
     /// multiply-add per digit in the scalar loop.
-    pub fn parse(bytes: &[u8]) -> Option<Self> {
+    ///
+    /// # Errors
+    /// - [`FixValueError::Empty`] on empty input (or a bare sign)
+    /// - [`FixValueError::NotNumeric`] on a non-digit byte
+    /// - [`FixValueError::BadFormat`] on a lone `.`
+    /// - [`FixValueError::Overflow`] if the mantissa exceeds `i64` range
+    pub fn parse(bytes: &[u8]) -> Result<Self, FixValueError> {
         if bytes.is_empty() {
-            return None;
+            return Err(FixValueError::Empty);
         }
 
         let (negative, start) = match bytes[0] {
@@ -40,7 +49,7 @@ impl FixDecimal {
 
         let src = &bytes[start..];
         if src.is_empty() {
-            return None;
+            return Err(FixValueError::Empty);
         }
 
         let dot_pos = src.iter().position(|&b| b == b'.');
@@ -49,7 +58,7 @@ impl FixDecimal {
             let int_part = &src[..dp];
             let frac_part = &src[dp + 1..];
             if frac_part.is_empty() && int_part.is_empty() {
-                return None;
+                return Err(FixValueError::BadFormat);
             }
             let scale = frac_part.len() as u8;
 
@@ -65,8 +74,13 @@ impl FixDecimal {
                 parse_unsigned_digits(frac_part)?
             };
 
-            let scale_mul = 10u64.checked_pow(scale as u32)?;
-            let mantissa = int_val.checked_mul(scale_mul)?.checked_add(frac_val)?;
+            let scale_mul = 10u64
+                .checked_pow(scale as u32)
+                .ok_or(FixValueError::Overflow)?;
+            let mantissa = int_val
+                .checked_mul(scale_mul)
+                .and_then(|m| m.checked_add(frac_val))
+                .ok_or(FixValueError::Overflow)?;
             (mantissa, scale)
         } else {
             let val = parse_unsigned_digits(src)?;
@@ -77,24 +91,36 @@ impl FixDecimal {
             let signed = mantissa_u64 as i128;
             let neg = -signed;
             if neg < i64::MIN as i128 {
-                return None;
+                return Err(FixValueError::Overflow);
             }
             neg as i64
         } else {
             if mantissa_u64 > i64::MAX as u64 {
-                return None;
+                return Err(FixValueError::Overflow);
             }
             mantissa_u64 as i64
         };
 
-        Some(Self { mantissa, scale })
+        Ok(Self { mantissa, scale })
     }
 
     /// Encode this decimal to wire bytes.
     ///
     /// Writes the FIX representation (e.g., `"-123.456"`) into `buf` and
-    /// returns the number of bytes written. Buffer must be at least 21 bytes.
+    /// returns the number of bytes written.
+    ///
+    /// # Panics
+    /// Panics if `buf` is shorter than 22 bytes — the widest a FIX decimal
+    /// with an `i64` mantissa can occupy (`"-0."` + 19 fractional digits, the
+    /// `i64::MIN`-magnitude mantissa at scale 19). The single up-front check
+    /// gives an atomic, clearly-messaged failure and lets the optimizer elide
+    /// the per-store bounds checks in the body.
     pub fn encode(&self, buf: &mut [u8]) -> usize {
+        assert!(
+            buf.len() >= 22,
+            "FixDecimal::encode: buffer too small (need up to 22 bytes, have {})",
+            buf.len()
+        );
         let mut pos = 0;
 
         if self.mantissa < 0 {
@@ -142,19 +168,17 @@ impl fmt::Display for FixDecimal {
         if self.scale == 0 {
             return write!(f, "{}", self.mantissa);
         }
-        let divisor = 10_i64.pow(self.scale as u32);
-        let integer = self.mantissa / divisor;
-        let frac = self.mantissa.unsigned_abs() % divisor as u64;
-        if self.mantissa < 0 && integer == 0 {
-            write!(f, "-0.{:0>width$}", frac, width = self.scale as usize)
+        // u64 divisor: scale can reach 19, and 10^19 overflows i64 (it fits in
+        // u64). Split the magnitude in u64 and carry the sign separately.
+        let divisor = 10_u64.pow(self.scale as u32);
+        let abs = self.mantissa.unsigned_abs();
+        let integer = abs / divisor;
+        let frac = abs % divisor;
+        let width = self.scale as usize;
+        if self.mantissa < 0 {
+            write!(f, "-{integer}.{frac:0>width$}")
         } else {
-            write!(
-                f,
-                "{}.{:0>width$}",
-                integer,
-                frac,
-                width = self.scale as usize
-            )
+            write!(f, "{integer}.{frac:0>width$}")
         }
     }
 }
@@ -176,24 +200,35 @@ impl FixTimestamp {
     const SECS_PER_DAY: i128 = 86400;
 
     /// Parse a FIX UTC timestamp: `YYYYMMDD-HH:MM:SS[.sss[sss[sss]]]`.
-    pub fn parse(bytes: &[u8]) -> Option<Self> {
+    ///
+    /// The entire input must be consumed — trailing bytes are rejected, since
+    /// the field value is SOH-delimited and any trailing byte is part of it.
+    ///
+    /// # Errors
+    /// - [`FixValueError::BadFormat`] if too short, the `-` separator is
+    ///   missing, or trailing bytes remain
+    /// - propagates [`FixDate::parse`]/time errors (`NotNumeric`, `OutOfRange`)
+    pub fn parse(bytes: &[u8]) -> Result<Self, FixValueError> {
         // Minimum: YYYYMMDD-HH:MM:SS = 17 bytes
         if bytes.len() < 17 {
-            return None;
+            return Err(FixValueError::BadFormat);
         }
 
         let date = FixDate::parse(&bytes[..8])?;
         if bytes[8] != b'-' {
-            return None;
+            return Err(FixValueError::BadFormat);
         }
-        let (time, _) = parse_time_of_day(&bytes[9..])?;
+        let (time, consumed) = parse_time_of_day(&bytes[9..])?;
+        if 9 + consumed != bytes.len() {
+            return Err(FixValueError::BadFormat);
+        }
 
-        let epoch_days = date.to_epoch_days()? as i128;
+        let epoch_days = date.to_epoch_days().ok_or(FixValueError::OutOfRange)? as i128;
         let secs = epoch_days * Self::SECS_PER_DAY
             + time.nanos_since_midnight as i128 / Self::NANOS_PER_SEC;
         let sub_nanos = time.nanos_since_midnight as i128 % Self::NANOS_PER_SEC;
 
-        Some(Self(secs * Self::NANOS_PER_SEC + sub_nanos))
+        Ok(Self(secs * Self::NANOS_PER_SEC + sub_nanos))
     }
 
     /// Nanosecond value (nanos since unix epoch).
@@ -243,9 +278,17 @@ impl FixTimestamp {
 
     /// Encode as FIX timestamp wire bytes (`YYYYMMDD-HH:MM:SS[.fractional]`).
     ///
-    /// Returns the number of bytes written. Buffer must be at least 27 bytes.
     /// Fractional precision is auto-detected: millis (3), micros (6), or nanos (9).
+    ///
+    /// # Panics
+    /// Panics if `buf` is shorter than 27 bytes
+    /// (`YYYYMMDD-HH:MM:SS.nnnnnnnnn`).
     pub fn encode(&self, buf: &mut [u8]) -> usize {
+        assert!(
+            buf.len() >= 27,
+            "FixTimestamp::encode: buffer too small (need up to 27 bytes, have {})",
+            buf.len()
+        );
         let (date, time) = self.decompose();
         let mut pos = date.encode(buf);
         buf[pos] = b'-';
@@ -278,10 +321,16 @@ pub struct FixDate {
 }
 
 impl FixDate {
-    /// Parse `YYYYMMDD` from wire bytes.
-    pub fn parse(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 8 {
-            return None;
+    /// Parse `YYYYMMDD` from wire bytes (exactly 8 bytes; trailing bytes are
+    /// rejected since the SOH-delimited field value includes them).
+    ///
+    /// # Errors
+    /// - [`FixValueError::BadFormat`] if the length is not exactly 8
+    /// - [`FixValueError::NotNumeric`] on a non-digit byte
+    /// - [`FixValueError::OutOfRange`] if month ∉ 1..=12 or day ∉ 1..=31
+    pub fn parse(bytes: &[u8]) -> Result<Self, FixValueError> {
+        if bytes.len() != 8 {
+            return Err(FixValueError::BadFormat);
         }
 
         let year = parse_digits_u16(&bytes[..4])?;
@@ -289,13 +338,16 @@ impl FixDate {
         let day = parse_digits_u8(&bytes[6..8])?;
 
         if month == 0 || month > 12 || day == 0 || day > 31 {
-            return None;
+            return Err(FixValueError::OutOfRange);
         }
 
-        Some(Self { year, month, day })
+        Ok(Self { year, month, day })
     }
 
-    /// Days since unix epoch (1970-01-01). Returns `None` for dates before epoch.
+    /// Days since the Unix epoch (1970-01-01); negative for earlier dates.
+    ///
+    /// Always returns `Some` for a well-formed `FixDate`; the `Option`
+    /// return is retained for forward compatibility.
     pub fn to_epoch_days(&self) -> Option<i32> {
         // Rata Die algorithm (Howard Hinnant)
         let y = if self.month <= 2 {
@@ -339,7 +391,15 @@ impl FixDate {
     }
 
     /// Encode as `YYYYMMDD` wire bytes. Always writes exactly 8 bytes.
+    ///
+    /// # Panics
+    /// Panics if `buf` is shorter than 8 bytes.
     pub fn encode(&self, buf: &mut [u8]) -> usize {
+        assert!(
+            buf.len() >= 8,
+            "FixDate::encode: buffer too small (need 8 bytes, have {})",
+            buf.len()
+        );
         encode_4_digits(buf, self.year);
         encode_2_digits(&mut buf[4..], self.month);
         encode_2_digits(&mut buf[6..], self.day);
@@ -371,9 +431,21 @@ impl FixTime {
     const NANOS_PER_HOUR: u64 = 3600 * Self::NANOS_PER_SEC;
 
     /// Parse `HH:MM:SS[.sss[sss[sss]]]` from wire bytes.
-    pub fn parse(bytes: &[u8]) -> Option<Self> {
-        let (time, _) = parse_time_of_day(bytes)?;
-        Some(time)
+    ///
+    /// The entire input must be consumed — trailing bytes are rejected, since
+    /// the field value is SOH-delimited and any trailing byte is part of it.
+    ///
+    /// # Errors
+    /// - [`FixValueError::BadFormat`] if too short, a `:` separator is missing,
+    ///   or trailing bytes remain
+    /// - [`FixValueError::NotNumeric`] on a non-digit byte
+    /// - [`FixValueError::OutOfRange`] if hour/minute/second is out of range
+    pub fn parse(bytes: &[u8]) -> Result<Self, FixValueError> {
+        let (time, consumed) = parse_time_of_day(bytes)?;
+        if consumed != bytes.len() {
+            return Err(FixValueError::BadFormat);
+        }
+        Ok(time)
     }
 
     /// Hours component (0..23).
@@ -404,8 +476,15 @@ impl FixTime {
     ///
     /// Returns the number of bytes written (8, 12, 15, or 18).
     /// Fractional precision is auto-detected from the value.
-    /// Buffer must be at least 18 bytes.
+    ///
+    /// # Panics
+    /// Panics if `buf` is shorter than 18 bytes (`HH:MM:SS.nnnnnnnnn`).
     pub fn encode(&self, buf: &mut [u8]) -> usize {
+        assert!(
+            buf.len() >= 18,
+            "FixTime::encode: buffer too small (need up to 18 bytes, have {})",
+            buf.len()
+        );
         encode_2_digits(buf, self.hour());
         buf[2] = b':';
         encode_2_digits(&mut buf[3..], self.minute());
@@ -456,17 +535,420 @@ impl fmt::Display for FixTime {
     }
 }
 
+/// Parsed FIX `MonthYear` field.
+///
+/// Three on-the-wire forms, preserved exactly for byte-faithful round-trip:
+/// `YYYYMM`, `YYYYMMDD`, and `YYYYMM` + `wW` (week-of-month `1..=5`). The
+/// forms are NOT interchangeable — `202603`, `20260318`, and `202603w3` are
+/// distinct values and re-encode to exactly what was parsed.
+///
+/// IMM-ness (3rd-Wednesday futures expiry) has no FIX wire type; it is
+/// derived by the application from `(year, month)` and is never a variant
+/// here.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum FixMonthYear {
+    /// `YYYYMM` — year and month only.
+    YearMonth {
+        /// Four-digit year.
+        year: u16,
+        /// Month, `1..=12`.
+        month: u8,
+    },
+    /// `YYYYMMDD` — year, month, and day.
+    YearMonthDay(FixDate),
+    /// `YYYYMM` + `wW` — year, month, and week-of-month (`1..=5`).
+    YearMonthWeek {
+        /// Four-digit year.
+        year: u16,
+        /// Month, `1..=12`.
+        month: u8,
+        /// Week of month, `1..=5`.
+        week: u8,
+    },
+}
+
+impl FixMonthYear {
+    /// Parse a FIX `MonthYear` from wire bytes.
+    ///
+    /// # Errors
+    /// - [`FixValueError::BadFormat`] on an unrecognized length/shape
+    /// - [`FixValueError::NotNumeric`] on a non-digit where digits are required
+    /// - [`FixValueError::OutOfRange`] if month ∉ `1..=12`, day ∉ `1..=31`,
+    ///   or week ∉ `1..=5`
+    pub fn parse(bytes: &[u8]) -> Result<Self, FixValueError> {
+        match bytes.len() {
+            6 => {
+                // YYYYMM
+                let year = parse_digits_u16(&bytes[..4])?;
+                let month = parse_digits_u8(&bytes[4..6])?;
+                if month == 0 || month > 12 {
+                    return Err(FixValueError::OutOfRange);
+                }
+                Ok(Self::YearMonth { year, month })
+            }
+            8 if bytes[6] == b'w' => {
+                // YYYYMM + "wW" — disambiguated from YYYYMMDD by the 'w' at [6]
+                let year = parse_digits_u16(&bytes[..4])?;
+                let month = parse_digits_u8(&bytes[4..6])?;
+                let week = parse_digits_u8(&bytes[7..8])?;
+                if month == 0 || month > 12 {
+                    return Err(FixValueError::OutOfRange);
+                }
+                if week == 0 || week > 5 {
+                    return Err(FixValueError::OutOfRange);
+                }
+                Ok(Self::YearMonthWeek { year, month, week })
+            }
+            8 => {
+                // YYYYMMDD — defer to FixDate (validates month/day range)
+                Ok(Self::YearMonthDay(FixDate::parse(bytes)?))
+            }
+            _ => Err(FixValueError::BadFormat),
+        }
+    }
+
+    /// Encode as wire bytes; returns the number written (6 or 8).
+    ///
+    /// # Panics
+    /// Panics if `buf` is shorter than 8 bytes.
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        assert!(
+            buf.len() >= 8,
+            "FixMonthYear::encode: buffer too small (need up to 8 bytes, have {})",
+            buf.len()
+        );
+        match *self {
+            Self::YearMonth { year, month } => {
+                encode_4_digits(buf, year);
+                encode_2_digits(&mut buf[4..], month);
+                6
+            }
+            Self::YearMonthDay(date) => date.encode(buf),
+            Self::YearMonthWeek { year, month, week } => {
+                encode_4_digits(buf, year);
+                encode_2_digits(&mut buf[4..], month);
+                buf[6] = b'w';
+                buf[7] = b'0' + week;
+                8
+            }
+        }
+    }
+}
+
+impl fmt::Display for FixMonthYear {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::YearMonth { year, month } => write!(f, "{year:04}{month:02}"),
+            Self::YearMonthDay(d) => write!(f, "{d}"),
+            Self::YearMonthWeek { year, month, week } => {
+                write!(f, "{year:04}{month:02}w{week}")
+            }
+        }
+    }
+}
+
+/// FIX `Tenor` unit. The grammar admits exactly four units.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TenorUnit {
+    /// `D` — days.
+    Day,
+    /// `W` — weeks.
+    Week,
+    /// `M` — months.
+    Month,
+    /// `Y` — years.
+    Year,
+}
+
+impl TenorUnit {
+    #[inline]
+    const fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            b'D' => Some(Self::Day),
+            b'W' => Some(Self::Week),
+            b'M' => Some(Self::Month),
+            b'Y' => Some(Self::Year),
+            _ => None,
+        }
+    }
+
+    /// The wire byte for this unit (`D`/`W`/`M`/`Y`).
+    #[inline]
+    pub const fn as_byte(self) -> u8 {
+        match self {
+            Self::Day => b'D',
+            Self::Week => b'W',
+            Self::Month => b'M',
+            Self::Year => b'Y',
+        }
+    }
+}
+
+/// Parsed FIX `Tenor` value: a unit and a positive count.
+///
+/// Wire grammar (FIX 5.0 SP2): `^[DWMY][1-9][0-9]*$` — a unit letter
+/// (`D`/`W`/`M`/`Y`) followed by a positive integer. Examples: `D5`, `W13`,
+/// `M3`, `Y1`. Strict/canonical: leading zeros are rejected so the value
+/// round-trips byte-for-byte.
+///
+/// FX market codes (`ON`/`TN`/`SN`/`SW`) and `SettlType` enums (`B`/`C`/`0`–`9`)
+/// are NOT `Tenor` values — they belong to the *field* that uses the Tenor
+/// datatype, not the datatype itself, and live in the application/codegen
+/// layer.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FixTenor {
+    /// The tenor unit (day/week/month/year).
+    pub unit: TenorUnit,
+    /// The positive count (`> 0`).
+    pub value: NonZeroU32,
+}
+
+impl FixTenor {
+    /// Parse a FIX `Tenor` from wire bytes.
+    ///
+    /// # Errors
+    /// - [`FixValueError::Empty`] on empty input
+    /// - [`FixValueError::BadFormat`] on a missing/invalid unit letter, no
+    ///   digits, or a leading zero
+    /// - [`FixValueError::NotNumeric`] on a non-digit in the count
+    /// - [`FixValueError::Overflow`] if the count exceeds `u32`
+    pub fn parse(bytes: &[u8]) -> Result<Self, FixValueError> {
+        let (&unit_byte, rest) = bytes.split_first().ok_or(FixValueError::Empty)?;
+        let unit = TenorUnit::from_byte(unit_byte).ok_or(FixValueError::BadFormat)?;
+        // Count must be present, with no leading zero (canonical form, so the
+        // value re-encodes byte-for-byte). A leading '0' also rules out "0".
+        if rest.is_empty() || rest[0] == b'0' {
+            return Err(FixValueError::BadFormat);
+        }
+        let n = parse_unsigned_digits(rest)?;
+        let n = u32::try_from(n).map_err(|_| FixValueError::Overflow)?;
+        // n >= 1 here (first digit is 1..=9), so this never returns OutOfRange.
+        let value = NonZeroU32::new(n).ok_or(FixValueError::OutOfRange)?;
+        Ok(Self { unit, value })
+    }
+
+    /// Encode as wire bytes (`<unit><count>`); returns the number written.
+    ///
+    /// # Panics
+    /// Panics if `buf` is shorter than 11 bytes (`Y4294967295`).
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        assert!(
+            buf.len() >= 11,
+            "FixTenor::encode: buffer too small (need up to 11 bytes, have {})",
+            buf.len()
+        );
+        buf[0] = self.unit.as_byte();
+        1 + encode_u64(self.value.get() as u64, &mut buf[1..])
+    }
+}
+
+impl fmt::Display for FixTenor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.unit.as_byte() as char, self.value)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Timezone-qualified temporal types (FIX TZTimeOnly / TZTimestamp)
+// ---------------------------------------------------------------------------
+
+/// Parse a timezone offset suffix in canonical form: `Z` or `±HH:MM`.
+///
+/// Returns the offset east of UTC in minutes (`Z` => 0). Only the canonical
+/// `±HH:MM` form is accepted (not `±HH`), so values re-encode byte-for-byte.
+/// A zero offset always re-encodes as `Z`, so `+00:00`/`-00:00` would not
+/// round-trip — they are rejected here to keep the byte-exact guarantee.
+fn parse_tz_offset(bytes: &[u8]) -> Result<i16, FixValueError> {
+    if bytes == b"Z" {
+        return Ok(0);
+    }
+    if bytes.len() != 6 || (bytes[0] != b'+' && bytes[0] != b'-') || bytes[3] != b':' {
+        return Err(FixValueError::BadFormat);
+    }
+    let hh = parse_digits_u8(&bytes[1..3])?;
+    let mm = parse_digits_u8(&bytes[4..6])?;
+    if hh > 23 || mm > 59 {
+        return Err(FixValueError::OutOfRange);
+    }
+    let total = hh as i16 * 60 + mm as i16;
+    if total == 0 {
+        // "+00:00"/"-00:00" — UTC must be expressed as "Z" (canonical).
+        return Err(FixValueError::BadFormat);
+    }
+    Ok(if bytes[0] == b'-' { -total } else { total })
+}
+
+/// Encode a timezone offset (minutes east of UTC) as `Z` or `±HH:MM`.
+/// Returns the number of bytes written (1 or 6).
+fn encode_tz_offset(offset_minutes: i16, buf: &mut [u8]) -> usize {
+    if offset_minutes == 0 {
+        buf[0] = b'Z';
+        return 1;
+    }
+    let (sign, mag) = if offset_minutes < 0 {
+        (b'-', (-offset_minutes) as u16)
+    } else {
+        (b'+', offset_minutes as u16)
+    };
+    buf[0] = sign;
+    encode_2_digits(&mut buf[1..], (mag / 60) as u8);
+    buf[3] = b':';
+    encode_2_digits(&mut buf[4..], (mag % 60) as u8);
+    6
+}
+
+fn write_tz_offset(f: &mut fmt::Formatter<'_>, offset_minutes: i16) -> fmt::Result {
+    if offset_minutes == 0 {
+        return f.write_str("Z");
+    }
+    let (sign, mag) = if offset_minutes < 0 {
+        ('-', (-offset_minutes) as u16)
+    } else {
+        ('+', offset_minutes as u16)
+    };
+    write!(f, "{sign}{:02}:{:02}", mag / 60, mag % 60)
+}
+
+/// FIX `TZTimeOnly`: a time of day with an explicit UTC offset.
+///
+/// Parses `HH:MM:SS[.frac]` followed by a canonical offset (`Z` or `±HH:MM`).
+/// Both the wall-clock time and the wire offset are preserved, so the value
+/// re-encodes byte-for-byte. Seconds are required, matching [`FixTime`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FixTzTime {
+    /// The local wall-clock time of day.
+    pub time: FixTime,
+    /// Offset east of UTC, in minutes (`Z` => 0).
+    pub offset_minutes: i16,
+}
+
+impl FixTzTime {
+    /// Parse `HH:MM:SS[.frac]±HH:MM` (or a trailing `Z`).
+    ///
+    /// # Errors
+    /// Propagates [`FixTime`] parse errors and adds [`FixValueError::BadFormat`]
+    /// / [`FixValueError::OutOfRange`] for a malformed or out-of-range offset.
+    pub fn parse(bytes: &[u8]) -> Result<Self, FixValueError> {
+        let (time, consumed) = parse_time_of_day(bytes)?;
+        let offset_minutes = parse_tz_offset(&bytes[consumed..])?;
+        Ok(Self {
+            time,
+            offset_minutes,
+        })
+    }
+
+    /// Encode as `HH:MM:SS[.frac]±HH:MM`/`Z`; returns the number written.
+    ///
+    /// # Panics
+    /// Panics if `buf` is shorter than 24 bytes.
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        assert!(
+            buf.len() >= 24,
+            "FixTzTime::encode: buffer too small (need up to 24 bytes, have {})",
+            buf.len()
+        );
+        let mut pos = self.time.encode(buf);
+        pos += encode_tz_offset(self.offset_minutes, &mut buf[pos..]);
+        pos
+    }
+}
+
+impl fmt::Display for FixTzTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.time)?;
+        write_tz_offset(f, self.offset_minutes)
+    }
+}
+
+/// FIX `TZTimestamp`: a date-time with an explicit UTC offset.
+///
+/// Stored as the UTC instant (`utc_nanos`, nanoseconds since the Unix epoch)
+/// plus the wire offset, so the value re-encodes byte-for-byte. UTC-only
+/// timestamps should use [`FixTimestamp`]; this type exists solely to carry a
+/// non-UTC offset.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FixTzTimestamp {
+    /// The instant, in nanoseconds since the Unix epoch (UTC).
+    pub utc_nanos: i128,
+    /// Offset east of UTC, in minutes (`Z` => 0).
+    pub offset_minutes: i16,
+}
+
+impl FixTzTimestamp {
+    const NANOS_PER_SEC: i128 = 1_000_000_000;
+    const SECS_PER_DAY: i128 = 86_400;
+
+    /// Parse `YYYYMMDD-HH:MM:SS[.frac]±HH:MM` (or a trailing `Z`).
+    ///
+    /// # Errors
+    /// [`FixValueError::BadFormat`] if too short or the `-` separator is
+    /// missing; propagates date/time/offset errors.
+    pub fn parse(bytes: &[u8]) -> Result<Self, FixValueError> {
+        if bytes.len() < 17 {
+            return Err(FixValueError::BadFormat);
+        }
+        let date = FixDate::parse(&bytes[..8])?;
+        if bytes[8] != b'-' {
+            return Err(FixValueError::BadFormat);
+        }
+        let (time, consumed) = parse_time_of_day(&bytes[9..])?;
+        let offset_minutes = parse_tz_offset(&bytes[9 + consumed..])?;
+
+        let epoch_days = date.to_epoch_days().ok_or(FixValueError::OutOfRange)? as i128;
+        let local_nanos = epoch_days * Self::SECS_PER_DAY * Self::NANOS_PER_SEC
+            + time.nanos_since_midnight as i128;
+        let utc_nanos = local_nanos - offset_minutes as i128 * 60 * Self::NANOS_PER_SEC;
+        Ok(Self {
+            utc_nanos,
+            offset_minutes,
+        })
+    }
+
+    /// Encode as `YYYYMMDD-HH:MM:SS[.frac]±HH:MM`/`Z`; returns bytes written.
+    ///
+    /// # Panics
+    /// Panics if `buf` is shorter than 33 bytes.
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        assert!(
+            buf.len() >= 33,
+            "FixTzTimestamp::encode: buffer too small (need up to 33 bytes, have {})",
+            buf.len()
+        );
+        let local_nanos = self.utc_nanos + self.offset_minutes as i128 * 60 * Self::NANOS_PER_SEC;
+        let (date, time) = FixTimestamp(local_nanos).decompose();
+        let mut pos = date.encode(buf);
+        buf[pos] = b'-';
+        pos += 1;
+        pos += time.encode(&mut buf[pos..]);
+        pos += encode_tz_offset(self.offset_minutes, &mut buf[pos..]);
+        pos
+    }
+}
+
+impl fmt::Display for FixTzTimestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let local_nanos = self.utc_nanos + self.offset_minutes as i128 * 60 * Self::NANOS_PER_SEC;
+        let (date, time) = FixTimestamp(local_nanos).decompose();
+        write!(f, "{date}-{time}")?;
+        write_tz_offset(f, self.offset_minutes)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tier 1 parsing helpers (used by generated code)
 // ---------------------------------------------------------------------------
 
 /// Parse a FIX integer field (INT type) from wire bytes.
 ///
-/// Handles optional leading sign. Returns `None` on empty, non-digit, or overflow.
-/// Uses SWAR for the digit portion.
-pub fn parse_fix_int(bytes: &[u8]) -> Option<i64> {
+/// Handles optional leading sign. Uses SWAR for the digit portion.
+///
+/// # Errors
+/// - [`FixValueError::Empty`] on empty input (or sign with no digits)
+/// - [`FixValueError::NotNumeric`] on a non-digit byte
+/// - [`FixValueError::Overflow`] if the value exceeds `i64` range
+pub fn parse_fix_int(bytes: &[u8]) -> Result<i64, FixValueError> {
     if bytes.is_empty() {
-        return None;
+        return Err(FixValueError::Empty);
     }
 
     let (negative, start) = match bytes[0] {
@@ -477,7 +959,7 @@ pub fn parse_fix_int(bytes: &[u8]) -> Option<i64> {
 
     let digits = &bytes[start..];
     if digits.is_empty() {
-        return None;
+        return Err(FixValueError::Empty);
     }
 
     let unsigned = parse_unsigned_digits(digits)?;
@@ -486,46 +968,165 @@ pub fn parse_fix_int(bytes: &[u8]) -> Option<i64> {
         let signed = unsigned as i128;
         let neg = -signed;
         if neg < i64::MIN as i128 {
-            return None;
+            return Err(FixValueError::Overflow);
         }
-        Some(neg as i64)
+        Ok(neg as i64)
     } else {
         if unsigned > i64::MAX as u64 {
-            return None;
+            return Err(FixValueError::Overflow);
         }
-        Some(unsigned as i64)
+        Ok(unsigned as i64)
     }
 }
 
 /// Parse a FIX unsigned integer (LENGTH, NUMINGROUP) from wire bytes.
 ///
-/// Uses SWAR for the digit portion.
-pub fn parse_fix_uint(bytes: &[u8]) -> Option<u32> {
+/// Uses SWAR for the digit portion. Returns [`FixValueError::Empty`] on
+/// empty input, [`FixValueError::NotNumeric`] on a non-digit byte, and
+/// [`FixValueError::Overflow`] if the value exceeds `u32` range.
+pub fn parse_fix_uint(bytes: &[u8]) -> Result<u32, FixValueError> {
     if bytes.is_empty() {
-        return None;
+        return Err(FixValueError::Empty);
     }
     let val = parse_unsigned_digits(bytes)?;
-    u32::try_from(val).ok()
+    u32::try_from(val).map_err(|_| FixValueError::Overflow)
 }
 
 /// Parse a FIX sequence number (SEQNUM) from wire bytes.
 ///
-/// Uses SWAR for the digit portion.
-pub fn parse_fix_seqnum(bytes: &[u8]) -> Option<u64> {
+/// Uses SWAR for the digit portion. Returns [`FixValueError::Empty`] on
+/// empty input, [`FixValueError::NotNumeric`] on a non-digit byte, and
+/// [`FixValueError::Overflow`] if the value exceeds `u64` range.
+pub fn parse_fix_seqnum(bytes: &[u8]) -> Result<u64, FixValueError> {
     if bytes.is_empty() {
-        return None;
+        return Err(FixValueError::Empty);
     }
     parse_unsigned_digits(bytes)
 }
 
 /// Parse a FIX boolean (`Y` / `N`) from wire bytes.
+///
+/// Returns [`FixValueError::Empty`] on empty input and
+/// [`FixValueError::BadFormat`] for anything other than a single `Y`/`N`.
 #[inline]
-pub fn parse_fix_bool(bytes: &[u8]) -> Option<bool> {
+pub fn parse_fix_bool(bytes: &[u8]) -> Result<bool, FixValueError> {
     match bytes {
-        [b'Y'] => Some(true),
-        [b'N'] => Some(false),
-        _ => None,
+        [b'Y'] => Ok(true),
+        [b'N'] => Ok(false),
+        [] => Err(FixValueError::Empty),
+        _ => Err(FixValueError::BadFormat),
     }
+}
+
+/// Parse a FIX `char` field (a single ASCII character).
+///
+/// Returns [`FixValueError::Empty`] on empty input,
+/// [`FixValueError::BadFormat`] if the value is not exactly one byte, and
+/// [`FixValueError::NotPrintable`] if the byte is not valid ASCII.
+///
+/// The codec hands back the raw [`AsciiChar`]; mapping a char field to a
+/// typed enum (`Side`, `OrdType`, ...) is the application/codegen layer's
+/// job, not the wire codec's.
+#[inline]
+pub fn parse_fix_char(bytes: &[u8]) -> Result<AsciiChar, FixValueError> {
+    match bytes {
+        [b] => AsciiChar::try_new(*b).map_err(|_| FixValueError::NotPrintable),
+        [] => Err(FixValueError::Empty),
+        _ => Err(FixValueError::BadFormat),
+    }
+}
+
+/// Parse a FIX `DayOfMonth` field (`1..=31`).
+///
+/// Returns [`FixValueError::Empty`] on empty input,
+/// [`FixValueError::NotNumeric`] on a non-digit byte, and
+/// [`FixValueError::OutOfRange`] if the value is not in `1..=31`.
+pub fn parse_fix_day_of_month(bytes: &[u8]) -> Result<u8, FixValueError> {
+    if bytes.is_empty() {
+        return Err(FixValueError::Empty);
+    }
+    let day = parse_unsigned_digits(bytes)?;
+    if (1..=31).contains(&day) {
+        Ok(day as u8)
+    } else {
+        Err(FixValueError::OutOfRange)
+    }
+}
+
+/// Parse a FIX text field (`String`, `Currency`, `Exchange`, `Country`,
+/// `Language`, `Symbol`, ...) as a zero-copy printable-ASCII borrow.
+///
+/// The returned [`AsciiTextStr`] borrows from `bytes` — no allocation, no
+/// copy. To key on the value (e.g. a symbol → order-book map), extract an
+/// owned `AsciiText<CAP>` at the call site, e.g.
+/// `nexus_ascii::AsciiText::<8>::try_from(text.as_str())`.
+///
+/// Returns [`FixValueError::Empty`] on empty input and
+/// [`FixValueError::NotPrintable`] if any byte is a control or non-ASCII
+/// byte. Note this is stricter than the raw field value, which is always
+/// available as `&[u8]` for callers that want to skip validation.
+#[inline]
+pub fn parse_fix_text(bytes: &[u8]) -> Result<&AsciiTextStr, FixValueError> {
+    if bytes.is_empty() {
+        return Err(FixValueError::Empty);
+    }
+    AsciiTextStr::try_from_bytes(bytes).map_err(|_| FixValueError::NotPrintable)
+}
+
+/// Parse a FIX `MultipleCharValue` field: space-delimited single characters.
+///
+/// Validates the whole field once (printable ASCII, single-char tokens),
+/// then yields each [`AsciiChar`] with no allocation. Borrows from `bytes`.
+///
+/// # Errors
+/// - [`FixValueError::Empty`] on empty input
+/// - [`FixValueError::NotPrintable`] on a control/non-ASCII byte
+/// - [`FixValueError::BadFormat`] if any space-delimited token is not exactly
+///   one character (leading/trailing/double spaces produce zero-length tokens)
+pub fn parse_fix_multi_char(
+    bytes: &[u8],
+) -> Result<impl Iterator<Item = AsciiChar> + '_, FixValueError> {
+    if bytes.is_empty() {
+        return Err(FixValueError::Empty);
+    }
+    AsciiTextStr::try_from_bytes(bytes).map_err(|_| FixValueError::NotPrintable)?;
+    if bytes.split(|&b| b == b' ').any(|tok| tok.len() != 1) {
+        return Err(FixValueError::BadFormat);
+    }
+    Ok(bytes.split(|&b| b == b' ').map(|tok| {
+        // Each token is exactly one printable byte (validated above), so
+        // `try_new` cannot fail.
+        AsciiChar::try_new(tok[0]).expect("validated single printable char")
+    }))
+}
+
+/// Parse a FIX `MultipleStringValue` field: space-delimited strings.
+///
+/// Validates the whole field once (printable ASCII, no empty tokens), then
+/// yields each token as a zero-copy [`AsciiTextStr`] borrowed from `bytes`.
+///
+/// # Errors
+/// - [`FixValueError::Empty`] on empty input
+/// - [`FixValueError::NotPrintable`] on a control/non-ASCII byte
+/// - [`FixValueError::BadFormat`] on leading/trailing/double spaces
+pub fn parse_fix_multi_string(
+    bytes: &[u8],
+) -> Result<impl Iterator<Item = &AsciiTextStr> + '_, FixValueError> {
+    if bytes.is_empty() {
+        return Err(FixValueError::Empty);
+    }
+    AsciiTextStr::try_from_bytes(bytes).map_err(|_| FixValueError::NotPrintable)?;
+    if bytes.first() == Some(&b' ')
+        || bytes.last() == Some(&b' ')
+        || bytes.windows(2).any(|w| matches!(w, [b' ', b' ']))
+    {
+        return Err(FixValueError::BadFormat);
+    }
+    Ok(bytes.split(|&b| b == b' ').map(|tok| {
+        // SAFETY: the whole field validated as printable ASCII above, so every
+        // space-delimited subslice is also printable ASCII.
+        unsafe { AsciiTextStr::from_bytes_unchecked(tok) }
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -566,6 +1167,31 @@ pub fn encode_fix_bool(value: bool) -> u8 {
     if value { b'Y' } else { b'N' }
 }
 
+/// Encode a FIX `char` field as a single byte.
+#[inline]
+pub fn encode_fix_char(value: AsciiChar) -> u8 {
+    value.as_u8()
+}
+
+/// Encode a FIX text field by copying its bytes into `buf`.
+///
+/// Returns the number of bytes written.
+///
+/// # Panics
+/// Panics if `buf` is shorter than `text.as_bytes().len()`.
+#[inline]
+pub fn encode_fix_text(text: &AsciiTextStr, buf: &mut [u8]) -> usize {
+    let bytes = text.as_bytes();
+    assert!(
+        buf.len() >= bytes.len(),
+        "encode_fix_text: buffer too small (need {}, have {})",
+        bytes.len(),
+        buf.len()
+    );
+    buf[..bytes.len()].copy_from_slice(bytes);
+    bytes.len()
+}
+
 // ---------------------------------------------------------------------------
 // SWAR digit parsing
 // ---------------------------------------------------------------------------
@@ -576,7 +1202,7 @@ pub fn encode_fix_bool(value: bool) -> u8 {
 /// pairwise: 8 single digits -> 4 two-digit pairs -> 2 four-digit values -> result.
 /// Three multiply+shift stages vs 8 scalar multiply-add iterations.
 #[inline]
-fn swar_parse_8(digits: &[u8]) -> Option<u32> {
+fn swar_parse_8(digits: &[u8]) -> Result<u32, FixValueError> {
     debug_assert!(!digits.is_empty() && digits.len() <= 8);
 
     let mut buf = [b'0'; 8];
@@ -589,7 +1215,7 @@ fn swar_parse_8(digits: &[u8]) -> Option<u32> {
     // already have those bits set.
     let chk = v.wrapping_add(0x0606_0606_0606_0606);
     if (chk | v) & 0xF0F0_F0F0_F0F0_F0F0 != 0 {
-        return None;
+        return Err(FixValueError::NotNumeric);
     }
 
     // Combine adjacent byte pairs: d0*10+d1, d2*10+d3, d4*10+d5, d6*10+d7
@@ -605,12 +1231,12 @@ fn swar_parse_8(digits: &[u8]) -> Option<u32> {
     // Combine u32 halves: lo*10000 + hi
     let lo = v as u32;
     let hi = (v >> 32) as u32;
-    Some(lo * 10_000 + hi)
+    Ok(lo * 10_000 + hi)
 }
 
 /// Parse up to 16 ASCII digits using two SWAR blocks.
 #[inline]
-fn swar_parse_16(digits: &[u8]) -> Option<u64> {
+fn swar_parse_16(digits: &[u8]) -> Result<u64, FixValueError> {
     debug_assert!(!digits.is_empty() && digits.len() <= 16);
 
     if digits.len() <= 8 {
@@ -620,13 +1246,16 @@ fn swar_parse_16(digits: &[u8]) -> Option<u64> {
     let split = digits.len() - 8;
     let hi = swar_parse_8(&digits[..split])? as u64;
     let lo = swar_parse_8(&digits[split..])? as u64;
-    Some(hi * 100_000_000 + lo)
+    Ok(hi * 100_000_000 + lo)
 }
 
 /// Parse an unsigned digit string into u64. SWAR for <= 16 digits, scalar fallback for 17-19.
-fn parse_unsigned_digits(digits: &[u8]) -> Option<u64> {
-    if digits.is_empty() || digits.len() > 19 {
-        return None;
+fn parse_unsigned_digits(digits: &[u8]) -> Result<u64, FixValueError> {
+    if digits.is_empty() {
+        return Err(FixValueError::Empty);
+    }
+    if digits.len() > 19 {
+        return Err(FixValueError::Overflow);
     }
     if digits.len() <= 16 {
         return swar_parse_16(digits);
@@ -637,11 +1266,13 @@ fn parse_unsigned_digits(digits: &[u8]) -> Option<u64> {
     for &b in &digits[..leading] {
         match b {
             b'0'..=b'9' => hi = hi * 10 + (b - b'0') as u64,
-            _ => return None,
+            _ => return Err(FixValueError::NotNumeric),
         }
     }
     let lo = swar_parse_16(&digits[leading..])?;
-    hi.checked_mul(10_000_000_000_000_000)?.checked_add(lo)
+    hi.checked_mul(10_000_000_000_000_000)
+        .and_then(|h| h.checked_add(lo))
+        .ok_or(FixValueError::Overflow)
 }
 
 // ---------------------------------------------------------------------------
@@ -728,24 +1359,26 @@ fn encode_u64_padded(value: u64, width: usize, buf: &mut [u8]) {
 // ---------------------------------------------------------------------------
 
 /// Parse `HH:MM:SS[.fractional]`, returning the time and bytes consumed.
-fn parse_time_of_day(bytes: &[u8]) -> Option<(FixTime, usize)> {
+fn parse_time_of_day(bytes: &[u8]) -> Result<(FixTime, usize), FixValueError> {
     // Minimum: HH:MM:SS = 8 bytes
     if bytes.len() < 8 {
-        return None;
+        return Err(FixValueError::BadFormat);
     }
 
     let hour = parse_digits_u8(&bytes[..2])?;
     if bytes[2] != b':' {
-        return None;
+        return Err(FixValueError::BadFormat);
     }
     let minute = parse_digits_u8(&bytes[3..5])?;
     if bytes[5] != b':' {
-        return None;
+        return Err(FixValueError::BadFormat);
     }
     let second = parse_digits_u8(&bytes[6..8])?;
 
-    if hour > 23 || minute > 59 || second > 60 {
-        return None;
+    // Reject second == 60 (leap second): the nanos-since-midnight model would
+    // alias it to 24:00:00, silently rolling the day forward on re-encode.
+    if hour > 23 || minute > 59 || second > 59 {
+        return Err(FixValueError::OutOfRange);
     }
 
     let mut nanos = hour as u64 * FixTime::NANOS_PER_HOUR
@@ -781,7 +1414,7 @@ fn parse_time_of_day(bytes: &[u8]) -> Option<(FixTime, usize)> {
         }
     }
 
-    Some((
+    Ok((
         FixTime {
             nanos_since_midnight: nanos,
         },
@@ -789,30 +1422,36 @@ fn parse_time_of_day(bytes: &[u8]) -> Option<(FixTime, usize)> {
     ))
 }
 
-fn parse_digits_u16(bytes: &[u8]) -> Option<u16> {
+fn parse_digits_u16(bytes: &[u8]) -> Result<u16, FixValueError> {
     let mut value: u16 = 0;
     for &b in bytes {
         match b {
             b'0'..=b'9' => {
-                value = value.checked_mul(10)?.checked_add((b - b'0') as u16)?;
+                value = value
+                    .checked_mul(10)
+                    .and_then(|v| v.checked_add((b - b'0') as u16))
+                    .ok_or(FixValueError::Overflow)?;
             }
-            _ => return None,
+            _ => return Err(FixValueError::NotNumeric),
         }
     }
-    Some(value)
+    Ok(value)
 }
 
-fn parse_digits_u8(bytes: &[u8]) -> Option<u8> {
+fn parse_digits_u8(bytes: &[u8]) -> Result<u8, FixValueError> {
     let mut value: u8 = 0;
     for &b in bytes {
         match b {
             b'0'..=b'9' => {
-                value = value.checked_mul(10)?.checked_add(b - b'0')?;
+                value = value
+                    .checked_mul(10)
+                    .and_then(|v| v.checked_add(b - b'0'))
+                    .ok_or(FixValueError::Overflow)?;
             }
-            _ => return None,
+            _ => return Err(FixValueError::NotNumeric),
         }
     }
-    Some(value)
+    Ok(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -1022,23 +1661,23 @@ mod tests {
 
     #[test]
     fn decimal_parse_empty() {
-        assert!(FixDecimal::parse(b"").is_none());
+        assert_eq!(FixDecimal::parse(b""), Err(FixValueError::Empty));
     }
 
     #[test]
     fn decimal_parse_sign_only() {
-        assert!(FixDecimal::parse(b"-").is_none());
-        assert!(FixDecimal::parse(b"+").is_none());
+        assert_eq!(FixDecimal::parse(b"-"), Err(FixValueError::Empty));
+        assert_eq!(FixDecimal::parse(b"+"), Err(FixValueError::Empty));
     }
 
     #[test]
     fn decimal_parse_non_digit() {
-        assert!(FixDecimal::parse(b"12.3a4").is_none());
+        assert_eq!(FixDecimal::parse(b"12.3a4"), Err(FixValueError::NotNumeric));
     }
 
     #[test]
     fn decimal_parse_double_dot() {
-        assert!(FixDecimal::parse(b"12.3.4").is_none());
+        assert!(FixDecimal::parse(b"12.3.4").is_err());
     }
 
     #[test]
@@ -1103,22 +1742,28 @@ mod tests {
 
     #[test]
     fn date_parse_too_short() {
-        assert!(FixDate::parse(b"2026060").is_none());
+        assert_eq!(FixDate::parse(b"2026060"), Err(FixValueError::BadFormat));
+    }
+
+    #[test]
+    fn date_parse_trailing_bytes() {
+        // exact-length grammar: a 9th byte is part of the SOH-delimited field
+        assert_eq!(FixDate::parse(b"202606021"), Err(FixValueError::BadFormat));
     }
 
     #[test]
     fn date_parse_invalid_month() {
-        assert!(FixDate::parse(b"20261302").is_none());
+        assert_eq!(FixDate::parse(b"20261302"), Err(FixValueError::OutOfRange));
     }
 
     #[test]
     fn date_parse_zero_month() {
-        assert!(FixDate::parse(b"20260002").is_none());
+        assert_eq!(FixDate::parse(b"20260002"), Err(FixValueError::OutOfRange));
     }
 
     #[test]
     fn date_parse_zero_day() {
-        assert!(FixDate::parse(b"20260600").is_none());
+        assert_eq!(FixDate::parse(b"20260600"), Err(FixValueError::OutOfRange));
     }
 
     #[test]
@@ -1187,23 +1832,46 @@ mod tests {
 
     #[test]
     fn time_parse_too_short() {
-        assert!(FixTime::parse(b"14:30:0").is_none());
+        assert_eq!(FixTime::parse(b"14:30:0"), Err(FixValueError::BadFormat));
     }
 
     #[test]
     fn time_parse_invalid_hour() {
-        assert!(FixTime::parse(b"24:00:00").is_none());
+        assert_eq!(FixTime::parse(b"24:00:00"), Err(FixValueError::OutOfRange));
     }
 
     #[test]
     fn time_parse_invalid_minute() {
-        assert!(FixTime::parse(b"14:60:00").is_none());
+        assert_eq!(FixTime::parse(b"14:60:00"), Err(FixValueError::OutOfRange));
+    }
+
+    #[test]
+    fn time_parse_rejects_leap_second() {
+        // SS=60 would alias to 24:00:00 in nanos-since-midnight; rejected.
+        assert_eq!(FixTime::parse(b"23:59:60"), Err(FixValueError::OutOfRange));
+    }
+
+    #[test]
+    fn time_parse_rejects_trailing_bytes() {
+        assert_eq!(
+            FixTime::parse(b"14:30:00garbage"),
+            Err(FixValueError::BadFormat)
+        );
+    }
+
+    #[test]
+    fn time_parse_rejects_excess_frac_digits() {
+        // a 10th fractional digit is leftover -> not fully consumed -> rejected
+        assert_eq!(
+            FixTime::parse(b"00:00:00.1234567890"),
+            Err(FixValueError::BadFormat)
+        );
     }
 
     #[test]
     fn time_display_no_frac() {
         let t = FixTime {
-            nanos_since_midnight: 14 * 3600_000_000_000 + 30 * 60_000_000_000,
+            nanos_since_midnight: 14 * 3_600_000_000_000 + 30 * 60_000_000_000,
         };
         assert_eq!(t.to_string(), "14:30:00");
     }
@@ -1248,103 +1916,132 @@ mod tests {
 
     #[test]
     fn timestamp_too_short() {
-        assert!(FixTimestamp::parse(b"20260602-14:30").is_none());
+        assert_eq!(
+            FixTimestamp::parse(b"20260602-14:30"),
+            Err(FixValueError::BadFormat)
+        );
     }
 
     #[test]
     fn timestamp_bad_separator() {
-        assert!(FixTimestamp::parse(b"20260602T14:30:00").is_none());
+        assert_eq!(
+            FixTimestamp::parse(b"20260602T14:30:00"),
+            Err(FixValueError::BadFormat)
+        );
+    }
+
+    #[test]
+    fn timestamp_rejects_trailing_bytes() {
+        assert_eq!(
+            FixTimestamp::parse(b"20260602-14:30:00X"),
+            Err(FixValueError::BadFormat)
+        );
     }
 
     // -- parse_fix_int --
 
     #[test]
     fn int_parse_positive() {
-        assert_eq!(parse_fix_int(b"12345"), Some(12345));
+        assert_eq!(parse_fix_int(b"12345"), Ok(12345));
     }
 
     #[test]
     fn int_parse_negative() {
-        assert_eq!(parse_fix_int(b"-42"), Some(-42));
+        assert_eq!(parse_fix_int(b"-42"), Ok(-42));
     }
 
     #[test]
     fn int_parse_zero() {
-        assert_eq!(parse_fix_int(b"0"), Some(0));
+        assert_eq!(parse_fix_int(b"0"), Ok(0));
     }
 
     #[test]
     fn int_parse_empty() {
-        assert_eq!(parse_fix_int(b""), None);
+        assert_eq!(parse_fix_int(b""), Err(FixValueError::Empty));
     }
 
     #[test]
     fn int_parse_non_digit() {
-        assert_eq!(parse_fix_int(b"12x"), None);
+        assert_eq!(parse_fix_int(b"12x"), Err(FixValueError::NotNumeric));
+    }
+
+    #[test]
+    fn int_parse_overflow() {
+        // one past i64::MAX
+        assert_eq!(
+            parse_fix_int(b"9223372036854775808"),
+            Err(FixValueError::Overflow)
+        );
     }
 
     // -- parse_fix_uint --
 
     #[test]
     fn uint_parse() {
-        assert_eq!(parse_fix_uint(b"256"), Some(256));
+        assert_eq!(parse_fix_uint(b"256"), Ok(256));
     }
 
     #[test]
     fn uint_parse_zero() {
-        assert_eq!(parse_fix_uint(b"0"), Some(0));
+        assert_eq!(parse_fix_uint(b"0"), Ok(0));
+    }
+
+    #[test]
+    fn uint_parse_overflow() {
+        // 2^32, one past u32::MAX
+        assert_eq!(parse_fix_uint(b"4294967296"), Err(FixValueError::Overflow));
     }
 
     // -- parse_fix_seqnum --
 
     #[test]
     fn seqnum_parse() {
-        assert_eq!(parse_fix_seqnum(b"1000000"), Some(1_000_000));
+        assert_eq!(parse_fix_seqnum(b"1000000"), Ok(1_000_000));
     }
 
     // -- parse_fix_bool --
 
     #[test]
     fn bool_parse_y() {
-        assert_eq!(parse_fix_bool(b"Y"), Some(true));
+        assert_eq!(parse_fix_bool(b"Y"), Ok(true));
     }
 
     #[test]
     fn bool_parse_n() {
-        assert_eq!(parse_fix_bool(b"N"), Some(false));
+        assert_eq!(parse_fix_bool(b"N"), Ok(false));
     }
 
     #[test]
     fn bool_parse_invalid() {
-        assert_eq!(parse_fix_bool(b"y"), None);
-        assert_eq!(parse_fix_bool(b""), None);
-        assert_eq!(parse_fix_bool(b"YES"), None);
+        assert_eq!(parse_fix_bool(b"y"), Err(FixValueError::BadFormat));
+        assert_eq!(parse_fix_bool(b""), Err(FixValueError::Empty));
+        assert_eq!(parse_fix_bool(b"YES"), Err(FixValueError::BadFormat));
     }
 
     // -- SWAR boundary tests --
 
     #[test]
     fn swar_single_digit() {
-        assert_eq!(parse_fix_int(b"7"), Some(7));
-        assert_eq!(parse_fix_seqnum(b"1"), Some(1));
+        assert_eq!(parse_fix_int(b"7"), Ok(7));
+        assert_eq!(parse_fix_seqnum(b"1"), Ok(1));
     }
 
     #[test]
     fn swar_exactly_8_digits() {
-        assert_eq!(parse_fix_int(b"12345678"), Some(12_345_678));
-        assert_eq!(parse_fix_seqnum(b"99999999"), Some(99_999_999));
+        assert_eq!(parse_fix_int(b"12345678"), Ok(12_345_678));
+        assert_eq!(parse_fix_seqnum(b"99999999"), Ok(99_999_999));
     }
 
     #[test]
     fn swar_9_digits_crosses_block() {
-        assert_eq!(parse_fix_int(b"123456789"), Some(123_456_789));
+        assert_eq!(parse_fix_int(b"123456789"), Ok(123_456_789));
     }
 
     #[test]
     fn swar_16_digits_two_blocks() {
         assert_eq!(
             parse_fix_seqnum(b"1234567890123456"),
-            Some(1_234_567_890_123_456)
+            Ok(1_234_567_890_123_456)
         );
     }
 
@@ -1352,18 +2049,18 @@ mod tests {
     fn swar_17_digits_scalar_plus_blocks() {
         assert_eq!(
             parse_fix_seqnum(b"12345678901234567"),
-            Some(12_345_678_901_234_567)
+            Ok(12_345_678_901_234_567)
         );
     }
 
     #[test]
     fn swar_19_digits_max_i64() {
-        assert_eq!(parse_fix_int(b"9223372036854775807"), Some(i64::MAX));
+        assert_eq!(parse_fix_int(b"9223372036854775807"), Ok(i64::MAX));
     }
 
     #[test]
     fn swar_19_digits_min_i64() {
-        assert_eq!(parse_fix_int(b"-9223372036854775808"), Some(i64::MIN));
+        assert_eq!(parse_fix_int(b"-9223372036854775808"), Ok(i64::MIN));
     }
 
     #[test]
@@ -1393,7 +2090,7 @@ mod tests {
     fn swar_all_digit_lengths() {
         for n in 1..=19u64 {
             let s = n.to_string();
-            assert_eq!(parse_fix_seqnum(s.as_bytes()), Some(n), "failed for {n}");
+            assert_eq!(parse_fix_seqnum(s.as_bytes()), Ok(n), "failed for {n}");
         }
     }
 
@@ -1479,7 +2176,7 @@ mod tests {
             mantissa: 12345,
             scale: 0,
         };
-        let mut buf = [0u8; 21];
+        let mut buf = [0u8; 22];
         let n = d.encode(&mut buf);
         assert_eq!(&buf[..n], b"12345");
     }
@@ -1490,7 +2187,7 @@ mod tests {
             mantissa: 123_456,
             scale: 3,
         };
-        let mut buf = [0u8; 21];
+        let mut buf = [0u8; 22];
         let n = d.encode(&mut buf);
         assert_eq!(&buf[..n], b"123.456");
     }
@@ -1501,7 +2198,7 @@ mod tests {
             mantissa: -995,
             scale: 1,
         };
-        let mut buf = [0u8; 21];
+        let mut buf = [0u8; 22];
         let n = d.encode(&mut buf);
         assert_eq!(&buf[..n], b"-99.5");
     }
@@ -1512,7 +2209,7 @@ mod tests {
             mantissa: 1,
             scale: 3,
         };
-        let mut buf = [0u8; 21];
+        let mut buf = [0u8; 22];
         let n = d.encode(&mut buf);
         assert_eq!(&buf[..n], b"0.001");
     }
@@ -1523,7 +2220,7 @@ mod tests {
             mantissa: 0,
             scale: 0,
         };
-        let mut buf = [0u8; 21];
+        let mut buf = [0u8; 22];
         let n = d.encode(&mut buf);
         assert_eq!(&buf[..n], b"0");
     }
@@ -1534,7 +2231,7 @@ mod tests {
             mantissa: -5,
             scale: 1,
         };
-        let mut buf = [0u8; 21];
+        let mut buf = [0u8; 22];
         let n = d.encode(&mut buf);
         assert_eq!(&buf[..n], b"-0.5");
     }
@@ -1653,6 +2350,68 @@ mod tests {
         assert_eq!(&buf[..n], b"19700101-00:00:01.500");
     }
 
+    // -- Encode: too-small buffer panics (atomic up-front check) --
+
+    #[test]
+    #[should_panic(expected = "buffer too small")]
+    fn decimal_encode_panics_when_too_small() {
+        let d = FixDecimal {
+            mantissa: 12345,
+            scale: 0,
+        };
+        // 21 is one short of the 22-byte worst case.
+        let mut buf = [0u8; 21];
+        d.encode(&mut buf);
+    }
+
+    #[test]
+    fn decimal_encode_max_width() {
+        // i64::MIN magnitude at scale 19 is the widest decimal: "-0." + 19 frac.
+        let d = FixDecimal::parse(b"-0.9223372036854775808").unwrap();
+        let mut buf = [0u8; 22];
+        let n = d.encode(&mut buf);
+        assert_eq!(n, 22);
+        assert_eq!(&buf[..n], b"-0.9223372036854775808");
+    }
+
+    #[test]
+    fn decimal_display_scale_19_no_panic() {
+        // scale 19: 10^19 overflows i64 but fits u64 — Display must not panic.
+        let d = FixDecimal::parse(b"0.0000000000000000001").unwrap();
+        assert_eq!(d.scale, 19);
+        assert_eq!(d.to_string(), "0.0000000000000000001");
+    }
+
+    #[test]
+    #[should_panic(expected = "buffer too small")]
+    fn date_encode_panics_when_too_small() {
+        let d = FixDate {
+            year: 2026,
+            month: 6,
+            day: 2,
+        };
+        let mut buf = [0u8; 7];
+        d.encode(&mut buf);
+    }
+
+    #[test]
+    #[should_panic(expected = "buffer too small")]
+    fn time_encode_panics_when_too_small() {
+        let t = FixTime {
+            nanos_since_midnight: 0,
+        };
+        let mut buf = [0u8; 17];
+        t.encode(&mut buf);
+    }
+
+    #[test]
+    #[should_panic(expected = "buffer too small")]
+    fn timestamp_encode_panics_when_too_small() {
+        let ts = FixTimestamp(0);
+        let mut buf = [0u8; 26];
+        ts.encode(&mut buf);
+    }
+
     // -- Roundtrip: parse → encode --
 
     #[test]
@@ -1667,7 +2426,7 @@ mod tests {
             &b"1234567.890123456"[..],
         ] {
             let d = FixDecimal::parse(input).unwrap();
-            let mut buf = [0u8; 21];
+            let mut buf = [0u8; 22];
             let n = d.encode(&mut buf);
             assert_eq!(
                 &buf[..n],
@@ -1681,7 +2440,7 @@ mod tests {
     #[test]
     fn decimal_roundtrip_negative() {
         let d = FixDecimal::parse(b"-123.456").unwrap();
-        let mut buf = [0u8; 21];
+        let mut buf = [0u8; 22];
         let n = d.encode(&mut buf);
         assert_eq!(&buf[..n], b"-123.456");
     }
@@ -1751,6 +2510,440 @@ mod tests {
             let mut buf = [0u8; 20];
             let n = encode_fix_int(parsed, &mut buf);
             assert_eq!(&buf[..n], s.as_bytes(), "roundtrip failed for {val}");
+        }
+    }
+
+    // -- parse_fix_char / encode_fix_char --
+
+    #[test]
+    fn char_parse_valid() {
+        assert_eq!(parse_fix_char(b"1").unwrap().as_u8(), b'1');
+        assert_eq!(parse_fix_char(b"D").unwrap().as_u8(), b'D');
+    }
+
+    #[test]
+    fn char_parse_empty() {
+        assert_eq!(parse_fix_char(b"").err(), Some(FixValueError::Empty));
+    }
+
+    #[test]
+    fn char_parse_too_long() {
+        assert_eq!(parse_fix_char(b"AB").err(), Some(FixValueError::BadFormat));
+    }
+
+    #[test]
+    fn char_parse_non_ascii() {
+        assert_eq!(
+            parse_fix_char(&[0x80]).err(),
+            Some(FixValueError::NotPrintable)
+        );
+    }
+
+    #[test]
+    fn char_encode_roundtrip() {
+        let c = parse_fix_char(b"2").unwrap();
+        assert_eq!(encode_fix_char(c), b'2');
+    }
+
+    // -- parse_fix_day_of_month --
+
+    #[test]
+    fn day_of_month_valid() {
+        assert_eq!(parse_fix_day_of_month(b"1"), Ok(1));
+        assert_eq!(parse_fix_day_of_month(b"31"), Ok(31));
+    }
+
+    #[test]
+    fn day_of_month_out_of_range() {
+        assert_eq!(parse_fix_day_of_month(b"0"), Err(FixValueError::OutOfRange));
+        assert_eq!(
+            parse_fix_day_of_month(b"32"),
+            Err(FixValueError::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn day_of_month_non_digit() {
+        assert_eq!(parse_fix_day_of_month(b"x"), Err(FixValueError::NotNumeric));
+    }
+
+    // -- parse_fix_text / encode_fix_text --
+
+    #[test]
+    fn text_parse_valid() {
+        let t = parse_fix_text(b"BTC-USD").unwrap();
+        assert_eq!(t.as_str(), "BTC-USD");
+    }
+
+    #[test]
+    fn text_parse_currency_4char() {
+        // crypto currency that breaks the ISO-4217 3-char assumption
+        let t = parse_fix_text(b"USDT").unwrap();
+        assert_eq!(t.as_str(), "USDT");
+    }
+
+    #[test]
+    fn text_parse_empty() {
+        assert_eq!(parse_fix_text(b"").err(), Some(FixValueError::Empty));
+    }
+
+    #[test]
+    fn text_parse_non_printable() {
+        assert_eq!(
+            parse_fix_text(&[b'A', 0x07, b'B']).err(),
+            Some(FixValueError::NotPrintable)
+        );
+    }
+
+    #[test]
+    fn text_encode_roundtrip() {
+        let t = parse_fix_text(b"SENDER").unwrap();
+        let mut buf = [0u8; 16];
+        let n = encode_fix_text(t, &mut buf);
+        assert_eq!(&buf[..n], b"SENDER");
+    }
+
+    #[test]
+    #[should_panic(expected = "buffer too small")]
+    fn text_encode_panics_when_too_small() {
+        let t = parse_fix_text(b"SENDER").unwrap();
+        let mut buf = [0u8; 3];
+        encode_fix_text(t, &mut buf);
+    }
+
+    // -- FixMonthYear --
+
+    #[test]
+    fn month_year_year_month() {
+        let my = FixMonthYear::parse(b"202603").unwrap();
+        assert_eq!(
+            my,
+            FixMonthYear::YearMonth {
+                year: 2026,
+                month: 3
+            }
+        );
+    }
+
+    #[test]
+    fn month_year_year_month_day() {
+        let my = FixMonthYear::parse(b"20260318").unwrap();
+        assert_eq!(
+            my,
+            FixMonthYear::YearMonthDay(FixDate {
+                year: 2026,
+                month: 3,
+                day: 18
+            })
+        );
+    }
+
+    #[test]
+    fn month_year_year_month_week() {
+        let my = FixMonthYear::parse(b"202603w3").unwrap();
+        assert_eq!(
+            my,
+            FixMonthYear::YearMonthWeek {
+                year: 2026,
+                month: 3,
+                week: 3
+            }
+        );
+    }
+
+    #[test]
+    fn month_year_invalid_month() {
+        assert_eq!(
+            FixMonthYear::parse(b"202613"),
+            Err(FixValueError::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn month_year_invalid_week() {
+        assert_eq!(
+            FixMonthYear::parse(b"202603w6"),
+            Err(FixValueError::OutOfRange)
+        );
+        assert_eq!(
+            FixMonthYear::parse(b"202603w0"),
+            Err(FixValueError::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn month_year_bad_length() {
+        assert_eq!(FixMonthYear::parse(b"2026"), Err(FixValueError::BadFormat));
+        assert_eq!(FixMonthYear::parse(b"20260"), Err(FixValueError::BadFormat));
+    }
+
+    #[test]
+    fn month_year_roundtrip_all_forms() {
+        for input in &[&b"202603"[..], &b"20260318"[..], &b"202603w3"[..]] {
+            let my = FixMonthYear::parse(input).unwrap();
+            let mut buf = [0u8; 8];
+            let n = my.encode(&mut buf);
+            assert_eq!(
+                &buf[..n],
+                *input,
+                "roundtrip failed for {:?}",
+                core::str::from_utf8(input).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn month_year_forms_distinct() {
+        // same year/month, different wire forms must not compare equal
+        let a = FixMonthYear::parse(b"202603").unwrap();
+        let b = FixMonthYear::parse(b"202603w1").unwrap();
+        assert_ne!(a, b);
+    }
+
+    // -- FixTenor --
+
+    #[test]
+    fn tenor_parse_all_units() {
+        for (input, unit, val) in &[
+            (&b"D5"[..], TenorUnit::Day, 5u32),
+            (&b"W13"[..], TenorUnit::Week, 13),
+            (&b"M3"[..], TenorUnit::Month, 3),
+            (&b"Y1"[..], TenorUnit::Year, 1),
+        ] {
+            let t = FixTenor::parse(input).unwrap();
+            assert_eq!(t.unit, *unit);
+            assert_eq!(t.value.get(), *val);
+        }
+    }
+
+    #[test]
+    fn tenor_multi_digit() {
+        let t = FixTenor::parse(b"D365").unwrap();
+        assert_eq!(t.unit, TenorUnit::Day);
+        assert_eq!(t.value.get(), 365);
+    }
+
+    #[test]
+    fn tenor_bad_unit() {
+        assert_eq!(FixTenor::parse(b"X5"), Err(FixValueError::BadFormat));
+    }
+
+    #[test]
+    fn tenor_no_digits() {
+        assert_eq!(FixTenor::parse(b"D"), Err(FixValueError::BadFormat));
+    }
+
+    #[test]
+    fn tenor_empty() {
+        assert_eq!(FixTenor::parse(b""), Err(FixValueError::Empty));
+    }
+
+    #[test]
+    fn tenor_zero_rejected() {
+        assert_eq!(FixTenor::parse(b"D0"), Err(FixValueError::BadFormat));
+    }
+
+    #[test]
+    fn tenor_leading_zero_rejected() {
+        // canonical form only — preserves byte-exact round-trip
+        assert_eq!(FixTenor::parse(b"D05"), Err(FixValueError::BadFormat));
+    }
+
+    #[test]
+    fn tenor_non_digit() {
+        assert_eq!(FixTenor::parse(b"D5x"), Err(FixValueError::NotNumeric));
+    }
+
+    #[test]
+    fn tenor_roundtrip() {
+        for input in &[
+            &b"D5"[..],
+            &b"W13"[..],
+            &b"M3"[..],
+            &b"Y1"[..],
+            &b"D365"[..],
+        ] {
+            let t = FixTenor::parse(input).unwrap();
+            let mut buf = [0u8; 11];
+            let n = t.encode(&mut buf);
+            assert_eq!(&buf[..n], *input);
+        }
+    }
+
+    // -- MultipleValue iterators --
+
+    #[test]
+    fn multi_char_basic() {
+        let chars: Vec<u8> = parse_fix_multi_char(b"A B C")
+            .unwrap()
+            .map(AsciiChar::as_u8)
+            .collect();
+        assert_eq!(chars, vec![b'A', b'B', b'C']);
+    }
+
+    #[test]
+    fn multi_char_single() {
+        let chars: Vec<u8> = parse_fix_multi_char(b"X")
+            .unwrap()
+            .map(AsciiChar::as_u8)
+            .collect();
+        assert_eq!(chars, vec![b'X']);
+    }
+
+    #[test]
+    fn multi_char_rejects_multichar_token() {
+        assert_eq!(
+            parse_fix_multi_char(b"A BC").err(),
+            Some(FixValueError::BadFormat)
+        );
+    }
+
+    #[test]
+    fn multi_char_empty() {
+        assert_eq!(parse_fix_multi_char(b"").err(), Some(FixValueError::Empty));
+    }
+
+    #[test]
+    fn multi_string_basic() {
+        let toks: Vec<&str> = parse_fix_multi_string(b"FOO BAR BAZ")
+            .unwrap()
+            .map(AsciiTextStr::as_str)
+            .collect();
+        assert_eq!(toks, vec!["FOO", "BAR", "BAZ"]);
+    }
+
+    #[test]
+    fn multi_string_single() {
+        let toks: Vec<&str> = parse_fix_multi_string(b"SOLO")
+            .unwrap()
+            .map(AsciiTextStr::as_str)
+            .collect();
+        assert_eq!(toks, vec!["SOLO"]);
+    }
+
+    #[test]
+    fn multi_string_rejects_double_space() {
+        assert_eq!(
+            parse_fix_multi_string(b"A  B").err(),
+            Some(FixValueError::BadFormat)
+        );
+    }
+
+    #[test]
+    fn multi_string_rejects_leading_trailing_space() {
+        assert_eq!(
+            parse_fix_multi_string(b" A").err(),
+            Some(FixValueError::BadFormat)
+        );
+        assert_eq!(
+            parse_fix_multi_string(b"A ").err(),
+            Some(FixValueError::BadFormat)
+        );
+    }
+
+    #[test]
+    fn multi_string_non_printable() {
+        assert_eq!(
+            parse_fix_multi_string(&[b'A', 0x01, b'B']).err(),
+            Some(FixValueError::NotPrintable)
+        );
+    }
+
+    // -- FixTzTime --
+
+    #[test]
+    fn tz_time_positive_offset() {
+        let t = FixTzTime::parse(b"14:30:00+01:00").unwrap();
+        assert_eq!(t.time.hour(), 14);
+        assert_eq!(t.offset_minutes, 60);
+    }
+
+    #[test]
+    fn tz_time_zulu() {
+        let t = FixTzTime::parse(b"14:30:00Z").unwrap();
+        assert_eq!(t.offset_minutes, 0);
+    }
+
+    #[test]
+    fn tz_time_negative_offset_with_frac() {
+        let t = FixTzTime::parse(b"23:59:59.500-05:30").unwrap();
+        assert_eq!(t.time.subsec_nanos(), 500_000_000);
+        assert_eq!(t.offset_minutes, -(5 * 60 + 30));
+    }
+
+    #[test]
+    fn tz_time_bad_offset() {
+        assert_eq!(
+            FixTzTime::parse(b"14:30:00+1").err(),
+            Some(FixValueError::BadFormat)
+        );
+    }
+
+    #[test]
+    fn tz_time_zero_offset_must_be_zulu() {
+        // "+00:00" is rejected; UTC is canonically "Z"
+        assert_eq!(
+            FixTzTime::parse(b"14:30:00+00:00").err(),
+            Some(FixValueError::BadFormat)
+        );
+    }
+
+    #[test]
+    fn tz_time_roundtrip() {
+        for input in &[
+            &b"14:30:00Z"[..],
+            &b"14:30:00+01:00"[..],
+            &b"23:59:59.500-05:30"[..],
+            &b"00:00:00.123456789+14:00"[..],
+        ] {
+            let t = FixTzTime::parse(input).unwrap();
+            let mut buf = [0u8; 24];
+            let n = t.encode(&mut buf);
+            assert_eq!(
+                &buf[..n],
+                *input,
+                "roundtrip failed for {:?}",
+                core::str::from_utf8(input).unwrap()
+            );
+        }
+    }
+
+    // -- FixTzTimestamp --
+
+    #[test]
+    fn tz_timestamp_offset_converts_to_utc() {
+        // 14:30+01:00 local == 13:30 UTC
+        let ts = FixTzTimestamp::parse(b"20260602-14:30:00+01:00").unwrap();
+        let utc = FixTimestamp::parse(b"20260602-13:30:00").unwrap();
+        assert_eq!(ts.utc_nanos, utc.as_nanos());
+        assert_eq!(ts.offset_minutes, 60);
+    }
+
+    #[test]
+    fn tz_timestamp_zulu_matches_utc() {
+        let ts = FixTzTimestamp::parse(b"20260602-14:30:00Z").unwrap();
+        let utc = FixTimestamp::parse(b"20260602-14:30:00").unwrap();
+        assert_eq!(ts.utc_nanos, utc.as_nanos());
+        assert_eq!(ts.offset_minutes, 0);
+    }
+
+    #[test]
+    fn tz_timestamp_roundtrip() {
+        for input in &[
+            &b"20260602-14:30:00Z"[..],
+            &b"20260602-14:30:00+01:00"[..],
+            &b"20260602-00:30:00+02:00"[..],
+            &b"20260602-14:30:00.123-05:00"[..],
+        ] {
+            let ts = FixTzTimestamp::parse(input).unwrap();
+            let mut buf = [0u8; 33];
+            let n = ts.encode(&mut buf);
+            assert_eq!(
+                &buf[..n],
+                *input,
+                "roundtrip failed for {:?}",
+                core::str::from_utf8(input).unwrap()
+            );
         }
     }
 
