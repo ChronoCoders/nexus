@@ -55,10 +55,20 @@ pub struct SessionConfig<'a> {
 enum Pending {
     Logon,
     Logout,
-    Heartbeat { id: [u8; TEST_REQ_ID_CAP], id_len: u8 },
-    TestRequest { id: u64 },
-    ResendRequest { begin: u32 },
-    SequenceReset { seq: u32, new_seq: u32 },
+    Heartbeat {
+        id: [u8; TEST_REQ_ID_CAP],
+        id_len: u8,
+    },
+    TestRequest {
+        id: u64,
+    },
+    ResendRequest {
+        begin: u32,
+    },
+    SequenceReset {
+        seq: u32,
+        new_seq: u32,
+    },
 }
 
 const fn msg_type_of(p: &Pending) -> &'static [u8] {
@@ -546,7 +556,12 @@ impl<'a> Session<'a> {
         };
         let body_len = body_end - reserve;
         let mut pos = encode_field(buf, 0, TAG_BEGIN_STRING, self.cfg.begin_string);
-        pos = encode_field(buf, pos, TAG_BODY_LENGTH, format_uint(&mut num, body_len as u64));
+        pos = encode_field(
+            buf,
+            pos,
+            TAG_BODY_LENGTH,
+            format_uint(&mut num, body_len as u64),
+        );
         buf.copy_within(reserve..body_end, pos);
         let end = pos + body_len;
         let ck = format_checksum(checksum(&buf[..end]));

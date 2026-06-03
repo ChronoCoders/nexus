@@ -15,7 +15,11 @@ fn config() -> SessionConfig<'static> {
 }
 
 fn inbound(msg_type: &[u8], seq: u32, extra: &[(u32, &[u8])]) -> Vec<u8> {
-    let mut m = format!("35={}\x0149=THEM\x0156=US\x0134={seq}\x01", String::from_utf8_lossy(msg_type)).into_bytes();
+    let mut m = format!(
+        "35={}\x0149=THEM\x0156=US\x0134={seq}\x01",
+        String::from_utf8_lossy(msg_type)
+    )
+    .into_bytes();
     for (tag, value) in extra {
         m.extend_from_slice(format!("{tag}=").as_bytes());
         m.extend_from_slice(value);
@@ -71,7 +75,10 @@ fn initiator_handshake() {
 
     s.handle_message(&inbound(b"A", 1, &[(98, b"0"), (108, b"30")]), now);
     assert_eq!(s.state(), State::Active);
-    assert_eq!(drain(&mut s), vec![Event::Established { heart_bt_int_s: 30 }]);
+    assert_eq!(
+        drain(&mut s),
+        vec![Event::Established { heart_bt_int_s: 30 }]
+    );
     assert_eq!(s.next_inbound_seq(), 2);
     assert_eq!(s.next_outbound_seq(), 2);
 }
@@ -82,7 +89,10 @@ fn acceptor_handshake() {
     let now = Instant::now();
     s.handle_message(&inbound(b"A", 1, &[(98, b"0"), (108, b"15")]), now);
     assert_eq!(s.state(), State::Active);
-    assert_eq!(drain(&mut s), vec![Event::Established { heart_bt_int_s: 15 }]);
+    assert_eq!(
+        drain(&mut s),
+        vec![Event::Established { heart_bt_int_s: 15 }]
+    );
 
     let sent = flush(&mut s, now);
     assert_eq!(sent.len(), 1);
@@ -181,11 +191,9 @@ fn inbound_silence_probes_then_disconnects() {
 
     s.handle_timeout(probe_at + HB);
     assert_eq!(s.state(), State::Disconnected);
-    assert!(
-        drain(&mut s).contains(&Event::Disconnected {
-            reason: DisconnectReason::TestRequestTimeout
-        })
-    );
+    assert!(drain(&mut s).contains(&Event::Disconnected {
+        reason: DisconnectReason::TestRequestTimeout
+    }));
     let sent = flush(&mut s, probe_at + HB);
     assert!(sent.iter().any(|m| field(m, 35) == b"5"));
 }
@@ -199,7 +207,10 @@ fn probe_answered_keeps_session_alive() {
     let probe_at = now + Duration::from_secs(36);
     s.handle_timeout(probe_at);
     flush(&mut s, probe_at);
-    s.handle_message(&inbound(b"0", 2, &[(112, b"1")]), probe_at + Duration::from_secs(1));
+    s.handle_message(
+        &inbound(b"0", 2, &[(112, b"1")]),
+        probe_at + Duration::from_secs(1),
+    );
     s.handle_timeout(probe_at + HB);
     assert_eq!(s.state(), State::Active);
 }
@@ -227,13 +238,11 @@ fn gap_triggers_resend_request() {
     assert_eq!(s.next_inbound_seq(), 6);
     let events = drain(&mut s);
     assert_eq!(events.len(), 4);
-    assert!(events.iter().all(|e| matches!(
-        e,
-        Event::App {
-            poss_dup: true,
-            ..
-        }
-    )));
+    assert!(
+        events
+            .iter()
+            .all(|e| matches!(e, Event::App { poss_dup: true, .. }))
+    );
 }
 
 #[test]
@@ -246,7 +255,10 @@ fn gap_fill_advances_past_admin_messages() {
     assert_eq!(s.state(), State::Resending);
     flush(&mut s, now);
 
-    s.handle_message(&inbound(b"4", 2, &[(43, b"Y"), (123, b"Y"), (36, b"7")]), now);
+    s.handle_message(
+        &inbound(b"4", 2, &[(43, b"Y"), (123, b"Y"), (36, b"7")]),
+        now,
+    );
     assert_eq!(s.next_inbound_seq(), 7);
     assert_eq!(s.state(), State::Active);
     assert!(drain(&mut s).contains(&Event::SequenceReset { new_seq: 7 }));
@@ -291,11 +303,9 @@ fn seq_too_low_disconnects() {
     drain(&mut s);
     s.handle_message(&inbound(b"D", 2, &[]), now);
     assert_eq!(s.state(), State::Disconnected);
-    assert!(
-        drain(&mut s).contains(&Event::Disconnected {
-            reason: DisconnectReason::SeqNumTooLow
-        })
-    );
+    assert!(drain(&mut s).contains(&Event::Disconnected {
+        reason: DisconnectReason::SeqNumTooLow
+    }));
 }
 
 #[test]
@@ -318,11 +328,9 @@ fn comp_id_mismatch_disconnects() {
     let msg = b"35=D\x0149=EVIL\x0156=US\x0134=2\x0110=000\x01";
     s.handle_message(msg, now);
     assert_eq!(s.state(), State::Disconnected);
-    assert!(
-        drain(&mut s).contains(&Event::Disconnected {
-            reason: DisconnectReason::CompIdMismatch
-        })
-    );
+    assert!(drain(&mut s).contains(&Event::Disconnected {
+        reason: DisconnectReason::CompIdMismatch
+    }));
 }
 
 #[test]
@@ -338,11 +346,9 @@ fn initiated_logout_round_trip() {
 
     s.handle_message(&inbound(b"5", 2, &[]), now);
     assert_eq!(s.state(), State::Disconnected);
-    assert!(
-        drain(&mut s).contains(&Event::Disconnected {
-            reason: DisconnectReason::Logout
-        })
-    );
+    assert!(drain(&mut s).contains(&Event::Disconnected {
+        reason: DisconnectReason::Logout
+    }));
 }
 
 #[test]
@@ -365,11 +371,9 @@ fn logout_timeout_disconnects() {
     s.logout(now);
     s.handle_timeout(now + HB);
     assert_eq!(s.state(), State::Disconnected);
-    assert!(
-        drain(&mut s).contains(&Event::Disconnected {
-            reason: DisconnectReason::LogoutTimeout
-        })
-    );
+    assert!(drain(&mut s).contains(&Event::Disconnected {
+        reason: DisconnectReason::LogoutTimeout
+    }));
 }
 
 #[test]
@@ -380,11 +384,9 @@ fn logon_timeout_disconnects() {
     flush(&mut s, now);
     s.handle_timeout(now + HB);
     assert_eq!(s.state(), State::Disconnected);
-    assert!(
-        drain(&mut s).contains(&Event::Disconnected {
-            reason: DisconnectReason::LogonTimeout
-        })
-    );
+    assert!(drain(&mut s).contains(&Event::Disconnected {
+        reason: DisconnectReason::LogonTimeout
+    }));
 }
 
 #[test]
