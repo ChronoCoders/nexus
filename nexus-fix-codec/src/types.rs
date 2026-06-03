@@ -187,6 +187,15 @@ impl fmt::Display for FixDecimal {
 ///
 /// FIX timestamps are UTC by convention (`YYYYMMDD-HH:MM:SS[.sss[sss[sss]]]`).
 ///
+/// The inner value is nanoseconds since the Unix epoch. [`parse`](Self::parse)
+/// only produces instants within the FIX `YYYYMMDD` year range (≤ 9999), for
+/// which [`as_secs`](Self::as_secs) and [`decompose`](Self::decompose) are
+/// lossless. Constructing a `FixTimestamp` directly from an out-of-range raw
+/// nanosecond count (e.g. near `i128::MAX`) is garbage-in: the `i64`/`i32`
+/// conversions in those accessors wrap, as with any nanosecond-based instant
+/// type. The accessors are Euclidean, so for any in-range instant (including
+/// pre-epoch negatives) `as_secs() * 1e9 + subsec_nanos() == as_nanos()`.
+///
 /// ```
 /// # use nexus_fix_codec::FixTimestamp;
 /// let ts = FixTimestamp::parse(b"20260602-14:30:00.123456").unwrap();
