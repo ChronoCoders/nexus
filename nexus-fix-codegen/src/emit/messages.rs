@@ -196,9 +196,12 @@ fn data_body(len: &RField, data: &RField) -> String {
         "                m.{} = nexus_fix_codec::FieldSpan::new(vstart as u32, dlen as u32);",
         snake(&data.name)
     );
-    b.push_str(
-        "                m.header.reader = nexus_fix_codec::FieldReader::new(buf, (vstart + dlen + 1).min(buf.len()));\n",
-    );
+    // Skip past the DATA value (which may contain SOH bytes) without dropping
+    // the reader: `resync_after_data` keeps the running checksum and folds in
+    // the skipped bytes in place. A fresh `FieldReader::new` here would reset
+    // the accumulator and lose every field before the DATA field.
+    b.push_str("                let dend = (vstart + dlen + 1).min(buf.len());\n");
+    b.push_str("                m.header.reader.resync_after_data(dend);\n");
     b
 }
 

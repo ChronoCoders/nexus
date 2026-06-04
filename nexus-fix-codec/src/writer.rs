@@ -7,6 +7,8 @@
 //! Also provides [`encode_field`] as a standalone function for cases
 //! where the struct overhead isn't needed.
 
+use crate::EncodeError;
+
 /// FIX field writer.
 ///
 /// Wraps a `&mut [u8]` buffer and tracks the write position as fields
@@ -60,6 +62,186 @@ impl<'a> FieldWriter<'a> {
     pub fn data(&self) -> &[u8] {
         &self.buf[..self.pos]
     }
+}
+
+/// Builds a complete, framed FIX message into a caller-provided buffer.
+///
+/// Owns the framing the wire mandates — `8=BeginString`, `9=BodyLength`,
+/// `10=CheckSum` — so the caller only writes body fields and can never get
+/// BodyLength or the checksum wrong. Body fields stream forward; the
+/// `8=…9=…` prefix is filled in **right-aligned** at [`finish`](Self::finish)
+/// once the body length is known, so the body never moves and BodyLength is
+/// **canonical** (no leading zeros). The default reservation in [`new`](Self::new)
+/// is sized so the right-aligned write never shifts; [`with_reserved`](Self::with_reserved)
+/// trades that for a caller-chosen prefix size and shifts only if undersized.
+///
+/// On overflow the writer is poisoned (further writes are dropped) and
+/// [`finish`](Self::finish) returns [`EncodeError::BufferFull`](crate::EncodeError::BufferFull)
+/// — encoding never panics on a too-small buffer.
+///
+/// # Example
+///
+/// ```
+/// use nexus_fix_codec::FrameWriter;
+///
+/// let mut buf = [0u8; 128];
+/// let mut f = FrameWriter::new(&mut buf, b"FIX.4.4", b"D"); // 8=, reserve 9=, 35=D
+/// f.field(49, b"SENDER");
+/// f.field(56, b"TARGET");
+/// f.field(11, b"ORD-1");
+/// let msg = f.finish().unwrap();
+/// assert!(msg.starts_with(b"8=FIX.4.4\x019="));
+/// assert!(nexus_fix_codec::validate_checksum(msg).is_ok());
+/// ```
+pub struct FrameWriter<'buf> {
+    buf: &'buf mut [u8],
+    begin_string: &'static [u8],
+    /// Start of the body-length-counted region (after the reserved prefix).
+    content: usize,
+    /// Write cursor within the content region.
+    pos: usize,
+    /// Sticky overflow flag — once set, writes are dropped and `finish` errors.
+    full: bool,
+}
+
+impl<'buf> FrameWriter<'buf> {
+    /// Begin a message: reserve the front prefix and write `35=<msg_type>`.
+    ///
+    /// The reservation defaults to the widest the `8=…9=…` prefix could need
+    /// for this buffer (BodyLength can't exceed the buffer), so the
+    /// right-aligned write at [`finish`](Self::finish) never shifts the body.
+    #[inline]
+    pub fn new(buf: &'buf mut [u8], begin_string: &'static [u8], msg_type: &[u8]) -> Self {
+        let reserved = prefix_capacity(begin_string.len(), buf.len());
+        Self::with_reserved(buf, begin_string, msg_type, reserved)
+    }
+
+    /// As [`new`](Self::new) but with an explicit prefix reservation (bytes for
+    /// the `8=…9=…` prefix). If the body grows past what the reservation can
+    /// hold, [`finish`](Self::finish) shifts the content to make room; the
+    /// default in [`new`](Self::new) is sized so that never happens.
+    #[inline]
+    pub fn with_reserved(
+        buf: &'buf mut [u8],
+        begin_string: &'static [u8],
+        msg_type: &[u8],
+        reserved: usize,
+    ) -> Self {
+        let full = reserved > buf.len();
+        let mut f = Self {
+            content: reserved,
+            pos: reserved,
+            begin_string,
+            full,
+            buf,
+        };
+        f.field(35, msg_type);
+        f
+    }
+
+    /// Append a `tag=value` body field. Poisons the writer if it won't fit.
+    #[inline]
+    pub fn field(&mut self, tag: u32, value: &[u8]) {
+        if self.full {
+            return;
+        }
+        let need = tag_digits(tag) + 2 + value.len();
+        if need > self.buf.len() - self.pos {
+            self.full = true;
+            return;
+        }
+        self.pos = encode_field(self.buf, self.pos, tag, value);
+    }
+
+    /// Whether a write has overflowed the buffer (so [`finish`](Self::finish)
+    /// will return [`EncodeError::BufferFull`](crate::EncodeError::BufferFull)).
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.full
+    }
+
+    /// Finish the message: write `8=…9=<canonical>` and append the checksum,
+    /// returning the framed message slice.
+    ///
+    /// The returned slice may start a few bytes into `buf` (the prefix is
+    /// right-aligned), so transmit exactly the returned slice — not `&buf[..]`.
+    ///
+    /// # Errors
+    /// [`EncodeError::BufferFull`](crate::EncodeError::BufferFull) if any field,
+    /// the prefix, or the checksum did not fit.
+    pub fn finish(mut self) -> Result<&'buf [u8], EncodeError> {
+        if self.full {
+            return Err(EncodeError::BufferFull);
+        }
+        let body_len = self.pos - self.content;
+
+        // Canonical BodyLength digits (no leading zeros).
+        let mut bl = [0u8; 10];
+        let bl_n = crate::encode_fix_uint(body_len as u32, &mut bl);
+
+        // prefix = "8=" + begin_string + SOH + "9=" + <bodylen> + SOH
+        let prefix_len = 2 + self.begin_string.len() + 1 + 2 + bl_n + 1;
+
+        let start = if prefix_len <= self.content {
+            // Default path: right-align into the reservation, nothing moves.
+            self.content - prefix_len
+        } else {
+            // Under-reserved: shift the content right to make prefix room.
+            let shift = prefix_len - self.content;
+            if shift + self.pos > self.buf.len() {
+                return Err(EncodeError::BufferFull);
+            }
+            self.buf.copy_within(self.content..self.pos, prefix_len);
+            self.pos += shift;
+            0
+        };
+
+        // Checksum trailer "10=" + 3 digits + SOH = 7 bytes.
+        if 7 > self.buf.len() - self.pos {
+            return Err(EncodeError::BufferFull);
+        }
+
+        // Write the prefix right before the content region.
+        let p = encode_field(self.buf, start, 8, self.begin_string);
+        let p = encode_field(self.buf, p, 9, &bl[..bl_n]);
+        debug_assert_eq!(p, start + prefix_len, "prefix must abut the content");
+
+        // Checksum covers everything from `8=` up to (not including) `10=`.
+        let sum = crate::checksum(&self.buf[start..self.pos]);
+        let end = encode_field(self.buf, self.pos, 10, &format_checksum(sum));
+        Ok(&self.buf[start..end])
+    }
+}
+
+/// Resume an encoder stage from an in-progress [`FrameWriter`].
+///
+/// Generated message encoders implement this so the venue-shared header encoder
+/// can return control to the per-message body stage when its `end()` is called,
+/// without the header encoder needing to name the concrete message type. It's
+/// the typestate handoff: header writer → message body writer, carrying the
+/// buffer along.
+pub trait FromFrame<'buf> {
+    /// Resume encoding from `frame`.
+    fn from_frame(frame: FrameWriter<'buf>) -> Self;
+}
+
+/// Widest the `8=…9=…` prefix can be for a buffer of `buf_len` bytes: the `8=`
+/// tag, the BeginString, an SOH, `9=`, the most BodyLength digits the buffer
+/// could ever need (BodyLength < buf_len), and the trailing SOH.
+#[inline]
+fn prefix_capacity(begin_len: usize, buf_len: usize) -> usize {
+    2 + begin_len + 1 + 2 + dec_digits(buf_len) + 1
+}
+
+/// Number of decimal digits in `n` (`0` → 1).
+#[inline]
+fn dec_digits(mut n: usize) -> usize {
+    let mut d = 1;
+    while n >= 10 {
+        n /= 10;
+        d += 1;
+    }
+    d
 }
 
 /// Write a `tag=value\x01` field into `buf` at `pos`. Returns new position.
@@ -378,5 +560,102 @@ mod tests {
 
         assert!(buf[body_end..msg_end].starts_with(b"10="));
         assert_eq!(buf[msg_end - 1], 0x01);
+    }
+
+    // ---- FrameWriter ----
+
+    #[test]
+    fn frame_basic_roundtrips() {
+        let mut buf = [0u8; 128];
+        let mut f = FrameWriter::new(&mut buf, b"FIX.4.4", b"D");
+        f.field(49, b"SENDER");
+        f.field(56, b"TARGET");
+        f.field(11, b"ORD-1");
+        let msg = f.finish().unwrap();
+
+        assert!(msg.starts_with(b"8=FIX.4.4\x019="));
+        assert!(crate::validate_checksum(msg).is_ok());
+
+        let mut r = crate::FieldReader::new(msg, 0);
+        let fields: Vec<_> = r.by_ref().collect();
+        let tags: Vec<u32> = fields.iter().map(|f| f.tag).collect();
+        assert_eq!(tags, vec![8, 9, 35, 49, 56, 11, 10]);
+
+        // BodyLength = bytes of 35=…11=…  →  5 + 10 + 10 + 9 = 34, canonical.
+        let nine = fields.iter().find(|f| f.tag == 9).unwrap();
+        assert_eq!(nine.value.slice(msg), b"34");
+    }
+
+    #[test]
+    fn frame_bodylength_is_canonical() {
+        // Small body → BodyLength has fewer digits than the reservation;
+        // the value must still be canonical (no leading zeros).
+        let mut buf = [0u8; 4096];
+        let mut f = FrameWriter::new(&mut buf, b"FIX.4.4", b"0");
+        f.field(112, b"HB");
+        let msg = f.finish().unwrap();
+
+        let mut r = crate::FieldReader::new(msg, 0);
+        let fields: Vec<_> = r.by_ref().collect();
+        let nine = fields.iter().find(|f| f.tag == 9).unwrap().value.slice(msg);
+        assert_ne!(nine[0], b'0', "BodyLength must not have leading zeros");
+        assert!(crate::validate_checksum(msg).is_ok());
+    }
+
+    #[test]
+    fn frame_starts_past_offset_zero() {
+        // A wider buffer reserves a wider prefix; a small body right-aligns
+        // into it, so the message starts a few bytes in (no shift, body never
+        // moved). buf.len() has 4 digits, the body's BodyLength only 2.
+        let mut buf = [0u8; 1024];
+        let base = buf.as_ptr() as usize;
+        let mut f = FrameWriter::new(&mut buf, b"FIX.4.4", b"D");
+        f.field(11, b"A");
+        let msg = f.finish().unwrap();
+        let offset = msg.as_ptr() as usize - base;
+        assert!(
+            offset > 0,
+            "right-aligned prefix should start past offset 0"
+        );
+        assert!(crate::validate_checksum(msg).is_ok());
+        assert!(msg.starts_with(b"8=FIX.4.4\x019="));
+    }
+
+    #[test]
+    fn frame_buffer_full_no_panic() {
+        // Too small even for the prefix — must error, never panic.
+        let mut buf = [0u8; 8];
+        let mut f = FrameWriter::new(&mut buf, b"FIX.4.4", b"D");
+        f.field(49, b"SENDER");
+        assert_eq!(f.finish(), Err(crate::EncodeError::BufferFull));
+    }
+
+    #[test]
+    fn frame_field_overflow_poisons() {
+        // The body overruns mid-write → poisoned → BufferFull at finish.
+        let mut buf = [0u8; 32];
+        let mut f = FrameWriter::new(&mut buf, b"FIX.4.4", b"D");
+        f.field(11, b"THIS-IS-A-VERY-LONG-CLORDID-THAT-WONT-FIT");
+        assert!(f.is_full());
+        assert_eq!(f.finish(), Err(crate::EncodeError::BufferFull));
+    }
+
+    #[test]
+    fn frame_undersized_reservation_shifts_and_stays_valid() {
+        // Reserve room for a 1-digit BodyLength, then write a body that needs
+        // two digits → finish() shifts the content to make prefix room.
+        let mut buf = [0u8; 128];
+        let mut f = FrameWriter::with_reserved(&mut buf, b"FIX.4.4", b"D", 14);
+        f.field(49, b"SENDER");
+        f.field(56, b"TARGET");
+        let msg = f.finish().unwrap();
+
+        assert!(crate::validate_checksum(msg).is_ok());
+        let mut r = crate::FieldReader::new(msg, 0);
+        let fields: Vec<_> = r.by_ref().collect();
+        let nine = fields.iter().find(|f| f.tag == 9).unwrap().value.slice(msg);
+        assert_ne!(nine[0], b'0');
+        // shifted to the front
+        assert!(msg.starts_with(b"8=FIX.4.4\x01"));
     }
 }

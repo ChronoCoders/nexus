@@ -110,6 +110,29 @@ impl fmt::Display for FixValueError {
 
 impl std::error::Error for FixValueError {}
 
+/// Error encoding a FIX message.
+///
+/// Encoding writes typed values into a caller-provided buffer; the only way it
+/// fails is running out of room. Distinct from the *decode*-side errors
+/// ([`DecodeError`] for frame structure, [`FixValueError`] for field values).
+/// `Copy` and allocation-free.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EncodeError {
+    /// The buffer was too small to hold the complete framed message.
+    BufferFull,
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::BufferFull => "buffer too small for encoded message",
+        })
+    }
+}
+
+impl std::error::Error for EncodeError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +222,14 @@ mod tests {
         assert_eq!(
             FixValueError::NotPrintable.to_string(),
             "non-printable byte in text field"
+        );
+    }
+
+    #[test]
+    fn encode_error_display() {
+        assert_eq!(
+            EncodeError::BufferFull.to_string(),
+            "buffer too small for encoded message"
         );
     }
 }

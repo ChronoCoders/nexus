@@ -24,7 +24,7 @@ pub mod reader;
 pub mod scan;
 pub mod writer;
 
-pub use error::{ChecksumError, DecodeError, FixValueError};
+pub use error::{ChecksumError, DecodeError, EncodeError, FixValueError};
 pub use field::{FieldView, FromFixValue};
 pub use nexus_ascii::{AsciiChar, AsciiText, AsciiTextStr};
 pub use reader::{FieldReader, RawField, checksum, find_tag, parse_tag, validate_checksum};
@@ -37,7 +37,7 @@ pub use types::{
     parse_fix_int, parse_fix_multi_char, parse_fix_multi_string, parse_fix_seqnum, parse_fix_text,
     parse_fix_uint,
 };
-pub use writer::{FieldWriter, encode_field, format_checksum};
+pub use writer::{FieldWriter, FrameWriter, FromFrame, encode_field, format_checksum};
 
 #[cfg(feature = "nexus-decimal")]
 pub use types::DecimalConvError;

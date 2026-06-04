@@ -74,6 +74,36 @@ impl<'a> FieldReader<'a> {
         }
     }
 
+    /// Resume scanning at `data_end`, having consumed a length-prefixed DATA
+    /// field whose value may contain SOH bytes.
+    ///
+    /// A DATA field can't be SOH-scanned (its value contains SOH), so generated
+    /// decoders compute its end from the preceding length and jump past it. The
+    /// running checksum must still cover every skipped byte. This corrects the
+    /// accumulator **in place** — single pass, each byte summed once — rather
+    /// than rescanning the prefix: the reader holds the invariant
+    /// `checksum == sum(buf[..scan_pos])` (the SIMD scan folds whole chunks in
+    /// and advances `scan_pos` to the chunk boundary), so we only fold the
+    /// short stretch between `scan_pos` and `data_end`, adding or subtracting to
+    /// undo any chunk-ahead overshoot.
+    #[inline]
+    pub fn resync_after_data(&mut self, data_end: usize) {
+        let end = data_end.min(self.buf.len());
+        if end >= self.scan_pos {
+            for &b in &self.buf[self.scan_pos..end] {
+                self.checksum = self.checksum.wrapping_add(u32::from(b));
+            }
+        } else {
+            for &b in &self.buf[end..self.scan_pos] {
+                self.checksum = self.checksum.wrapping_sub(u32::from(b));
+            }
+        }
+        self.field_start = end;
+        self.scan_pos = end;
+        self.soh_mask = 0;
+        self.mask_base = 0;
+    }
+
     /// FIX checksum: byte sum mod 256 of all scanned bytes, excluding
     /// the checksum field itself (`10=XXX\x01`).
     ///
@@ -821,6 +851,35 @@ mod tests {
         let result = validate_checksum(msg);
         // parse_checksum_bytes on non-digits wraps around, producing a mismatch
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn resync_after_data_keeps_checksum_exact() {
+        // The generated DATA-field skip relies on `resync_after_data` keeping the
+        // running checksum exact across an in-place jump past an embedded-SOH
+        // value. (Regression: replacing the reader reset the accumulator to 0.)
+        // value "a\x01b\x01c" — 5 bytes, two embedded SOH.
+        let msg = b"8=FIX.4.4\x0195=5\x0196=a\x01b\x01c\x0155=X\x01";
+
+        let mut r = FieldReader::new(msg, 0);
+        r.next_field(); // 8=
+        let f95 = r.next_field().unwrap();
+        assert_eq!(f95.tag, 95);
+
+        // Compute the DATA value end the way the generated code does, then skip.
+        let dstart = r.pos();
+        let (_, dtl) = parse_tag(&msg[dstart..]);
+        let vstart = dstart + dtl + 1;
+        let dend = vstart + 5 + 1; // value(5) + trailing SOH
+        r.resync_after_data(dend);
+
+        let f55 = r.next_field().unwrap();
+        assert_eq!(f55.tag, 55);
+        assert_eq!(f55.value.slice(msg), b"X");
+        assert!(r.next_field().is_none());
+
+        // No tag 10 here, so the accumulator must equal the whole-message sum.
+        assert_eq!(r.checksum(), checksum(msg));
     }
 
     // =========================================================================

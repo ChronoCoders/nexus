@@ -140,28 +140,86 @@ fn alpha_msgtype_dispatch() {
     assert_eq!(MsgType::from_bytes(b"ZZ"), None);
 }
 
+fn sending_time() -> nexus_fix_codec::FixTimestamp {
+    nexus_fix_codec::FixTimestamp::parse(b"20260603-12:00:00").unwrap()
+}
+
 #[test]
 fn alpha_encodes_round_trip() {
-    let mut buf = [0u8; 128];
-    let n = venue_alpha::encoders::NewOrderSingleEncoder::new(&mut buf)
+    let mut buf = [0u8; 256];
+    let msg = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+        .header_encoder()
+        .sender_comp_id(b"BUYSIDE")
+        .target_comp_id(b"SELLSIDE")
+        .msg_seq_num(7)
+        .sending_time(sending_time()) // skips the optional PossDupFlag
+        .finish()
         .cl_ord_id(b"ORD1")
-        .side_value(venue_alpha::fields::Side::SELL)
+        .side(venue_alpha::fields::Side::SELL)
         .symbol(b"ETH-USD")
-        .finish();
-    let m = venue_alpha::messages::NewOrderSingle::decode(&buf[..n]).unwrap();
+        .finish()
+        .unwrap();
+
+    // A complete, valid FIX message — header, body, framing, checksum.
+    assert!(msg.starts_with(b"8=FIX.4.4\x019="));
+    assert!(nexus_fix_codec::validate_checksum(msg).is_ok());
+
+    let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
+    assert_eq!(
+        m.header().sender_comp_id().unwrap().get().as_bytes(),
+        b"BUYSIDE"
+    );
+    assert_eq!(m.header().msg_seq_num().unwrap().get(), 7);
+    assert!(m.header().poss_dup_flag().is_none());
     assert_eq!(m.cl_ord_id().unwrap().as_bytes(), &b"ORD1"[..]);
     assert_eq!(m.side_enum(), Some(venue_alpha::fields::Side::SELL));
     assert_eq!(m.symbol().unwrap().as_bytes(), &b"ETH-USD"[..]);
+    assert!(m.is_complete());
+}
+
+#[test]
+fn alpha_encodes_typed_decimal_and_optional_header() {
+    let qty = nexus_fix_codec::FixDecimal {
+        mantissa: 1050,
+        scale: 1,
+    };
+    let mut buf = [0u8; 256];
+    let msg = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+        .header_encoder()
+        .sender_comp_id(b"S")
+        .target_comp_id(b"T")
+        .msg_seq_num(99)
+        .poss_dup_flag(true) // optional header field, set in order
+        .sending_time(sending_time())
+        .finish()
+        .cl_ord_id(b"X")
+        .side(venue_alpha::fields::Side::BUY)
+        .symbol(b"BTC-USD")
+        .order_qty(qty) // typed FixDecimal in, encoded for us
+        .finish()
+        .unwrap();
+
+    let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
+    assert!(m.header().poss_dup_flag().unwrap().get());
+    assert_eq!(m.order_qty().unwrap().get(), qty);
 }
 
 #[test]
 fn alpha_encodes_data_field() {
-    let mut buf = [0u8; 64];
-    let n = venue_alpha::encoders::NewOrderSingleEncoder::new(&mut buf)
+    let mut buf = [0u8; 128];
+    let msg = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+        .header_encoder()
+        .sender_comp_id(b"S")
+        .target_comp_id(b"T")
+        .msg_seq_num(1)
+        .sending_time(sending_time())
+        .finish()
         .cl_ord_id(b"A")
         .raw_data(b"x\x01y")
-        .finish();
-    let m = venue_alpha::messages::NewOrderSingle::decode(&buf[..n]).unwrap();
+        .finish()
+        .unwrap();
+    assert!(nexus_fix_codec::validate_checksum(msg).is_ok());
+    let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
     assert_eq!(m.raw_data_length().unwrap().get(), 3);
     assert_eq!(m.raw_data().unwrap().as_bytes(), &b"x\x01y"[..]);
 }
