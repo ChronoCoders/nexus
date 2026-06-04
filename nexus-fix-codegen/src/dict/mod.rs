@@ -44,8 +44,10 @@ impl FieldType {
             "TZTIMEONLY" => Self::TzTime,
             "TZTIMESTAMP" => Self::TzTimestamp,
             "TENOR" => Self::Tenor,
-            "MULTIPLECHARVALUE" | "MULTIPLEVALUESTRING" => Self::MultiChar,
-            "MULTIPLESTRINGVALUE" => Self::MultiString,
+            "MULTIPLECHARVALUE" => Self::MultiChar,
+            // MULTIPLEVALUESTRING is FIX 4.2's name for what 5.0 calls
+            // MULTIPLESTRINGVALUE — space-delimited strings, not single chars.
+            "MULTIPLESTRINGVALUE" | "MULTIPLEVALUESTRING" => Self::MultiString,
             _ => Self::String,
         }
     }

@@ -87,9 +87,9 @@ fn emit_header_encoder(s: &mut String) {
         "/// Venue-shared ordered header encoder.\n\
          ///\n\
          /// Walks the standard header fields in canonical wire order: required\n\
-         /// fields are forced (you cannot reach `end()` without them), optional\n\
+         /// fields are forced (you cannot reach `finish()` without them), optional\n\
          /// fields may be set or skipped. Generic over the message body stage `B`\n\
-         /// it returns to via [`end`](HeaderEncoder::end).\n",
+         /// it returns to via [`finish`](HeaderEncoder::finish).\n",
     );
     for i in 0..=n {
         let _ = writeln!(s, "pub enum HeaderS{i} {{}}");

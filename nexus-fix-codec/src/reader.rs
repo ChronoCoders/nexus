@@ -132,12 +132,16 @@ impl<'a> FieldReader<'a> {
     /// Parses the 3-digit ASCII value from `checksum_span` and compares
     /// it to the running byte sum. Only meaningful after a complete scan.
     pub fn verify_checksum(&self, checksum_span: FieldSpan) -> Result<(), ChecksumError> {
-        let expected = parse_checksum_bytes(checksum_span.slice(self.buf));
         let computed = self.checksum();
-        if expected == computed {
-            Ok(())
-        } else {
-            Err(ChecksumError { expected, computed })
+        match parse_checksum_bytes(checksum_span.slice(self.buf)) {
+            Some(expected) if expected == computed => Ok(()),
+            Some(expected) => Err(ChecksumError { expected, computed }),
+            // Malformed CheckSum field (not three digits): reject regardless of
+            // `computed`. `expected` is a placeholder — there is no valid value.
+            None => Err(ChecksumError {
+                expected: 0,
+                computed,
+            }),
         }
     }
 
@@ -253,25 +257,35 @@ pub fn validate_checksum(msg: &[u8]) -> Result<(), ChecksumError> {
         return Ok(());
     };
 
-    let expected = parse_checksum_bytes(span.slice(msg));
     let computed = parser.checksum();
-    if expected == computed {
-        Ok(())
-    } else {
-        Err(ChecksumError { expected, computed })
+    match parse_checksum_bytes(span.slice(msg)) {
+        Some(expected) if expected == computed => Ok(()),
+        Some(expected) => Err(ChecksumError { expected, computed }),
+        None => Err(ChecksumError {
+            expected: 0,
+            computed,
+        }),
     }
 }
 
-fn parse_checksum_bytes(bytes: &[u8]) -> u8 {
+/// Parse a FIX CheckSum (tag 10) value: exactly three ASCII digits.
+///
+/// Returns `None` for anything else. A malformed CheckSum must be rejected
+/// deterministically — silently coercing it to `0` could collide with a
+/// genuine `0` computed checksum and false-accept an invalid message.
+fn parse_checksum_bytes(bytes: &[u8]) -> Option<u8> {
+    if bytes.len() != 3 {
+        return None;
+    }
     let mut val = 0u32;
     for &b in bytes {
         let digit = b.wrapping_sub(b'0');
         if digit > 9 {
-            return 0;
+            return None;
         }
         val = val * 10 + digit as u32;
     }
-    (val & 0xFF) as u8
+    Some((val & 0xFF) as u8)
 }
 
 // =============================================================================
@@ -848,9 +862,19 @@ mod tests {
     #[test]
     fn validate_checksum_malformed_tag10() {
         let msg = b"35=D\x0110=XYZ\x01";
-        let result = validate_checksum(msg);
-        // parse_checksum_bytes on non-digits wraps around, producing a mismatch
-        assert!(result.is_err());
+        // A non-digit CheckSum is malformed → rejected deterministically.
+        assert!(validate_checksum(msg).is_err());
+    }
+
+    #[test]
+    fn parse_checksum_bytes_rejects_malformed() {
+        // Malformed CheckSum is `None` — distinct from a genuine `Some(0)` — so
+        // it can never false-accept by colliding with a `0` computed checksum.
+        assert_eq!(parse_checksum_bytes(b"178"), Some(178));
+        assert_eq!(parse_checksum_bytes(b"000"), Some(0));
+        assert_eq!(parse_checksum_bytes(b"XYZ"), None); // non-digit
+        assert_eq!(parse_checksum_bytes(b"12"), None); // too short
+        assert_eq!(parse_checksum_bytes(b"1234"), None); // too long
     }
 
     #[test]

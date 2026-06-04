@@ -20,7 +20,7 @@ mod _bench_utils;
 use _bench_utils::{BATCH, WARMUP, percentile, print_intro, rdtsc_fenced_end, rdtsc_fenced_start};
 use nexus_fix_codec::reader::{FieldReader, checksum};
 use nexus_fix_codec::scan;
-use nexus_fix_codec::writer::FieldWriter;
+use nexus_fix_codec::writer::{FieldWriter, FrameWriter};
 use std::hint::black_box;
 
 /// Number of batches sampled per benchmark. Each batch averages `BATCH`
@@ -306,6 +306,56 @@ fn main() {
         "    {:.1} cycles/field, {:.2} cycles/byte",
         p50_enc as f64 / n_fields as f64,
         p50_enc as f64 / enc_len as f64
+    );
+
+    // =========================================================================
+    // FrameWriter: encode + frame a full NewOrderSingle (the generated-encoder
+    // hot path: body fields + real 8=/9=/35=/10= framing)
+    // =========================================================================
+
+    println!("\n=== FrameWriter: encode + frame NewOrderSingle ===\n");
+
+    // FrameWriter owns 8=, 9= (canonical BodyLength, right-aligned at finish),
+    // 35=, and 10= (checksum), so only the body fields are written here. Same
+    // 15-field message as the FieldWriter case above — the delta is the real
+    // framing work that produces a *valid* message (FieldWriter wrote a
+    // hard-coded 9=/10=). The generated typestate encoder monomorphizes to
+    // exactly this.
+    let body_fields: &[(u32, &[u8])] = &[
+        (49, b"SENDER"),
+        (56, b"TARGET"),
+        (34, b"42"),
+        (52, b"20260530-12:00:00.000"),
+        (11, b"order-001"),
+        (55, b"BTC-USD"),
+        (54, b"1"),
+        (38, b"1.50000000"),
+        (40, b"2"),
+        (44, b"67500.00"),
+        (59, b"0"),
+    ];
+    let mut fbuf = [0u8; 256];
+    let (p50_fr, p99_fr, p999_fr) = benchmark(|| {
+        let mut f = FrameWriter::new(&mut fbuf, b"FIX.4.4", b"D");
+        for &(tag, val) in black_box(body_fields) {
+            f.field(tag, val);
+        }
+        black_box(f.finish().unwrap()).len()
+    });
+    let frame_len = {
+        let mut f = FrameWriter::new(&mut fbuf, b"FIX.4.4", b"D");
+        for &(tag, val) in body_fields {
+            f.field(tag, val);
+        }
+        f.finish().unwrap().len()
+    };
+
+    println!("  FrameWriter (encode + frame, 15 fields, incl. BodyLength + checksum):");
+    println!("    p50={} p99={} p999={} cycles", p50_fr, p99_fr, p999_fr);
+    println!(
+        "    {:.1} cycles/field, {:.2} cycles/byte",
+        p50_fr as f64 / 15.0,
+        p50_fr as f64 / frame_len as f64
     );
 
     // =========================================================================

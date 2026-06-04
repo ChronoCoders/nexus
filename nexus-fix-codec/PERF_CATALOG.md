@@ -329,7 +329,8 @@ parsers stay canonical — the generator's duplicate `Option` parsers (`convert.
 were **removed**, and DATA-length encoding uses `encode_fix_seqnum` (byte-exact
 drop-in for the removed `format_uint`). `FieldView::new` is a fallible constructor
 (`Option<Self>`, like `NonZero::new`) so a `FieldView` always denotes a present
-field. The header decoder uses the same shape. 39/39 roundtrips pass.
+field. The header decoder uses the same shape. 40/40 roundtrips pass (decode +
+framed encode).
 
 - **Staged (parse-once memoization):** the flyweight re-parses on each `get()`.
   The cost ladder above *is* the caching policy: memoize `FixDecimal` (52–77) and
@@ -338,18 +339,82 @@ field. The header decoder uses the same shape. 39/39 roundtrips pass.
   `FieldView`/`Option` API is forward-compatible — memoization is a body change
   behind the same accessors, no signature churn.
 
+### Framed encode: the encoder owns 8/9/10
+
+The generated encoder is the write-side mirror. `FrameWriter` owns the framing the
+wire mandates so the caller can't get it wrong: it reserves a front prefix, streams
+typed body fields forward, and at `finish()` writes a **canonical** BodyLength
+**right-aligned** to abut the body, then the real checksum and tag 10. Overflow is a
+sticky `Result` (`EncodeError::BufferFull`) — encoding never panics on a small buffer.
+
+The right-align is the perf-relevant trick. BodyLength (tag 9) is ASCII decimal,
+variable-width, and sits at the *front* measuring everything after it — a forward
+reference. Rather than leading-zero-pad (non-canonical; rejected by signature venues
+like Coinbase) or memmove the body to close the slack, `finish()` writes the canonical
+`8=…9=…` prefix *backwards* from a reserved boundary so it abuts `35=`. **The body
+never moves** — the message just starts a few bytes into the buffer (`finish()`
+returns the slice). Every byte is touched once.
+
+Measured — full framed `NewOrderSingle` (15 fields; `taskset -c 0`, best-of-5):
+
+| path | p50 (cyc) | cyc/field |
+|---|---|---|
+| `FieldWriter` raw field writes | ~131 | 8.7 |
+| `FrameWriter` encode + frame | ~151 | 10.1 |
+
+Framing costs **~20 cyc (~15%)** over raw writes — the real BodyLength compute +
+right-align + checksum that produce a *valid* message (the old `FieldWriter` bench
+wrote a hard-coded `9=`/`10=`). At ~10 cyc/field it's right at the per-field write
+cost; the framing is nearly free, and the right-align keeps it memmove-free. The
+generated ordered-header typestate monomorphizes to exactly this `FrameWriter`
+sequence — zero runtime cost for the compile-time required/optional enforcement.
+
+> **Methodology caveat:** these are `taskset`-pinned, best-of-5, but **turbo-on**
+> (the canonical BENCHMARKS.md tiers are turbo-off — `FieldWriter` reads 131 here vs
+> 155 canonical on identical code). The *relative* +20 cyc holds; the absolutes want
+> a turbo-off rerun before they replace the canonical numbers.
+
+### DATA field + checksum: single-pass resync
+
+A length-prefixed DATA value (`95`/`96`, `212`/`213`, …) can contain embedded SOH, so
+the scanner can't cross it — the generated decoder computes the value end from the
+length and jumps past it. That jump used to build a *fresh* `FieldReader`, resetting
+the fused checksum to `0`, so any DATA-field message *with* a checksum failed to
+decode. `FieldReader::resync_after_data` keeps the same reader: the accumulator holds
+the invariant `checksum == sum(buf[..scan_pos])` (PSADBW folds whole chunks, `scan_pos`
+tracks the chunk boundary), so it folds only the short stretch between `scan_pos` and
+the data end — a **local correction, single pass, no prefix rescan**, undoing any SIMD
+chunk-ahead overshoot.
+
 ### Robustness posture
 
 `tests/property.rs` (proptest) proves the two invariants a FIX engine depends on:
 every parser **never panics on arbitrary / printable / structured wire bytes**,
 and every type **round-trips** (`construct → encode → parse`) across its full
 domain (all `i64`×scale decimals, all dates, all times incl. the leap-second
-band, all tenors, every `MonthYear` form, the TZ types). 288 unit + 12 property +
-9 doctests on both SIMD tiers; the one new `unsafe` (the `MultipleStringValue`
+band, all tenors, every `MonthYear` form, the TZ types). 296 unit + 12 property +
+10 doctests on both SIMD tiers; the one new `unsafe` (the `MultipleStringValue`
 borrowing iterator over validated subslices) is miri-clean.
 
 ## Open / deferred
 
+- **#429 (length-prefixed DATA fields) — partially closed.** The checksum corner
+  is fixed (`resync_after_data`, above), and generated decoders handle the
+  structural embedded-SOH case via the length-computed value span. To fully close
+  it:
+  1. **Bare-reader escape hatch** — expose `FieldReader::read_raw(len)` /
+     `next_data_field(len)` (the issue's Option B) so a hand-rolled reader (not just
+     generated code) can consume a DATA value literally. `resync_after_data` is the
+     building block; this is the public consume-N-bytes API on top of it.
+  2. **Malformed length → `DecodeError`** — the generated path currently *clamps*
+     (`.min(buf.len())`); `N > remaining`, `N = 0`, or a non-numeric length should
+     return a decode error, not silently truncate.
+  3. **DATA fields inside repeating groups** — the length→data pairing is detected
+     at message level only; the group decode path needs the same handling.
+- **Memoization** (above) — `FieldView` parse-once caching for the heavy types, a
+  body change behind the same accessors.
+- **Turbo-off rerun** of the framed-encode bench to fold canonical numbers into
+  BENCHMARKS.md (the table above is `taskset`/best-of-5 but turbo-on).
 - **Runtime SIMD detection.** Dispatch is compile-time only (no
   `is_x86_feature_detected!`), matching the workspace's
   build-for-your-target stance. Documented here rather than changed.
