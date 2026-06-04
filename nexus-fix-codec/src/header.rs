@@ -1,24 +1,19 @@
-use core::marker::PhantomData;
-
-use crate::dict::FixDictionary;
 use crate::field::FieldView;
 use crate::reader::{FieldReader, RawField};
 use crate::span::FieldSpan;
 use crate::types::FixTimestamp;
 use nexus_ascii::AsciiTextStr;
 
-/// Decoded FIX message header, generic over the dictionary.
+/// Decoded FIX message header.
 ///
 /// Scans the 8 standard header fields (tags 8, 9, 35, 34, 49, 56, 43, 52)
 /// from a FIX message buffer. The first non-header tag is stored as
 /// [`overflow`](Self::overflow) so the per-message `wrap` can continue
 /// decoding without re-scanning.
 ///
-/// Structurally identical across all FIX versions — only
-/// [`msg_type_enum`](Self::msg_type_enum) dispatches through the
-/// [`FixDictionary`] trait. This type lives in the codec rather than
-/// being generated per dictionary.
-pub struct HeaderDecoder<'buf, D: FixDictionary> {
+/// Structurally identical across all FIX versions. This type lives in the
+/// codec rather than being generated per dictionary.
+pub struct HeaderDecoder<'buf> {
     /// The underlying field reader. `pub` for generated `wrap` code that
     /// continues the scan into the message body.
     pub reader: FieldReader<'buf>,
@@ -33,10 +28,9 @@ pub struct HeaderDecoder<'buf, D: FixDictionary> {
     target_comp_id: FieldSpan,
     poss_dup_flag: FieldSpan,
     sending_time: FieldSpan,
-    _dict: PhantomData<D>,
 }
 
-impl<'buf, D: FixDictionary> HeaderDecoder<'buf, D> {
+impl<'buf> HeaderDecoder<'buf> {
     /// Decode the standard header from `buf`.
     ///
     /// Scans fields until a non-header tag is encountered (stored as
@@ -53,7 +47,6 @@ impl<'buf, D: FixDictionary> HeaderDecoder<'buf, D> {
             target_comp_id: FieldSpan::EMPTY,
             poss_dup_flag: FieldSpan::EMPTY,
             sending_time: FieldSpan::EMPTY,
-            _dict: PhantomData,
         };
         while let Some(f) = h.reader.next_field() {
             match f.tag {
@@ -111,52 +104,16 @@ impl<'buf, D: FixDictionary> HeaderDecoder<'buf, D> {
     pub fn sending_time(&self) -> Option<FieldView<'buf, FixTimestamp>> {
         FieldView::new(self.sending_time, self.reader.buf())
     }
-
-    /// Parse the MsgType field through the dictionary's enum.
-    pub fn msg_type_enum(&self) -> Option<D::MsgType> {
-        if self.msg_type.is_present() {
-            D::msg_type_from_bytes(self.msg_type.slice(self.reader.buf()))
-        } else {
-            None
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum TestMsgType {
-        NewOrderSingle,
-        Heartbeat,
-    }
-
-    struct TestDict;
-
-    impl FixDictionary for TestDict {
-        type MsgType = TestMsgType;
-        const BEGIN_STRING: &'static [u8] = b"FIX.4.4";
-
-        fn msg_type_from_bytes(bytes: &[u8]) -> Option<TestMsgType> {
-            match bytes {
-                b"D" => Some(TestMsgType::NewOrderSingle),
-                b"0" => Some(TestMsgType::Heartbeat),
-                _ => None,
-            }
-        }
-
-        fn is_admin(msg_type: TestMsgType) -> bool {
-            matches!(msg_type, TestMsgType::Heartbeat)
-        }
-    }
-
-    type Header<'a> = HeaderDecoder<'a, TestDict>;
-
     #[test]
     fn decodes_all_header_fields() {
         let msg = b"8=FIX.4.4\x019=99\x0135=D\x0134=42\x0149=SENDER\x0156=TARGET\x0143=Y\x0152=20260603-14:30:00\x0111=X\x01";
-        let h = Header::decode(msg);
+        let h = HeaderDecoder::decode(msg);
         assert_eq!(h.begin_string().unwrap().as_bytes(), b"FIX.4.4");
         assert_eq!(h.body_length().unwrap().get(), 99);
         assert_eq!(h.msg_type().unwrap().as_bytes(), b"D");
@@ -168,30 +125,10 @@ mod tests {
     }
 
     #[test]
-    fn msg_type_enum_dispatches() {
-        let msg = b"35=D\x0111=X\x01";
-        let h = Header::decode(msg);
-        assert_eq!(h.msg_type_enum(), Some(TestMsgType::NewOrderSingle));
-
-        let msg2 = b"35=0\x01";
-        let h2 = Header::decode(msg2);
-        assert_eq!(h2.msg_type_enum(), Some(TestMsgType::Heartbeat));
-        assert!(TestDict::is_admin(h2.msg_type_enum().unwrap()));
-    }
-
-    #[test]
-    fn unknown_msg_type_is_none() {
-        let msg = b"35=ZZ\x01";
-        let h = Header::decode(msg);
-        assert!(h.msg_type_enum().is_none());
-    }
-
-    #[test]
     fn absent_fields_are_none() {
-        let h = Header::decode(b"11=X\x01");
+        let h = HeaderDecoder::decode(b"11=X\x01");
         assert!(h.begin_string().is_none());
         assert!(h.msg_type().is_none());
-        assert!(h.msg_type_enum().is_none());
         assert!(h.msg_seq_num().is_none());
         assert!(h.poss_dup_flag().is_none());
     }
@@ -199,7 +136,7 @@ mod tests {
     #[test]
     fn overflow_captures_first_body_field() {
         let msg = b"8=FIX.4.4\x0135=D\x0111=ORD1\x0155=BTC\x01";
-        let h = Header::decode(msg);
+        let h = HeaderDecoder::decode(msg);
         let of = h.overflow.as_ref().unwrap();
         assert_eq!(of.tag, 11);
         assert_eq!(of.value.slice(msg), b"ORD1");
@@ -207,7 +144,7 @@ mod tests {
 
     #[test]
     fn empty_buffer() {
-        let h = Header::decode(b"");
+        let h = HeaderDecoder::decode(b"");
         assert!(h.begin_string().is_none());
         assert!(h.overflow.is_none());
     }

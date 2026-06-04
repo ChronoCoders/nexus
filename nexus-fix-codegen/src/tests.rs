@@ -63,9 +63,7 @@ fn emits_msgtype_dispatch_and_begin_string() {
     assert!(m.contains("impl nexus_fix_codec::FixDictionary for Dict"));
     assert!(m.contains("fn is_admin(msg_type: MsgType) -> bool"));
     assert!(m.contains("MsgType::Heartbeat"));
-    assert!(m.contains(
-        "pub type HeaderDecoder<'buf> = nexus_fix_codec::HeaderDecoder<'buf, super::Dict>;",
-    ));
+    assert!(m.contains("pub type HeaderDecoder<'buf> = nexus_fix_codec::HeaderDecoder<'buf>;",));
 }
 
 #[test]

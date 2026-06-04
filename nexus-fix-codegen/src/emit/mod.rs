@@ -289,15 +289,16 @@ fn acc_return_type(kind: AccKind) -> &'static str {
 /// lives in the codec, not in the generated boilerplate.
 pub fn emit_value_accessor(s: &mut String, f: &RField, buf_expr: &str) {
     let name = snake(&f.name);
-    let ty = acc_return_type(acc_kind(f.ftype));
-    let _ = write!(
-        s,
-        "    pub fn {name}(&self) -> Option<nexus_fix_codec::FieldView<'buf, {ty}>> {{\n        \
-         nexus_fix_codec::FieldView::new(self.{name}, {buf_expr})\n    \
-         }}\n\n"
-    );
     if f.is_enum {
         emit_enum_accessor(s, f, &name, buf_expr);
+    } else {
+        let ty = acc_return_type(acc_kind(f.ftype));
+        let _ = write!(
+            s,
+            "    pub fn {name}(&self) -> Option<nexus_fix_codec::FieldView<'buf, {ty}>> {{\n        \
+             nexus_fix_codec::FieldView::new(self.{name}, {buf_expr})\n    \
+             }}\n\n"
+        );
     }
 }
 
@@ -306,12 +307,12 @@ fn emit_enum_accessor(s: &mut String, f: &RField, name: &str, buf_expr: &str) {
     if f.single_char {
         let _ = write!(
             s,
-            "    pub fn {name}_enum(&self) -> Option<super::fields::{ty}> {{\n        self.{name}.slice({buf_expr}).first().map(|&b| super::fields::{ty}::from_byte(b))\n    }}\n\n"
+            "    pub fn {name}(&self) -> Option<super::fields::{ty}> {{\n        self.{name}.slice({buf_expr}).first().map(|&b| super::fields::{ty}::from_byte(b))\n    }}\n\n"
         );
     } else {
         let _ = write!(
             s,
-            "    pub fn {name}_enum(&self) -> Option<super::fields::{ty}<'buf>> {{\n        if self.{name}.is_present() {{ nexus_fix_codec::AsciiTextStr::try_from_bytes(self.{name}.slice({buf_expr})).ok().map(super::fields::{ty}::from_bytes) }} else {{ None }}\n    }}\n\n"
+            "    pub fn {name}(&self) -> Option<super::fields::{ty}<'buf>> {{\n        if self.{name}.is_present() {{ nexus_fix_codec::AsciiTextStr::try_from_bytes(self.{name}.slice({buf_expr})).ok().map(super::fields::{ty}::from_bytes) }} else {{ None }}\n    }}\n\n"
         );
     }
 }
@@ -378,9 +379,7 @@ fn emit_mod(messages: &[RMessage], major: &str, minor: &str) -> String {
         "    const BEGIN_STRING: &'static [u8] = {};",
         byte_lit(&begin_string)
     );
-    s.push_str("\n    fn msg_type_from_bytes(bytes: &[u8]) -> Option<MsgType> {\n");
-    s.push_str("        MsgType::from_bytes(bytes)\n    }\n\n");
-    s.push_str("    fn is_admin(msg_type: MsgType) -> bool {\n");
+    s.push_str("\n    fn is_admin(msg_type: MsgType) -> bool {\n");
     let admin_variants: Vec<String> = messages
         .iter()
         .filter(|m| m.is_admin)
@@ -397,11 +396,9 @@ fn emit_mod(messages: &[RMessage], major: &str, minor: &str) -> String {
     }
     s.push_str("    }\n}\n\n");
 
-    // Header type alias
+    // Header re-export
     s.push_str("pub mod header {\n");
-    s.push_str(
-        "    pub type HeaderDecoder<'buf> = nexus_fix_codec::HeaderDecoder<'buf, super::Dict>;\n",
-    );
+    s.push_str("    pub type HeaderDecoder<'buf> = nexus_fix_codec::HeaderDecoder<'buf>;\n");
     s.push_str("}\n");
     s
 }

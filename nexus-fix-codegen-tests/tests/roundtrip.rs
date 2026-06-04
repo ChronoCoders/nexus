@@ -13,7 +13,7 @@ fn alpha_decodes_scalar_fields_and_enum() {
             scale: 0,
         }
     );
-    assert_eq!(m.side_enum(), Some(venue_alpha::fields::Side::BUY));
+    assert_eq!(m.side(), Some(venue_alpha::fields::Side::BUY));
 }
 
 #[test]
@@ -31,17 +31,14 @@ fn alpha_absent_field_is_none() {
     let msg = b"11=ORD123\x01";
     let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
     assert!(m.symbol().is_none());
-    assert!(m.side_enum().is_none());
+    assert!(m.side().is_none());
 }
 
 #[test]
 fn alpha_unknown_enum_value_is_preserved() {
     let msg = b"11=A\x0154=9\x01";
     let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
-    assert_eq!(
-        m.side_enum(),
-        Some(venue_alpha::fields::Side::Unknown(b'9'))
-    );
+    assert_eq!(m.side(), Some(venue_alpha::fields::Side::Unknown(b'9')));
 }
 
 #[test]
@@ -109,11 +106,8 @@ fn alpha_decodes_execution_report() {
     let m = venue_alpha::messages::ExecutionReport::decode(msg).unwrap();
     assert_eq!(m.order_id().unwrap().as_bytes(), &b"ORD1"[..]);
     assert_eq!(m.exec_id().unwrap().as_bytes(), &b"EX1"[..]);
-    assert_eq!(m.exec_type_enum(), Some(venue_alpha::fields::ExecType::NEW));
-    assert_eq!(
-        m.ord_status_enum(),
-        Some(venue_alpha::fields::OrdStatus::FILLED)
-    );
+    assert_eq!(m.exec_type(), Some(venue_alpha::fields::ExecType::NEW));
+    assert_eq!(m.ord_status(), Some(venue_alpha::fields::OrdStatus::FILLED));
     assert_eq!(
         m.last_qty().unwrap().get(),
         nexus_fix_codec::FixDecimal {
@@ -172,7 +166,7 @@ fn alpha_encodes_round_trip() {
     assert_eq!(m.header().msg_seq_num().unwrap().get(), 7);
     assert!(m.header().poss_dup_flag().is_none());
     assert_eq!(m.cl_ord_id().unwrap().as_bytes(), &b"ORD1"[..]);
-    assert_eq!(m.side_enum(), Some(venue_alpha::fields::Side::SELL));
+    assert_eq!(m.side(), Some(venue_alpha::fields::Side::SELL));
     assert_eq!(m.symbol().unwrap().as_bytes(), &b"ETH-USD"[..]);
     assert!(m.is_complete());
 }
@@ -232,7 +226,7 @@ fn beta_decodes_market_data_group() {
     let entries: Vec<_> = m.no_md_entries().collect();
     assert_eq!(entries.len(), 2);
     assert_eq!(
-        entries[0].md_entry_type_enum(),
+        entries[0].md_entry_type(),
         Some(venue_beta::fields::MDEntryType::BID)
     );
     assert_eq!(
@@ -243,7 +237,7 @@ fn beta_decodes_market_data_group() {
         }
     );
     assert_eq!(
-        entries[1].md_entry_type_enum(),
+        entries[1].md_entry_type(),
         Some(venue_beta::fields::MDEntryType::OFFER)
     );
     assert_eq!(
@@ -273,13 +267,13 @@ fn alpha_header_decode_and_wrap() {
     assert_eq!(header.begin_string().unwrap().as_bytes(), &b"FIX.4.4"[..]);
     assert_eq!(header.msg_type().unwrap().as_bytes(), &b"D"[..]);
     assert_eq!(
-        header.msg_type_enum(),
+        venue_alpha::MsgType::from_bytes(header.msg_type().unwrap().as_bytes()),
         Some(venue_alpha::MsgType::NewOrderSingle)
     );
     assert_eq!(header.msg_seq_num().unwrap().get(), 1);
     let m = venue_alpha::messages::NewOrderSingle::wrap(header).unwrap();
     assert_eq!(m.cl_ord_id().unwrap().as_bytes(), &b"ORD1"[..]);
-    assert_eq!(m.side_enum(), Some(venue_alpha::fields::Side::BUY));
+    assert_eq!(m.side(), Some(venue_alpha::fields::Side::BUY));
     assert_eq!(m.symbol().unwrap().as_bytes(), &b"BTC"[..]);
     assert_eq!(
         m.header().begin_string().unwrap().as_bytes(),
@@ -293,7 +287,6 @@ fn alpha_header_fields_absent() {
     let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
     assert!(m.header().begin_string().is_none());
     assert!(m.header().msg_type().is_none());
-    assert!(m.header().msg_type_enum().is_none());
     assert_eq!(m.cl_ord_id().unwrap().as_bytes(), &b"ORD1"[..]);
 }
 
@@ -360,7 +353,7 @@ fn alpha_heartbeat_decode() {
     let msg = b"8=FIX.4.4\x0135=0\x01112=TEST123\x01";
     let m = venue_alpha::messages::Heartbeat::decode(msg).unwrap();
     assert_eq!(
-        m.header().msg_type_enum(),
+        venue_alpha::MsgType::from_bytes(m.header().msg_type().unwrap().as_bytes()),
         Some(venue_alpha::MsgType::Heartbeat)
     );
     let req_id = m.test_req_id().unwrap().get();
@@ -487,12 +480,9 @@ fn alpha_exec_report_typed_and_raw_consistency() {
             scale: 2,
         }
     );
-    assert_eq!(m.side_enum(), Some(venue_alpha::fields::Side::SELL));
-    assert_eq!(m.exec_type_enum(), Some(venue_alpha::fields::ExecType::NEW));
-    assert_eq!(
-        m.ord_status_enum(),
-        Some(venue_alpha::fields::OrdStatus::NEW)
-    );
+    assert_eq!(m.side(), Some(venue_alpha::fields::Side::SELL));
+    assert_eq!(m.exec_type(), Some(venue_alpha::fields::ExecType::NEW));
+    assert_eq!(m.ord_status(), Some(venue_alpha::fields::OrdStatus::NEW));
     assert!(m.is_complete());
 }
 
@@ -502,7 +492,7 @@ fn alpha_exec_report_incomplete() {
     let m = venue_alpha::messages::ExecutionReport::decode(msg).unwrap();
     assert!(!m.is_complete());
     assert!(m.exec_id().is_none());
-    assert!(m.exec_type_enum().is_none());
+    assert!(m.exec_type().is_none());
 }
 
 #[test]
@@ -510,7 +500,10 @@ fn beta_header_and_wrap() {
     let msg = b"8=FIX.4.2\x0135=A\x0149=CLIENT\x0156=SERVER\x0134=1\x0198=0\x01108=30\x01";
     let header = venue_beta::header::HeaderDecoder::decode(msg);
     assert_eq!(header.begin_string().unwrap().as_bytes(), &b"FIX.4.2"[..]);
-    assert_eq!(header.msg_type_enum(), Some(venue_beta::MsgType::Logon));
+    assert_eq!(
+        venue_beta::MsgType::from_bytes(header.msg_type().unwrap().as_bytes()),
+        Some(venue_beta::MsgType::Logon)
+    );
     let sender = header.sender_comp_id().unwrap().get();
     assert_eq!(sender.as_bytes(), b"CLIENT");
     let m = venue_beta::messages::Logon::wrap(header).unwrap();
@@ -592,16 +585,20 @@ fn alpha_dict_trait() {
     use nexus_fix_codec::FixDictionary;
     assert_eq!(venue_alpha::Dict::BEGIN_STRING, b"FIX.4.4");
     assert_eq!(
-        venue_alpha::Dict::msg_type_from_bytes(b"D"),
+        venue_alpha::MsgType::from_bytes(b"D"),
         Some(venue_alpha::MsgType::NewOrderSingle)
     );
     assert_eq!(
-        venue_alpha::Dict::msg_type_from_bytes(b"0"),
+        venue_alpha::MsgType::from_bytes(b"0"),
         Some(venue_alpha::MsgType::Heartbeat)
     );
     assert!(venue_alpha::Dict::is_admin(venue_alpha::MsgType::Heartbeat));
-    assert!(!venue_alpha::Dict::is_admin(venue_alpha::MsgType::NewOrderSingle));
-    assert!(!venue_alpha::Dict::is_admin(venue_alpha::MsgType::ExecutionReport));
+    assert!(!venue_alpha::Dict::is_admin(
+        venue_alpha::MsgType::NewOrderSingle
+    ));
+    assert!(!venue_alpha::Dict::is_admin(
+        venue_alpha::MsgType::ExecutionReport
+    ));
 }
 
 #[test]
@@ -615,11 +612,12 @@ fn beta_dict_trait() {
 }
 
 #[test]
-fn header_decoder_is_generic_over_dict() {
+fn header_decode_and_msg_type_conversion() {
     use nexus_fix_codec::FixDictionary;
     let msg = b"8=FIX.4.4\x0135=0\x0134=1\x0149=S\x0156=T\x01112=HB\x01";
-    let h = nexus_fix_codec::HeaderDecoder::<venue_alpha::Dict>::decode(msg);
-    assert_eq!(h.msg_type_enum(), Some(venue_alpha::MsgType::Heartbeat));
-    assert!(venue_alpha::Dict::is_admin(h.msg_type_enum().unwrap()));
+    let h = nexus_fix_codec::HeaderDecoder::decode(msg);
+    let mt = venue_alpha::MsgType::from_bytes(h.msg_type().unwrap().as_bytes()).unwrap();
+    assert_eq!(mt, venue_alpha::MsgType::Heartbeat);
+    assert!(venue_alpha::Dict::is_admin(mt));
     assert_eq!(h.msg_seq_num().unwrap().get(), 1);
 }
