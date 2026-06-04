@@ -15,8 +15,10 @@
 //!
 //! Generated FIX codecs (from `nexus-fix-codegen`) depend on these primitives.
 
+pub mod dict;
 mod error;
 mod field;
+mod header;
 mod span;
 mod types;
 
@@ -24,8 +26,10 @@ pub mod reader;
 pub mod scan;
 pub mod writer;
 
+pub use dict::FixDictionary;
 pub use error::{ChecksumError, DecodeError, EncodeError, FixValueError};
 pub use field::{FieldView, FromFixValue};
+pub use header::HeaderDecoder;
 pub use nexus_ascii::{AsciiChar, AsciiText, AsciiTextStr};
 pub use reader::{FieldReader, RawField, checksum, find_tag, parse_tag, validate_checksum};
 pub use scan::DelimiterScanner;

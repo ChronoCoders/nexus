@@ -4,7 +4,7 @@ use quick_xml::events::attributes::AttrError;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 
-use super::{Dictionary, EnumValue, FieldDef, FieldType, GroupDef, Member, MessageDef};
+use super::{Dictionary, EnumValue, FieldDef, FieldType, GroupDef, Member, MessageDef, MsgCat};
 
 #[derive(Debug)]
 pub enum ParseError {
@@ -160,10 +160,15 @@ fn read_messages(reader: &mut Reader<&[u8]>) -> Result<Vec<MessageDef>, ParseErr
             Event::Start(e) if e.name().as_ref() == b"message" => {
                 let name = req_attr(&e, "name")?;
                 let msgtype = req_attr(&e, "msgtype")?;
+                let msgcat = match opt_attr(&e, "msgcat")?.as_deref() {
+                    Some("admin") => MsgCat::Admin,
+                    _ => MsgCat::App,
+                };
                 let members = read_members(reader, b"message")?;
                 out.push(MessageDef {
                     name,
                     msgtype,
+                    msgcat,
                     members,
                 });
             }

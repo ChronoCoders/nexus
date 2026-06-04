@@ -46,10 +46,6 @@ fn emits_message_decoder_and_group() {
     );
     assert!(messages.contains("pub fn is_complete(&self) -> bool"));
     assert!(messages.contains("pub fn header(&self) -> &super::header::HeaderDecoder<'buf>"));
-    let header = file(&files, "header.rs");
-    assert!(header.contains("pub struct HeaderDecoder<'buf>"));
-    assert!(header.contains("pub fn decode(buf: &'buf [u8]) -> Self"));
-    assert!(header.contains("pub fn msg_type_enum(&self) -> Option<super::MsgType>"));
     let groups = file(&files, "groups.rs");
     assert!(groups.contains("NewOrderSingleNoPartyIDsEntry"));
     assert!(groups.contains("NewOrderSingleNoPartyIDsNoPartySubIDsEntry"));
@@ -63,6 +59,13 @@ fn emits_msgtype_dispatch_and_begin_string() {
     assert!(m.contains("pub const BEGIN_STRING: &[u8] = b\"FIX.4.4\";"));
     assert!(m.contains("enum MsgType"));
     assert!(m.contains("b\"D\" => Some(Self::NewOrderSingle)"));
+    assert!(m.contains("pub struct Dict;"));
+    assert!(m.contains("impl nexus_fix_codec::FixDictionary for Dict"));
+    assert!(m.contains("fn is_admin(msg_type: MsgType) -> bool"));
+    assert!(m.contains("MsgType::Heartbeat"));
+    assert!(m.contains(
+        "pub type HeaderDecoder<'buf> = nexus_fix_codec::HeaderDecoder<'buf, super::Dict>;",
+    ));
 }
 
 #[test]

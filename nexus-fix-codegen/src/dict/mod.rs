@@ -91,10 +91,17 @@ pub struct GroupDef {
     pub members: Vec<Member>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MsgCat {
+    Admin,
+    App,
+}
+
 #[derive(Debug, Clone)]
 pub struct MessageDef {
     pub name: String,
     pub msgtype: String,
+    pub msgcat: MsgCat,
     pub members: Vec<Member>,
 }
 

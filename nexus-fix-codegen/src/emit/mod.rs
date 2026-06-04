@@ -1,12 +1,11 @@
 mod encoders;
 mod fields;
 mod groups;
-mod header;
 mod messages;
 
 use std::fmt::{self, Write};
 
-use crate::dict::{Dictionary, FieldType, Member};
+use crate::dict::{Dictionary, FieldType, Member, MsgCat};
 
 #[derive(Debug)]
 pub enum EmitError {
@@ -61,6 +60,7 @@ pub enum RMember {
 pub struct RMessage {
     pub name: String,
     pub msgtype: String,
+    pub is_admin: bool,
     pub members: Vec<RMember>,
 }
 
@@ -77,6 +77,7 @@ pub fn generate(dict: &Dictionary) -> Result<Vec<GeneratedFile>, EmitError> {
             Ok(RMessage {
                 name: m.name.clone(),
                 msgtype: m.msgtype.clone(),
+                is_admin: m.msgcat == MsgCat::Admin,
                 members: resolve(dict, &m.members)?,
             })
         })
@@ -94,10 +95,6 @@ pub fn generate(dict: &Dictionary) -> Result<Vec<GeneratedFile>, EmitError> {
         GeneratedFile {
             name: "fields.rs".to_string(),
             source: fields::emit(dict),
-        },
-        GeneratedFile {
-            name: "header.rs".to_string(),
-            source: header::emit(),
         },
         GeneratedFile {
             name: "messages.rs".to_string(),
@@ -330,17 +327,22 @@ fn emit_mod(messages: &[RMessage], major: &str, minor: &str) -> String {
     let mut s = String::new();
     s.push_str(HEADER);
     s.push_str("pub mod fields { include!(\"fields.rs\"); }\n");
-    s.push_str("pub mod header { include!(\"header.rs\"); }\n");
     s.push_str("pub mod messages { include!(\"messages.rs\"); }\n");
     s.push_str("pub mod groups { include!(\"groups.rs\"); }\n");
     s.push_str("pub mod encoders { include!(\"encoders.rs\"); }\n\n");
-    if !major.is_empty() && !minor.is_empty() {
-        let _ = writeln!(
-            s,
-            "pub const BEGIN_STRING: &[u8] = {};\n",
-            byte_lit(&format!("FIX.{major}.{minor}"))
-        );
-    }
+
+    let begin_string = if !major.is_empty() && !minor.is_empty() {
+        format!("FIX.{major}.{minor}")
+    } else {
+        String::new()
+    };
+    let _ = writeln!(
+        s,
+        "pub const BEGIN_STRING: &[u8] = {};\n",
+        byte_lit(&begin_string)
+    );
+
+    // MsgType enum
     s.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum MsgType {\n");
     for m in messages {
         let _ = writeln!(s, "    {},", pascal(&m.name));
@@ -365,7 +367,42 @@ fn emit_mod(messages: &[RMessage], major: &str, minor: &str) -> String {
             byte_lit(&m.msgtype)
         );
     }
-    s.push_str("        }\n    }\n}\n");
+    s.push_str("        }\n    }\n}\n\n");
+
+    // Dictionary ZST + FixDictionary impl
+    s.push_str("pub struct Dict;\n\n");
+    s.push_str("impl nexus_fix_codec::FixDictionary for Dict {\n");
+    s.push_str("    type MsgType = MsgType;\n");
+    let _ = writeln!(
+        s,
+        "    const BEGIN_STRING: &'static [u8] = {};",
+        byte_lit(&begin_string)
+    );
+    s.push_str("\n    fn msg_type_from_bytes(bytes: &[u8]) -> Option<MsgType> {\n");
+    s.push_str("        MsgType::from_bytes(bytes)\n    }\n\n");
+    s.push_str("    fn is_admin(msg_type: MsgType) -> bool {\n");
+    let admin_variants: Vec<String> = messages
+        .iter()
+        .filter(|m| m.is_admin)
+        .map(|m| format!("MsgType::{}", pascal(&m.name)))
+        .collect();
+    if admin_variants.is_empty() {
+        s.push_str("        let _ = msg_type;\n        false\n");
+    } else {
+        let _ = writeln!(
+            s,
+            "        matches!(msg_type, {})",
+            admin_variants.join(" | ")
+        );
+    }
+    s.push_str("    }\n}\n\n");
+
+    // Header type alias
+    s.push_str("pub mod header {\n");
+    s.push_str(
+        "    pub type HeaderDecoder<'buf> = nexus_fix_codec::HeaderDecoder<'buf, super::Dict>;\n",
+    );
+    s.push_str("}\n");
     s
 }
 

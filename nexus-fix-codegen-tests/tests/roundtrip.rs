@@ -586,3 +586,40 @@ fn modules_are_independent() {
     assert_eq!(venue_alpha::BEGIN_STRING, b"FIX.4.4");
     assert_eq!(venue_beta::BEGIN_STRING, b"FIX.4.2");
 }
+
+#[test]
+fn alpha_dict_trait() {
+    use nexus_fix_codec::FixDictionary;
+    assert_eq!(venue_alpha::Dict::BEGIN_STRING, b"FIX.4.4");
+    assert_eq!(
+        venue_alpha::Dict::msg_type_from_bytes(b"D"),
+        Some(venue_alpha::MsgType::NewOrderSingle)
+    );
+    assert_eq!(
+        venue_alpha::Dict::msg_type_from_bytes(b"0"),
+        Some(venue_alpha::MsgType::Heartbeat)
+    );
+    assert!(venue_alpha::Dict::is_admin(venue_alpha::MsgType::Heartbeat));
+    assert!(!venue_alpha::Dict::is_admin(venue_alpha::MsgType::NewOrderSingle));
+    assert!(!venue_alpha::Dict::is_admin(venue_alpha::MsgType::ExecutionReport));
+}
+
+#[test]
+fn beta_dict_trait() {
+    use nexus_fix_codec::FixDictionary;
+    assert_eq!(venue_beta::Dict::BEGIN_STRING, b"FIX.4.2");
+    assert!(venue_beta::Dict::is_admin(venue_beta::MsgType::Logon));
+    assert!(!venue_beta::Dict::is_admin(
+        venue_beta::MsgType::MarketDataSnapshotFullRefresh
+    ));
+}
+
+#[test]
+fn header_decoder_is_generic_over_dict() {
+    use nexus_fix_codec::FixDictionary;
+    let msg = b"8=FIX.4.4\x0135=0\x0134=1\x0149=S\x0156=T\x01112=HB\x01";
+    let h = nexus_fix_codec::HeaderDecoder::<venue_alpha::Dict>::decode(msg);
+    assert_eq!(h.msg_type_enum(), Some(venue_alpha::MsgType::Heartbeat));
+    assert!(venue_alpha::Dict::is_admin(h.msg_type_enum().unwrap()));
+    assert_eq!(h.msg_seq_num().unwrap().get(), 1);
+}
