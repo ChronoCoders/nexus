@@ -152,7 +152,7 @@ impl<'a> FieldReader<'a> {
     #[inline]
     pub fn next_field(&mut self) -> Option<RawField> {
         let field_start = self.field_start;
-        let soh_pos = self.find_next_soh()?;
+        let soh_pos = self.next_soh()?;
         self.field_start = soh_pos + 1;
 
         let field_bytes = self.buf.get(field_start..soh_pos)?;
@@ -303,13 +303,30 @@ impl FieldReader<'_> {
         self.mask_base + bit
     }
 
-    fn find_next_soh(&mut self) -> Option<usize> {
+    /// Yield the next SOH position.
+    ///
+    /// Fast path (the common case): drain a bit from the cached chunk mask —
+    /// a handful of register-resident instructions when inlined into the
+    /// caller, no `call`, no checksum touch. Slow path: a SIMD chunk needs
+    /// (re)loading, delegated to the out-of-line [`scan_next_soh`].
+    #[inline(always)]
+    fn next_soh(&mut self) -> Option<usize> {
         if self.soh_mask != 0 {
             let bit = self.soh_mask.trailing_zeros() as usize;
             self.soh_mask &= self.soh_mask - 1;
             return Some(self.mask_base + bit);
         }
+        self.scan_next_soh()
+    }
 
+    /// Cold path: load and scan SIMD chunks (fused checksum + SOH detection),
+    /// caching the delimiter mask for [`next_soh`] to drain. Kept out-of-line
+    /// and `#[cold]` so the per-field fast path above stays inlined and the
+    /// reader's scan state stays in registers across cached-mask drains,
+    /// instead of being spilled around a per-field `call`.
+    #[cold]
+    #[inline(never)]
+    fn scan_next_soh(&mut self) -> Option<usize> {
         let bytes = self.buf.get(self.scan_pos..)?;
         if bytes.is_empty() {
             return None;
