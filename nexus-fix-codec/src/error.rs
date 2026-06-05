@@ -121,13 +121,21 @@ impl std::error::Error for FixValueError {}
 pub enum EncodeError {
     /// The buffer was too small to hold the complete framed message.
     BufferFull,
+    /// A repeating group declared `declared` entries but `written` were written
+    /// before `finish_group()`. The encoded `NumInGroup` count would not match
+    /// the entries on the wire, so the group is rejected rather than emitted.
+    GroupCountMismatch { declared: u16, written: u16 },
 }
 
 impl fmt::Display for EncodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::BufferFull => "buffer too small for encoded message",
-        })
+        match self {
+            Self::BufferFull => f.write_str("buffer too small for encoded message"),
+            Self::GroupCountMismatch { declared, written } => write!(
+                f,
+                "repeating group count mismatch: declared {declared}, wrote {written}"
+            ),
+        }
     }
 }
 

@@ -14,3 +14,7 @@ nexus-fix-codec = { path = "../nexus-fix-codec" }
 
 [build-dependencies]
 nexus-fix-codegen = { path = "../nexus-fix-codegen" }
+
+[[bench]]
+name = "perf_decode_cycles"
+harness = false

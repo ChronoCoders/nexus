@@ -1170,6 +1170,16 @@ pub fn parse_fix_multi_string(
 // Tier 1 encoding helpers (used by generated code)
 // ---------------------------------------------------------------------------
 
+/// The maximum number of bytes any owned FIX value type encodes to.
+///
+/// The widest is [`FixTzTimestamp`] (`YYYYMMDD-HH:MM:SS.nnnnnnnnn±HH:MM`, 33
+/// bytes). Generated encoder scratch buffers for the owned value types
+/// (decimal/timestamp/date/time/…) are sized to this constant so a scratch
+/// buffer can never silently fall behind a type's `encode()` requirement; each
+/// `encode()` keeps its own tighter buffer assert. Bump this if a wider value
+/// type is added — the `max_value_encode_len_covers_widest_type` test guards it.
+pub const MAX_VALUE_ENCODE_LEN: usize = 33;
+
 /// Encode a FIX integer field (INT type) to wire bytes.
 ///
 /// Writes the decimal representation (with leading `-` for negatives).
@@ -1210,24 +1220,10 @@ pub fn encode_fix_char(value: AsciiChar) -> u8 {
     value.as_u8()
 }
 
-/// Encode a FIX text field by copying its bytes into `buf`.
-///
-/// Returns the number of bytes written.
-///
-/// # Panics
-/// Panics if `buf` is shorter than `text.as_bytes().len()`.
-#[inline]
-pub fn encode_fix_text(text: &AsciiTextStr, buf: &mut [u8]) -> usize {
-    let bytes = text.as_bytes();
-    assert!(
-        buf.len() >= bytes.len(),
-        "encode_fix_text: buffer too small (need {}, have {})",
-        bytes.len(),
-        buf.len()
-    );
-    buf[..bytes.len()].copy_from_slice(bytes);
-    bytes.len()
-}
+// Note: there is no `encode_fix_text`. A FIX text value is already its wire
+// form — callers pass `text.as_bytes()` straight to the writer. (Decoding earns
+// `parse_fix_text` because it validates printable ASCII; encoding is a plain
+// byte copy with nothing to add.)
 
 // ---------------------------------------------------------------------------
 // SWAR digit parsing
@@ -2652,7 +2648,7 @@ mod tests {
         assert_eq!(parse_fix_day_of_month(b"x"), Err(FixValueError::NotNumeric));
     }
 
-    // -- parse_fix_text / encode_fix_text --
+    // -- parse_fix_text --
 
     #[test]
     fn text_parse_valid() {
@@ -2678,22 +2674,6 @@ mod tests {
             parse_fix_text(&[b'A', 0x07, b'B']).err(),
             Some(FixValueError::NotPrintable)
         );
-    }
-
-    #[test]
-    fn text_encode_roundtrip() {
-        let t = parse_fix_text(b"SENDER").unwrap();
-        let mut buf = [0u8; 16];
-        let n = encode_fix_text(t, &mut buf);
-        assert_eq!(&buf[..n], b"SENDER");
-    }
-
-    #[test]
-    #[should_panic(expected = "buffer too small")]
-    fn text_encode_panics_when_too_small() {
-        let t = parse_fix_text(b"SENDER").unwrap();
-        let mut buf = [0u8; 3];
-        encode_fix_text(t, &mut buf);
     }
 
     // -- FixMonthYear --
@@ -3032,6 +3012,19 @@ mod tests {
                 core::str::from_utf8(input).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn max_value_encode_len_covers_widest_type() {
+        // FixTzTimestamp at full nanosecond precision with a non-zero offset is
+        // the widest owned value type (33 bytes). Encoding it into a buffer of
+        // exactly MAX_VALUE_ENCODE_LEN must not trip the encode() buffer assert
+        // — this is the invariant generated encoder scratch buffers rely on.
+        let ts = FixTzTimestamp::parse(b"20260605-12:34:56.123456789+05:30").unwrap();
+        let mut buf = [0u8; MAX_VALUE_ENCODE_LEN];
+        let n = ts.encode(&mut buf);
+        assert_eq!(n, MAX_VALUE_ENCODE_LEN);
+        assert_eq!(&buf[..n], b"20260605-12:34:56.123456789+05:30");
     }
 
     // -- Copilot review fixes --

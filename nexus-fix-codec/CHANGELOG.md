@@ -15,7 +15,11 @@ contained.
 - `FieldSpan` and `GroupSpan` zero-copy field reference types
 - SIMD SOH and `=` scanning: AVX-512, AVX2, SSE2, SWAR, scalar
 - `DelimiterScanner` iterator with SIMD mask caching
-- `FieldReader` with fused PSADBW checksum accumulation
+- `FieldReader`, a pure SOH-delimiter scanner; the FIX checksum is a separate
+  single-pass `verify_checksum` (not fused into the scan), so a trusted feed can
+  skip verification entirely
+- `FieldView::get_unchecked` — bypass printable-ASCII validation on text fields
+  for trusted venues (`unsafe`)
 - `FieldWriter` for writing `tag=value\x01` fields
 - `parse_tag`, `find_tag`, `checksum`, `validate_checksum` helpers
 - `encode_field`, `format_checksum` writer helpers
@@ -24,8 +28,9 @@ contained.
 - Value-type parsers/encoders: `FixDecimal`, `FixDate`, `FixTime`,
   `FixTimestamp`; `parse_fix_int`/`uint`/`seqnum`/`bool` and their encoders
 - `parse_fix_char` / `encode_fix_char` — FIX `char` → `AsciiChar`
-- `parse_fix_text` / `encode_fix_text` — FIX `String`/`Currency`/`Exchange`/
-  `Country`/`Language`/`Symbol` as a zero-copy printable-ASCII `AsciiTextStr`
+- `parse_fix_text` — FIX `String`/`Currency`/`Exchange`/`Country`/`Language`/
+  `Symbol` as a zero-copy printable-ASCII `AsciiTextStr` (text *encoding* is a
+  plain `as_bytes()` copy, so there is no `encode_fix_text`)
 - `parse_fix_day_of_month` — `DayOfMonth` (`1..=31`)
 - `FixMonthYear` — `YYYYMM` / `YYYYMMDD` / `YYYYMM`+`wW`, byte-exact round-trip
 - `FixTenor` and `TenorUnit` — FIX 5.0 SP2 `Tenor` (`[DWMY]<n>`, canonical form)
@@ -36,6 +41,13 @@ contained.
   `OutOfRange`, `BadFormat`, `NotPrintable`)
 - Re-exports of `nexus_ascii::{AsciiChar, AsciiText, AsciiTextStr}`
 - Type-parser benchmarks (`benches/parse_types.rs`, `benches/perf_parse_cycles.rs`)
+- `MAX_VALUE_ENCODE_LEN` — the maximum bytes any owned value type encodes to
+  (33, the worst-case `FixTzTimestamp`). Generated encoder scratch buffers for
+  owned value types size to it, so a buffer can never fall behind a type's
+  `encode()` width.
+- `EncodeError::GroupCountMismatch { declared, written }` — surfaced by a
+  generated `finish_group()` when the declared `NumInGroup` count does not match
+  the entries written (see Changed).
 
 ### Changed
 
@@ -46,8 +58,21 @@ contained.
   a single up-front capacity `assert!` (atomic, clearly-messaged failure)
   rather than panicking mid-write.
 - `nexus-ascii` is now a core (non-optional) dependency.
+- Generated `{Group}Enc::finish_group()` now returns
+  `Result<_, EncodeError>` instead of panicking on a declared-vs-written
+  `NumInGroup` count mismatch; the caller chooses the failure policy
+  (`EncodeError::GroupCountMismatch`).
 
 ### Fixed
+
+- Generated decoders now reject a present-but-empty CheckSum (`10=\x01`)
+  instead of silently skipping verification and accepting the message. The
+  verify gate keyed on a non-empty value (`is_present()`), so an empty tag 10
+  bypassed the check and diverged from `validate_checksum`; it now keys on the
+  field being present at all.
+- Generated encoder setters for `TZTimestamp` fields no longer panic at runtime.
+  `FixTzTimestamp::encode` needs 33 bytes but the owned-value scratch buffer was
+  32; it is now sized to `MAX_VALUE_ENCODE_LEN`.
 
 - `FixDecimal::Display` no longer panics at scale 19 (`10^19` overflows the
   `i64` divisor it used); it now divides in `u64` and carries the sign

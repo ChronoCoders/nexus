@@ -459,6 +459,89 @@ fn alpha_checksum_absent_is_ok() {
 }
 
 #[test]
+fn alpha_checksum_present_but_empty_is_rejected() {
+    // A present-but-empty CheckSum (`10=\x01`) is malformed: `decode` must reject
+    // it, not skip verification (which gating on a non-empty value would do). This
+    // keeps `decode` consistent with `validate_checksum`, which also rejects it.
+    let msg = b"8=FIX.4.4\x0135=0\x01112=HB\x0110=\x01";
+    match venue_alpha::messages::Heartbeat::decode(msg) {
+        Err(nexus_fix_codec::DecodeError::Checksum(_)) => {}
+        _ => panic!("expected Checksum error"),
+    }
+    assert!(nexus_fix_codec::validate_checksum(msg).is_err());
+}
+
+#[test]
+fn alpha_decode_unchecked_skips_checksum() {
+    // Same bad-checksum message (10=000) `alpha_checksum_invalid` rejects:
+    // `decode` errors, but `decode_unchecked` accepts it and parses the body —
+    // the trusted-feed fast path.
+    let body = b"8=FIX.4.4\x0135=0\x01112=HB\x0110=000\x01";
+    assert!(matches!(
+        venue_alpha::messages::Heartbeat::decode(body),
+        Err(nexus_fix_codec::DecodeError::Checksum(_))
+    ));
+    let m = venue_alpha::messages::Heartbeat::decode_unchecked(body).unwrap();
+    assert_eq!(m.test_req_id().unwrap().as_bytes(), &b"HB"[..]);
+}
+
+#[test]
+fn alpha_decode_stops_at_checksum_ignoring_trailing() {
+    // The body scan stops at the CheckSum terminator (tag 10): a field appended
+    // *after* tag 10 must not be parsed. Here a second 112 with a different value
+    // follows a valid CheckSum; the decoded test_req_id must be the pre-checksum
+    // one, and the (unchanged) checksum still validates.
+    let body = b"8=FIX.4.4\x0135=0\x01112=HB\x01";
+    let sum: u8 = body.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+    let mut msg = body.to_vec();
+    msg.extend_from_slice(format!("10={sum:03}\x01").as_bytes());
+    msg.extend_from_slice(b"112=EVIL\x01"); // trailing field after the terminator
+    let m = venue_alpha::messages::Heartbeat::decode(&msg).unwrap();
+    assert_eq!(m.test_req_id().unwrap().as_bytes(), &b"HB"[..]);
+}
+
+#[test]
+fn alpha_encode_buffer_full_errors() {
+    // A buffer too small for the framed message → finish() returns BufferFull,
+    // never panics.
+    let mut buf = [0u8; 24];
+    let result = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+        .header_encoder()
+        .sender_comp_id(b"SENDER")
+        .target_comp_id(b"TARGET")
+        .msg_seq_num(1)
+        .sending_time(sending_time())
+        .finish()
+        .cl_ord_id(b"ORD-12345")
+        .symbol(b"BTC-USD")
+        .finish();
+    assert_eq!(result, Err(nexus_fix_codec::EncodeError::BufferFull));
+}
+
+#[test]
+fn alpha_encode_undersized_reservation_shifts_and_stays_valid() {
+    // wrap_reserved with a prefix reservation too small for the BodyLength digits
+    // forces finish() to shift the content right; the message must stay valid.
+    let mut buf = [0u8; 256];
+    let msg = venue_alpha::encoders::NewOrderSingleEncoder::wrap_reserved(&mut buf, 14)
+        .header_encoder()
+        .sender_comp_id(b"SENDER")
+        .target_comp_id(b"TARGET")
+        .msg_seq_num(1)
+        .sending_time(sending_time())
+        .finish()
+        .cl_ord_id(b"ORD-12345")
+        .side(venue_alpha::fields::Side::BUY)
+        .symbol(b"BTC-USD")
+        .finish()
+        .unwrap();
+    assert!(msg.starts_with(b"8=FIX.4.4\x01"));
+    assert!(nexus_fix_codec::validate_checksum(msg).is_ok());
+    let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
+    assert_eq!(m.symbol().unwrap().as_bytes(), &b"BTC-USD"[..]);
+}
+
+#[test]
 fn alpha_exec_report_typed_and_raw_consistency() {
     let msg = b"37=ORD1\x0117=EX1\x01150=0\x0139=0\x0155=ETH\x0154=2\x0132=100\x0131=50.25\x01";
     let m = venue_alpha::messages::ExecutionReport::decode(msg).unwrap();
@@ -664,6 +747,7 @@ fn alpha_group_encode_round_trip() {
         .party_role(2)
         .done()
         .finish_group()
+        .unwrap()
         .symbol(b"BTC")
         .finish()
         .unwrap();
@@ -708,8 +792,10 @@ fn alpha_nested_group_encode_round_trip() {
         .party_sub_id_type(8)
         .done()
         .finish_group()
+        .unwrap()
         .done()
         .finish_group()
+        .unwrap()
         .symbol(b"BTC")
         .finish()
         .unwrap();
@@ -761,6 +847,7 @@ fn beta_group_encode_round_trip() {
         .md_entry_size(sz)
         .done()
         .finish_group()
+        .unwrap()
         .finish()
         .unwrap();
 
@@ -784,10 +871,12 @@ fn beta_group_encode_round_trip() {
 }
 
 #[test]
-#[should_panic(expected = "group count mismatch")]
-fn alpha_group_count_mismatch_panics() {
+fn alpha_group_count_mismatch_errors() {
+    // Declares 2 party entries but writes 1 → finish_group() returns
+    // EncodeError::GroupCountMismatch rather than panicking, so the caller
+    // chooses the failure policy.
     let mut buf = [0u8; 512];
-    venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+    let result = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
         .header_encoder()
         .sender_comp_id(b"S")
         .target_comp_id(b"T")
@@ -800,4 +889,11 @@ fn alpha_group_count_mismatch_panics() {
         .party_id(b"P1")
         .done()
         .finish_group();
+    assert!(matches!(
+        result,
+        Err(nexus_fix_codec::EncodeError::GroupCountMismatch {
+            declared: 2,
+            written: 1
+        })
+    ));
 }

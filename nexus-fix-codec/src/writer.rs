@@ -6,6 +6,19 @@
 //!
 //! Also provides [`encode_field`] as a standalone function for cases
 //! where the struct overhead isn't needed.
+//!
+//! # Buffer-too-small policy
+//!
+//! Two layers, two behaviors. [`FrameWriter`] — the user-facing message builder
+//! — **never panics** on a small buffer: an overflowing field poisons the writer
+//! and [`finish`](FrameWriter::finish) returns [`EncodeError::BufferFull`], so
+//! the caller owns the failure. The lower-level primitives ([`encode_field`] and
+//! the value-type `encode` methods like [`FixDecimal::encode`](crate::FixDecimal::encode))
+//! instead **assert** capacity up front — an internal contract that lets them
+//! write without per-byte bounds checks. Generated encoders only ever hand those
+//! primitives oversized scratch buffers (see
+//! [`MAX_VALUE_ENCODE_LEN`](crate::MAX_VALUE_ENCODE_LEN)), so the asserts are
+//! development tripwires, not a reachable failure mode on the happy path.
 
 use crate::EncodeError;
 

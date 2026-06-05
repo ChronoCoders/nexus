@@ -83,23 +83,26 @@ fn emit_wrap(
     data_handled: &HashSet<u32>,
     data_after: &HashMap<u32, &RField>,
 ) {
-    s.push_str(
-        "    pub fn wrap(header: super::header::HeaderDecoder<'buf>) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
-    );
-    s.push_str("        let mut m = Self {\n            header,\n");
+    // Build the shared decode body (struct init + field loop) once, then emit it
+    // into BOTH wrap_unchecked and wrap. The body is *duplicated* rather than
+    // factored into a shared call: a shared `wrap_unchecked()` call would return
+    // the (large) message struct by value, adding a struct move on the hot
+    // checked path. Each entry point builds the message in its own frame.
+    let mut body = String::new();
+    body.push_str("        let mut m = Self {\n            header,\n");
     let mut seen = HashSet::new();
     for t in tops {
         match t {
             Top::Field(f) if seen.insert(f.number) => {
                 let _ = writeln!(
-                    s,
+                    body,
                     "            {}: nexus_fix_codec::FieldSpan::EMPTY,",
                     snake(&f.name)
                 );
             }
             Top::Group(g) if seen.insert(g.number) => {
                 let _ = writeln!(
-                    s,
+                    body,
                     "            {}: nexus_fix_codec::GroupSpan::EMPTY,",
                     snake(&g.name)
                 );
@@ -107,8 +110,8 @@ fn emit_wrap(
             _ => {}
         }
     }
-    s.push_str("            checksum: nexus_fix_codec::FieldSpan::EMPTY,\n");
-    s.push_str("        };\n");
+    body.push_str("            checksum: nexus_fix_codec::FieldSpan::EMPTY,\n");
+    body.push_str("        };\n");
 
     let mut arms: Vec<(String, String)> = Vec::new();
     let mut seen_arm = HashSet::new();
@@ -137,14 +140,36 @@ fn emit_wrap(
     }
 
     if !arms.is_empty() {
-        let needs_buf = arms.iter().any(|(_, body)| body.contains("buf"));
+        let needs_buf = arms.iter().any(|(_, arm_body)| arm_body.contains("buf"));
         if needs_buf {
-            s.push_str("        let buf = m.header.reader.buf();\n");
+            body.push_str("        let buf = m.header.reader.buf();\n");
         }
-        emit_wrap_loop(s, &arms);
+        emit_wrap_loop(&mut body, &arms);
     }
 
-    s.push_str("        if m.checksum.is_present() {\n");
+    // wrap_unchecked: scan + dispatch, no checksum verification.
+    s.push_str("    /// Decode the message body **without** verifying the FIX checksum.\n");
+    s.push_str("    ///\n");
+    s.push_str("    /// For trusted feeds only — replay, internal links, already-validated\n");
+    s.push_str("    /// data. Prefer [`wrap`](Self::wrap) for counterparty data.\n");
+    s.push_str(
+        "    pub fn wrap_unchecked(header: super::header::HeaderDecoder<'buf>) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
+    );
+    s.push_str(&body);
+    s.push_str("        Ok(m)\n    }\n\n");
+
+    // wrap: same body, then verify the checksum.
+    s.push_str("    /// Decode the message body and verify the FIX checksum (tag 10).\n");
+    s.push_str(
+        "    pub fn wrap(header: super::header::HeaderDecoder<'buf>) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
+    );
+    s.push_str(&body);
+    // Verify the CheckSum iff tag 10 was *seen* (the span is no longer EMPTY),
+    // not iff it has a non-empty value. A present-but-empty CheckSum (`10=\x01`)
+    // is malformed and must be rejected; gating on `is_present()` (len > 0) would
+    // skip it and accept the message, diverging from `validate_checksum`. The
+    // empty value falls into `verify_checksum`, which rejects it.
+    s.push_str("        if m.checksum != nexus_fix_codec::FieldSpan::EMPTY {\n");
     s.push_str(
         "            m.header.reader.verify_checksum(m.checksum).map_err(nexus_fix_codec::DecodeError::Checksum)?;\n",
     );
@@ -153,33 +178,37 @@ fn emit_wrap(
 }
 
 fn emit_wrap_loop(s: &mut String, arms: &[(String, String)]) {
-    // Drain overflow field from header, then continue the reader
-    s.push_str("        loop {\n");
-    s.push_str("            let f = if let Some(of) = m.header.overflow.take() {\n");
-    s.push_str("                of\n");
-    s.push_str("            } else {\n");
-    s.push_str("                match m.header.reader.next_field() {\n");
-    s.push_str("                    Some(f) => f,\n");
-    s.push_str("                    None => break,\n");
-    s.push_str("                }\n");
-    s.push_str("            };\n");
-
+    // The header stopped at the first body field without consuming it; scan on.
+    s.push_str("        while let Some(f) = m.header.reader.next_field() {\n");
     s.push_str("            match f.tag {\n");
     for (tag, body) in arms {
         let _ = writeln!(s, "                super::fields::TAG_{tag} => {{");
         s.push_str(body);
         s.push_str("                }\n");
     }
-    s.push_str("                10 => m.checksum = f.value,\n");
+    // CheckSum (tag 10) is the FIX message terminator. Record it and stop —
+    // anything after it is trailing data, not part of this message, and must not
+    // be scanned into field spans.
+    s.push_str("                10 => {\n");
+    s.push_str("                    m.checksum = f.value;\n");
+    s.push_str("                    break;\n");
+    s.push_str("                }\n");
     s.push_str("                _ => {}\n            }\n");
     s.push_str("        }\n");
 }
 
 fn emit_decode(s: &mut String) {
+    s.push_str("    /// Decode the message and verify the FIX checksum (tag 10).\n");
     s.push_str(
         "    pub fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
     );
     s.push_str("        Self::wrap(super::header::HeaderDecoder::decode(buf))\n");
+    s.push_str("    }\n\n");
+    s.push_str("    /// Decode **without** verifying the FIX checksum — for trusted feeds.\n");
+    s.push_str(
+        "    pub fn decode_unchecked(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
+    );
+    s.push_str("        Self::wrap_unchecked(super::header::HeaderDecoder::decode(buf))\n");
     s.push_str("    }\n\n");
 }
 
@@ -196,10 +225,9 @@ fn data_body(len: &RField, data: &RField) -> String {
         "                m.{} = nexus_fix_codec::FieldSpan::new(vstart as u32, dlen as u32);",
         snake(&data.name)
     );
-    // Skip past the DATA value (which may contain SOH bytes) without dropping
-    // the reader: `resync_after_data` keeps the running checksum and folds in
-    // the skipped bytes in place. A fresh `FieldReader::new` here would reset
-    // the accumulator and lose every field before the DATA field.
+    // Skip past the DATA value (which may contain SOH bytes) by repositioning
+    // the reader. The checksum is a separate pass, so there is no accumulator to
+    // keep in sync — `resync_after_data` is a pure jump.
     b.push_str("                let dend = (vstart + dlen + 1).min(buf.len());\n");
     b.push_str("                m.header.reader.resync_after_data(dend);\n");
     b
@@ -218,17 +246,12 @@ fn group_body(g: &RGroup) -> String {
         "                m.{} = nexus_fix_codec::GroupSpan::new(m.header.reader.pos() as u32, count.min(u16::MAX as u32) as u16);",
         snake(&g.name)
     );
-    b.push_str("                loop {\n");
-    b.push_str("                    match m.header.reader.next_field() {\n");
+    // Consume group fields; stop *without* consuming the first non-group field
+    // (forward-only peek) so the outer loop reads it with no re-scan.
     let _ = writeln!(
         b,
-        "                        Some(gf) if matches!(gf.tag, {pat}) => {{}}"
+        "                while m.header.reader.next_field_if(|tag| matches!(tag, {pat})).is_some() {{}}"
     );
-    b.push_str("                        other => {\n");
-    b.push_str("                            m.header.overflow = other;\n");
-    b.push_str("                            break;\n");
-    b.push_str("                        }\n");
-    b.push_str("                    }\n                }\n");
     b
 }
 
