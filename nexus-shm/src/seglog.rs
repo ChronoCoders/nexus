@@ -329,8 +329,8 @@ mod tests {
         // footprint(8) = 16; 4 records = 64 bytes; segment_size = 64
         let mut log = open(&b, 64);
         let o0 = log.append(&[0u8; 8]).unwrap();
-        let o1 = log.append(&[1u8; 8]).unwrap();
-        let o2 = log.append(&[2u8; 8]).unwrap();
+        let _o1 = log.append(&[1u8; 8]).unwrap();
+        let _o2 = log.append(&[2u8; 8]).unwrap();
         let o3 = log.append(&[3u8; 8]).unwrap();
         // cursor now == 64 == segment_size → next append triggers rotation
         let o4 = log.append(&[4u8; 8]).unwrap();
