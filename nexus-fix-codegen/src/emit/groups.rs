@@ -44,6 +44,7 @@ fn emit_group(s: &mut String, prefix: &str, g: &RGroup) {
     );
 
     emit_entry(s, &base, &entry, g);
+    emit_view(s, &base, &iter, &entry);
 
     for mem in &g.members {
         if let RMember::Group(inner) = mem {
@@ -171,14 +172,40 @@ fn nested_body(inner: &RGroup) -> String {
     b
 }
 
+fn emit_view(s: &mut String, base: &str, iter: &str, entry: &str) {
+    let view = format!("{base}View");
+    let _ = writeln!(
+        s,
+        "pub struct {view}<'buf> {{\n    iter: {iter}<'buf>,\n    count: u16,\n}}\n"
+    );
+    let _ = writeln!(s, "impl<'buf> {view}<'buf> {{");
+    let _ = write!(
+        s,
+        "    pub fn new(buf: &'buf [u8], span: nexus_fix_codec::GroupSpan) -> Self {{\n        \
+         Self {{ iter: {iter}::new(buf, span), count: span.count }}\n    }}\n\n"
+    );
+    s.push_str("    pub fn len(&self) -> u16 {\n        self.count\n    }\n\n");
+    s.push_str("    pub fn is_empty(&self) -> bool {\n        self.count == 0\n    }\n");
+    s.push_str("}\n\n");
+    let _ = writeln!(
+        s,
+        "impl<'buf> Iterator for {view}<'buf> {{\n    type Item = {entry}<'buf>;"
+    );
+    let _ = write!(
+        s,
+        "    fn next(&mut self) -> Option<Self::Item> {{\n        \
+         self.iter.next()\n    }}\n}}\n\n"
+    );
+}
+
 fn emit_entry_accessors(s: &mut String, base: &str, g: &RGroup) {
     let mut seen = HashSet::new();
     for mem in &g.members {
         match mem {
-            RMember::Field(f) if seen.insert(f.number) => emit_value_accessor(s, f),
+            RMember::Field(f) if seen.insert(f.number) => emit_value_accessor(s, f, "self.buf"),
             RMember::Group(inner) if seen.insert(inner.number) => {
-                let iter = format!("{}Iter", group_type(base, &inner.name));
-                emit_group_accessor(s, &snake(&inner.name), &iter);
+                let view = format!("{}View", group_type(base, &inner.name));
+                emit_group_accessor(s, &snake(&inner.name), &view, "self.buf");
             }
             _ => {}
         }

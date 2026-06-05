@@ -4,7 +4,7 @@ use quick_xml::events::attributes::AttrError;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 
-use super::{Dictionary, EnumValue, FieldDef, FieldType, GroupDef, Member, MessageDef};
+use super::{Dictionary, EnumValue, FieldDef, FieldType, GroupDef, Member, MessageDef, MsgCat};
 
 #[derive(Debug)]
 pub enum ParseError {
@@ -49,6 +49,8 @@ pub fn parse(xml: &str) -> Result<Dictionary, ParseError> {
 
     let mut major = String::new();
     let mut minor = String::new();
+    let mut header = Vec::new();
+    let mut trailer = Vec::new();
     let mut fields = Vec::new();
     let mut components = Vec::new();
     let mut messages = Vec::new();
@@ -65,7 +67,8 @@ pub fn parse(xml: &str) -> Result<Dictionary, ParseError> {
                 b"fields" => fields = read_fields(&mut reader)?,
                 b"components" => components = read_components(&mut reader)?,
                 b"messages" => messages = read_messages(&mut reader)?,
-                b"header" | b"trailer" => skip_to_end(&mut reader, e.name().as_ref())?,
+                b"header" => header = read_members(&mut reader, b"header")?,
+                b"trailer" => trailer = read_members(&mut reader, b"trailer")?,
                 _ => {}
             },
             Event::Eof => break,
@@ -79,6 +82,8 @@ pub fn parse(xml: &str) -> Result<Dictionary, ParseError> {
     Ok(Dictionary {
         major,
         minor,
+        header,
+        trailer,
         fields,
         components,
         messages,
@@ -109,7 +114,7 @@ fn field_def(e: &BytesStart, values: Vec<EnumValue>) -> Result<FieldDef, ParseEr
     let number = number_str
         .parse::<u32>()
         .map_err(|_| ParseError::BadNumber(number_str))?;
-    let ftype = opt_attr(e, "type")?.map_or(FieldType::Ascii, |t| FieldType::from_str(&t));
+    let ftype = opt_attr(e, "type")?.map_or(FieldType::String, |t| FieldType::from_str(&t));
     Ok(FieldDef {
         number,
         name: req_attr(e, "name")?,
@@ -160,10 +165,15 @@ fn read_messages(reader: &mut Reader<&[u8]>) -> Result<Vec<MessageDef>, ParseErr
             Event::Start(e) if e.name().as_ref() == b"message" => {
                 let name = req_attr(&e, "name")?;
                 let msgtype = req_attr(&e, "msgtype")?;
+                let msgcat = match opt_attr(&e, "msgcat")?.as_deref() {
+                    Some("admin") => MsgCat::Admin,
+                    _ => MsgCat::App,
+                };
                 let members = read_members(reader, b"message")?;
                 out.push(MessageDef {
                     name,
                     msgtype,
+                    msgcat,
                     members,
                 });
             }

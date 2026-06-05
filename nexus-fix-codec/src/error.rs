@@ -64,14 +64,15 @@ impl fmt::Display for ChecksumError {
 
 impl std::error::Error for ChecksumError {}
 
-/// Value-level parse failure.
+/// Value-level failure producing a typed field value.
 ///
-/// Returned when a field's value bytes are present but cannot be parsed
-/// into the requested type. This is distinct from two other concerns:
-/// frame-structure errors ([`DecodeError`]) and field *absence* — an
-/// optional field that simply was not sent is modeled as `Option` at the
-/// lookup layer, never as an error here. A present-but-empty value
-/// (`44=\x01`) is [`FixValueError::Empty`], not absence.
+/// Distinct from frame-structure errors ([`DecodeError`]) and from field
+/// *absence*. The bare value parsers (`parse_fix_*`, `FixDecimal::parse`, ...)
+/// are handed a present field's bytes, so they report only *content* problems
+/// (a present-but-empty value `44=\x01` is [`Empty`](Self::Empty)). Absence is
+/// not represented here at all: the generated accessors return an
+/// `Option<FieldView>` (see [`FieldView`](crate::FieldView)), so a missing
+/// field is `None`, never an error — presence and validity are separate axes.
 ///
 /// `Copy` and allocation-free; an error value is only constructed on the
 /// cold failure path, so it costs nothing on a successful parse.
@@ -108,6 +109,29 @@ impl fmt::Display for FixValueError {
 }
 
 impl std::error::Error for FixValueError {}
+
+/// Error encoding a FIX message.
+///
+/// Encoding writes typed values into a caller-provided buffer; the only way it
+/// fails is running out of room. Distinct from the *decode*-side errors
+/// ([`DecodeError`] for frame structure, [`FixValueError`] for field values).
+/// `Copy` and allocation-free.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EncodeError {
+    /// The buffer was too small to hold the complete framed message.
+    BufferFull,
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::BufferFull => "buffer too small for encoded message",
+        })
+    }
+}
+
+impl std::error::Error for EncodeError {}
 
 #[cfg(test)]
 mod tests {
@@ -198,6 +222,14 @@ mod tests {
         assert_eq!(
             FixValueError::NotPrintable.to_string(),
             "non-printable byte in text field"
+        );
+    }
+
+    #[test]
+    fn encode_error_display() {
+        assert_eq!(
+            EncodeError::BufferFull.to_string(),
+            "buffer too small for encoded message"
         );
     }
 }

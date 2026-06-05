@@ -74,6 +74,36 @@ impl<'a> FieldReader<'a> {
         }
     }
 
+    /// Resume scanning at `data_end`, having consumed a length-prefixed DATA
+    /// field whose value may contain SOH bytes.
+    ///
+    /// A DATA field can't be SOH-scanned (its value contains SOH), so generated
+    /// decoders compute its end from the preceding length and jump past it. The
+    /// running checksum must still cover every skipped byte. This corrects the
+    /// accumulator **in place** — single pass, each byte summed once — rather
+    /// than rescanning the prefix: the reader holds the invariant
+    /// `checksum == sum(buf[..scan_pos])` (the SIMD scan folds whole chunks in
+    /// and advances `scan_pos` to the chunk boundary), so we only fold the
+    /// short stretch between `scan_pos` and `data_end`, adding or subtracting to
+    /// undo any chunk-ahead overshoot.
+    #[inline]
+    pub fn resync_after_data(&mut self, data_end: usize) {
+        let end = data_end.min(self.buf.len());
+        if end >= self.scan_pos {
+            for &b in &self.buf[self.scan_pos..end] {
+                self.checksum = self.checksum.wrapping_add(u32::from(b));
+            }
+        } else {
+            for &b in &self.buf[end..self.scan_pos] {
+                self.checksum = self.checksum.wrapping_sub(u32::from(b));
+            }
+        }
+        self.field_start = end;
+        self.scan_pos = end;
+        self.soh_mask = 0;
+        self.mask_base = 0;
+    }
+
     /// FIX checksum: byte sum mod 256 of all scanned bytes, excluding
     /// the checksum field itself (`10=XXX\x01`).
     ///
@@ -85,10 +115,34 @@ impl<'a> FieldReader<'a> {
         (self.checksum & 0xFF) as u8
     }
 
+    /// The underlying message buffer.
+    #[inline]
+    pub fn buf(&self) -> &'a [u8] {
+        self.buf
+    }
+
     /// Where the next field would start (after the last SOH + 1).
     #[inline]
     pub fn pos(&self) -> usize {
         self.field_start
+    }
+
+    /// Validate the accumulated checksum against a tag 10 field value.
+    ///
+    /// Parses the 3-digit ASCII value from `checksum_span` and compares
+    /// it to the running byte sum. Only meaningful after a complete scan.
+    pub fn verify_checksum(&self, checksum_span: FieldSpan) -> Result<(), ChecksumError> {
+        let computed = self.checksum();
+        match parse_checksum_bytes(checksum_span.slice(self.buf)) {
+            Some(expected) if expected == computed => Ok(()),
+            Some(expected) => Err(ChecksumError { expected, computed }),
+            // Malformed CheckSum field (not three digits): reject regardless of
+            // `computed`. `expected` is a placeholder — there is no valid value.
+            None => Err(ChecksumError {
+                expected: 0,
+                computed,
+            }),
+        }
     }
 
     /// Parse the next `tag=value\x01` field.
@@ -203,25 +257,35 @@ pub fn validate_checksum(msg: &[u8]) -> Result<(), ChecksumError> {
         return Ok(());
     };
 
-    let expected = parse_checksum_bytes(span.slice(msg));
     let computed = parser.checksum();
-    if expected == computed {
-        Ok(())
-    } else {
-        Err(ChecksumError { expected, computed })
+    match parse_checksum_bytes(span.slice(msg)) {
+        Some(expected) if expected == computed => Ok(()),
+        Some(expected) => Err(ChecksumError { expected, computed }),
+        None => Err(ChecksumError {
+            expected: 0,
+            computed,
+        }),
     }
 }
 
-fn parse_checksum_bytes(bytes: &[u8]) -> u8 {
+/// Parse a FIX CheckSum (tag 10) value: exactly three ASCII digits.
+///
+/// Returns `None` for anything else. A malformed CheckSum must be rejected
+/// deterministically — silently coercing it to `0` could collide with a
+/// genuine `0` computed checksum and false-accept an invalid message.
+fn parse_checksum_bytes(bytes: &[u8]) -> Option<u8> {
+    if bytes.len() != 3 {
+        return None;
+    }
     let mut val = 0u32;
     for &b in bytes {
         let digit = b.wrapping_sub(b'0');
         if digit > 9 {
-            return 0;
+            return None;
         }
         val = val * 10 + digit as u32;
     }
-    (val & 0xFF) as u8
+    Some((val & 0xFF) as u8)
 }
 
 // =============================================================================
@@ -798,9 +862,48 @@ mod tests {
     #[test]
     fn validate_checksum_malformed_tag10() {
         let msg = b"35=D\x0110=XYZ\x01";
-        let result = validate_checksum(msg);
-        // parse_checksum_bytes on non-digits wraps around, producing a mismatch
-        assert!(result.is_err());
+        // A non-digit CheckSum is malformed → rejected deterministically.
+        assert!(validate_checksum(msg).is_err());
+    }
+
+    #[test]
+    fn parse_checksum_bytes_rejects_malformed() {
+        // Malformed CheckSum is `None` — distinct from a genuine `Some(0)` — so
+        // it can never false-accept by colliding with a `0` computed checksum.
+        assert_eq!(parse_checksum_bytes(b"178"), Some(178));
+        assert_eq!(parse_checksum_bytes(b"000"), Some(0));
+        assert_eq!(parse_checksum_bytes(b"XYZ"), None); // non-digit
+        assert_eq!(parse_checksum_bytes(b"12"), None); // too short
+        assert_eq!(parse_checksum_bytes(b"1234"), None); // too long
+    }
+
+    #[test]
+    fn resync_after_data_keeps_checksum_exact() {
+        // The generated DATA-field skip relies on `resync_after_data` keeping the
+        // running checksum exact across an in-place jump past an embedded-SOH
+        // value. (Regression: replacing the reader reset the accumulator to 0.)
+        // value "a\x01b\x01c" — 5 bytes, two embedded SOH.
+        let msg = b"8=FIX.4.4\x0195=5\x0196=a\x01b\x01c\x0155=X\x01";
+
+        let mut r = FieldReader::new(msg, 0);
+        r.next_field(); // 8=
+        let f95 = r.next_field().unwrap();
+        assert_eq!(f95.tag, 95);
+
+        // Compute the DATA value end the way the generated code does, then skip.
+        let dstart = r.pos();
+        let (_, dtl) = parse_tag(&msg[dstart..]);
+        let vstart = dstart + dtl + 1;
+        let dend = vstart + 5 + 1; // value(5) + trailing SOH
+        r.resync_after_data(dend);
+
+        let f55 = r.next_field().unwrap();
+        assert_eq!(f55.tag, 55);
+        assert_eq!(f55.value.slice(msg), b"X");
+        assert!(r.next_field().is_none());
+
+        // No tag 10 here, so the accumulator must equal the whole-message sum.
+        assert_eq!(r.checksum(), checksum(msg));
     }
 
     // =========================================================================

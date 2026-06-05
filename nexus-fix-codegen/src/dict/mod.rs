@@ -10,7 +10,19 @@ pub enum FieldType {
     Int,
     SeqNum,
     Bool,
-    Ascii,
+    String,
+    Char,
+    Float,
+    Timestamp,
+    Date,
+    Time,
+    MonthYear,
+    DayOfMonth,
+    TzTime,
+    TzTimestamp,
+    Tenor,
+    MultiChar,
+    MultiString,
 }
 
 impl FieldType {
@@ -22,7 +34,21 @@ impl FieldType {
             "INT" => Self::Int,
             "SEQNUM" => Self::SeqNum,
             "BOOLEAN" => Self::Bool,
-            _ => Self::Ascii,
+            "CHAR" => Self::Char,
+            "FLOAT" | "PRICE" | "QTY" | "AMT" | "PERCENTAGE" | "PRICEOFFSET" => Self::Float,
+            "UTCTIMESTAMP" => Self::Timestamp,
+            "UTCDATEONLY" | "LOCALMKTDATE" => Self::Date,
+            "UTCTIMEONLY" => Self::Time,
+            "MONTHYEAR" => Self::MonthYear,
+            "DAYOFMONTH" => Self::DayOfMonth,
+            "TZTIMEONLY" => Self::TzTime,
+            "TZTIMESTAMP" => Self::TzTimestamp,
+            "TENOR" => Self::Tenor,
+            "MULTIPLECHARVALUE" => Self::MultiChar,
+            // MULTIPLEVALUESTRING is FIX 4.2's name for what 5.0 calls
+            // MULTIPLESTRINGVALUE — space-delimited strings, not single chars.
+            "MULTIPLESTRINGVALUE" | "MULTIPLEVALUESTRING" => Self::MultiString,
+            _ => Self::String,
         }
     }
 }
@@ -65,10 +91,17 @@ pub struct GroupDef {
     pub members: Vec<Member>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MsgCat {
+    Admin,
+    App,
+}
+
 #[derive(Debug, Clone)]
 pub struct MessageDef {
     pub name: String,
     pub msgtype: String,
+    pub msgcat: MsgCat,
     pub members: Vec<Member>,
 }
 
@@ -76,6 +109,9 @@ pub struct MessageDef {
 pub struct Dictionary {
     pub major: String,
     pub minor: String,
+    pub header: Vec<Member>,
+    #[allow(dead_code)]
+    pub trailer: Vec<Member>,
     pub fields: Vec<FieldDef>,
     pub components: Vec<(String, Vec<Member>)>,
     pub messages: Vec<MessageDef>,
