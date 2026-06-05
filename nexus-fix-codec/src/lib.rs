@@ -36,10 +36,10 @@ pub use scan::DelimiterScanner;
 pub use span::{FieldSpan, GroupSpan};
 pub use types::{
     FixDate, FixDecimal, FixMonthYear, FixTenor, FixTime, FixTimestamp, FixTzTime, FixTzTimestamp,
-    TenorUnit, encode_fix_bool, encode_fix_char, encode_fix_int, encode_fix_seqnum,
-    encode_fix_text, encode_fix_uint, parse_fix_bool, parse_fix_char, parse_fix_day_of_month,
-    parse_fix_int, parse_fix_multi_char, parse_fix_multi_string, parse_fix_seqnum, parse_fix_text,
-    parse_fix_uint,
+    MAX_VALUE_ENCODE_LEN, TenorUnit, encode_fix_bool, encode_fix_char, encode_fix_int,
+    encode_fix_seqnum, encode_fix_text, encode_fix_uint, parse_fix_bool, parse_fix_char,
+    parse_fix_day_of_month, parse_fix_int, parse_fix_multi_char, parse_fix_multi_string,
+    parse_fix_seqnum, parse_fix_text, parse_fix_uint,
 };
 pub use writer::{FieldWriter, FrameWriter, FromFrame, encode_field, format_checksum};
 

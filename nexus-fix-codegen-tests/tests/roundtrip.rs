@@ -459,6 +459,19 @@ fn alpha_checksum_absent_is_ok() {
 }
 
 #[test]
+fn alpha_checksum_present_but_empty_is_rejected() {
+    // A present-but-empty CheckSum (`10=\x01`) is malformed: `decode` must reject
+    // it, not skip verification (which gating on a non-empty value would do). This
+    // keeps `decode` consistent with `validate_checksum`, which also rejects it.
+    let msg = b"8=FIX.4.4\x0135=0\x01112=HB\x0110=\x01";
+    match venue_alpha::messages::Heartbeat::decode(msg) {
+        Err(nexus_fix_codec::DecodeError::Checksum(_)) => {}
+        _ => panic!("expected Checksum error"),
+    }
+    assert!(nexus_fix_codec::validate_checksum(msg).is_err());
+}
+
+#[test]
 fn alpha_decode_unchecked_skips_checksum() {
     // Same bad-checksum message (10=000) `alpha_checksum_invalid` rejects:
     // `decode` errors, but `decode_unchecked` accepts it and parses the body —
@@ -678,6 +691,7 @@ fn alpha_group_encode_round_trip() {
         .party_role(2)
         .done()
         .finish_group()
+        .unwrap()
         .symbol(b"BTC")
         .finish()
         .unwrap();
@@ -722,8 +736,10 @@ fn alpha_nested_group_encode_round_trip() {
         .party_sub_id_type(8)
         .done()
         .finish_group()
+        .unwrap()
         .done()
         .finish_group()
+        .unwrap()
         .symbol(b"BTC")
         .finish()
         .unwrap();
@@ -775,6 +791,7 @@ fn beta_group_encode_round_trip() {
         .md_entry_size(sz)
         .done()
         .finish_group()
+        .unwrap()
         .finish()
         .unwrap();
 
@@ -798,10 +815,12 @@ fn beta_group_encode_round_trip() {
 }
 
 #[test]
-#[should_panic(expected = "group count mismatch")]
-fn alpha_group_count_mismatch_panics() {
+fn alpha_group_count_mismatch_errors() {
+    // Declares 2 party entries but writes 1 → finish_group() returns
+    // EncodeError::GroupCountMismatch rather than panicking, so the caller
+    // chooses the failure policy.
     let mut buf = [0u8; 512];
-    venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+    let result = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
         .header_encoder()
         .sender_comp_id(b"S")
         .target_comp_id(b"T")
@@ -814,4 +833,11 @@ fn alpha_group_count_mismatch_panics() {
         .party_id(b"P1")
         .done()
         .finish_group();
+    assert!(matches!(
+        result,
+        Err(nexus_fix_codec::EncodeError::GroupCountMismatch {
+            declared: 2,
+            written: 1
+        })
+    ));
 }

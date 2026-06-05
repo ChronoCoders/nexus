@@ -11,6 +11,16 @@ use super::{
 /// Tags owned by FrameWriter — excluded from the header encoder typestate.
 const FRAME_TAGS: &[u32] = &[8, 9, 10, 35];
 
+// Scratch-buffer widths emitted into generated setters, sized to each kind's
+// worst-case wire width so a buffer can never fall behind the value it encodes.
+// The integer widths are fixed by the source type; the owned value types
+// (decimal/timestamp/date/…) are sized to `nexus_fix_codec::MAX_VALUE_ENCODE_LEN`
+// (emitted via `BUF_ENCODED`) so the codec stays the single source of truth.
+const BUF_U32: usize = 10; // u32 -> encode_fix_uint   (≤ 10 digits)
+const BUF_I64: usize = 20; // i64 -> encode_fix_int    (sign + 19 digits)
+const BUF_U64: usize = 20; // u64 -> encode_fix_seqnum (≤ 20 digits)
+const BUF_ENCODED: &str = "nexus_fix_codec::MAX_VALUE_ENCODE_LEN"; // owned value types
+
 pub fn emit(messages: &[RMessage], header_fields: &[RField]) -> String {
     let mut s = String::new();
     s.push_str(HEADER);
@@ -162,7 +172,7 @@ fn emit_header_setter(s: &mut String, f: &EncHeaderField, next: usize) {
         HStyle::Int => (
             "i64".to_string(),
             format!(
-                "let mut tmp = [0u8; 20];\n        \
+                "let mut tmp = [0u8; {BUF_I64}];\n        \
                  let n = nexus_fix_codec::encode_fix_int(value, &mut tmp);\n        \
                  self.frame.field({tag}, &tmp[..n]);"
             ),
@@ -170,7 +180,7 @@ fn emit_header_setter(s: &mut String, f: &EncHeaderField, next: usize) {
         HStyle::SeqNum => (
             "u64".to_string(),
             format!(
-                "let mut tmp = [0u8; 20];\n        \
+                "let mut tmp = [0u8; {BUF_U64}];\n        \
                  let n = nexus_fix_codec::encode_fix_seqnum(value, &mut tmp);\n        \
                  self.frame.field({tag}, &tmp[..n]);"
             ),
@@ -178,7 +188,7 @@ fn emit_header_setter(s: &mut String, f: &EncHeaderField, next: usize) {
         HStyle::Uint => (
             "u32".to_string(),
             format!(
-                "let mut tmp = [0u8; 10];\n        \
+                "let mut tmp = [0u8; {BUF_U32}];\n        \
                  let n = nexus_fix_codec::encode_fix_uint(value, &mut tmp);\n        \
                  self.frame.field({tag}, &tmp[..n]);"
             ),
@@ -186,7 +196,7 @@ fn emit_header_setter(s: &mut String, f: &EncHeaderField, next: usize) {
         HStyle::Timestamp => (
             "nexus_fix_codec::FixTimestamp".to_string(),
             format!(
-                "let mut tmp = [0u8; 32];\n        \
+                "let mut tmp = [0u8; {BUF_ENCODED}];\n        \
                  let n = value.encode(&mut tmp);\n        \
                  self.frame.field({tag}, &tmp[..n]);"
             ),
@@ -196,7 +206,7 @@ fn emit_header_setter(s: &mut String, f: &EncHeaderField, next: usize) {
             (
                 param.to_string(),
                 format!(
-                    "let mut tmp = [0u8; 32];\n        \
+                    "let mut tmp = [0u8; {BUF_ENCODED}];\n        \
                      let n = value.encode(&mut tmp);\n        \
                      self.frame.field({tag}, &tmp[..n]);"
                 ),
@@ -305,8 +315,14 @@ fn emit_encoder(s: &mut String, m: &RMessage) {
     }
 
     s.push_str(
-        "    /// Finish the message: write `9=<canonical>` and the checksum,\n    \
-         /// returning the framed message slice.\n    \
+        "    /// Finish the message: write `8=`/`9=<canonical BodyLength>` and the\n    \
+         /// `10=<checksum>` trailer, returning the framed message slice.\n    \
+         ///\n    \
+         /// The returned slice may start a few bytes into the buffer (the\n    \
+         /// `8=…9=…` prefix is right-aligned), so transmit exactly the returned\n    \
+         /// slice — not the whole buffer. Returns\n    \
+         /// [`EncodeError::BufferFull`](nexus_fix_codec::EncodeError) if any\n    \
+         /// field, the prefix, or the checksum did not fit.\n    \
          pub fn finish(self) -> Result<&'buf [u8], nexus_fix_codec::EncodeError> {\n        \
          self.frame.finish()\n    }\n}\n\n",
     );
@@ -381,12 +397,25 @@ fn body_encode(kind: AccKind, tag: &str) -> String {
         AccKind::Bool => {
             format!("self.frame.field({tag}, &[nexus_fix_codec::encode_fix_bool(value)]);")
         }
-        AccKind::I64 => scratch_encode(tag, "nexus_fix_codec::encode_fix_int(value, &mut tmp)"),
-        AccKind::U32 => scratch_encode(tag, "nexus_fix_codec::encode_fix_uint(value, &mut tmp)"),
-        AccKind::U64 => scratch_encode(tag, "nexus_fix_codec::encode_fix_seqnum(value, &mut tmp)"),
+        AccKind::I64 => scratch_encode(
+            tag,
+            "nexus_fix_codec::encode_fix_int(value, &mut tmp)",
+            &BUF_I64.to_string(),
+        ),
+        AccKind::U32 => scratch_encode(
+            tag,
+            "nexus_fix_codec::encode_fix_uint(value, &mut tmp)",
+            &BUF_U32.to_string(),
+        ),
+        AccKind::U64 => scratch_encode(
+            tag,
+            "nexus_fix_codec::encode_fix_seqnum(value, &mut tmp)",
+            &BUF_U64.to_string(),
+        ),
         AccKind::DayOfMonth => scratch_encode(
             tag,
             "nexus_fix_codec::encode_fix_uint(u32::from(value), &mut tmp)",
+            &BUF_U32.to_string(),
         ),
         // Owned value types with an inherent `encode(&mut [u8]) -> usize`.
         AccKind::Decimal
@@ -396,14 +425,17 @@ fn body_encode(kind: AccKind, tag: &str) -> String {
         | AccKind::MonthYear
         | AccKind::TzTime
         | AccKind::TzTimestamp
-        | AccKind::Tenor => scratch_encode(tag, "value.encode(&mut tmp)"),
+        | AccKind::Tenor => scratch_encode(tag, "value.encode(&mut tmp)", BUF_ENCODED),
         AccKind::Bytes | AccKind::Text => unreachable!("bytes/text handled before body_encode"),
     }
 }
 
-fn scratch_encode(tag: &str, call: &str) -> String {
+/// Emit `let tmp = [0u8; <buf>]; let n = <call>; self.frame.field(<tag>, &tmp[..n]);`.
+/// `buf` is the scratch size as it should appear in source — a literal width for
+/// the integer kinds, or `nexus_fix_codec::MAX_VALUE_ENCODE_LEN` for owned types.
+fn scratch_encode(tag: &str, call: &str, buf: &str) -> String {
     format!(
-        "let mut tmp = [0u8; 32];\n        \
+        "let mut tmp = [0u8; {buf}];\n        \
          let n = {call};\n        \
          self.frame.field({tag}, &tmp[..n]);"
     )
@@ -417,7 +449,7 @@ fn emit_data_setter(s: &mut String, len: &RField, data: &RField) {
     let _ = write!(
         s,
         "    pub fn {name}(mut self, value: &[u8]) -> Self {{\n        \
-         let mut tmp = [0u8; 20];\n        \
+         let mut tmp = [0u8; {BUF_U32}];\n        \
          let n = nexus_fix_codec::encode_fix_uint(value.len() as u32, &mut tmp);\n        \
          self.frame.field({len_tag}, &tmp[..n]);\n        \
          self.frame.field({data_tag}, value);\n        self\n    }}\n\n"
@@ -435,7 +467,7 @@ fn emit_body_group_entry(s: &mut String, g: &RGroup, group_enc: &str) {
     let _ = write!(
         s,
         "    pub fn {name}(mut self, count: u16) -> {group_enc}<'buf> {{\n        \
-         let mut tmp = [0u8; 10];\n        \
+         let mut tmp = [0u8; {BUF_U32}];\n        \
          let n = nexus_fix_codec::encode_fix_uint(u32::from(count), &mut tmp);\n        \
          self.frame.field({tag}, &tmp[..n]);\n        \
          {group_enc} {{ frame: self.frame, declared: count, written: 0 }}\n    \
@@ -497,12 +529,18 @@ fn emit_group_encoder_set(
     }
     s.push_str("        }\n    }\n\n");
 
-    // finish_group()
+    // finish_group(): validate that the declared NumInGroup count matches the
+    // entries written, returning EncodeError::GroupCountMismatch rather than
+    // panicking so the caller chooses the failure policy.
     let _ = write!(
         s,
-        "    pub fn finish_group(self) -> {return_type}<'buf> {{\n        \
-         assert_eq!(self.declared, self.written, \"group count mismatch\");\n        \
-         {return_type} {{\n            \
+        "    pub fn finish_group(self) -> Result<{return_type}<'buf>, nexus_fix_codec::EncodeError> {{\n        \
+         if self.declared != self.written {{\n            \
+         return Err(nexus_fix_codec::EncodeError::GroupCountMismatch {{\n                \
+         declared: self.declared,\n                \
+         written: self.written,\n            \
+         }});\n        }}\n        \
+         Ok({return_type} {{\n            \
          frame: self.frame,\n"
     );
     if depth > 0 {
@@ -520,7 +558,7 @@ fn emit_group_encoder_set(
             );
         }
     }
-    s.push_str("        }\n    }\n");
+    s.push_str("        })\n    }\n");
     s.push_str("}\n\n");
 
     // --- EntryEnc struct ---
@@ -594,7 +632,7 @@ fn emit_nested_group_entry(s: &mut String, g: &RGroup, group_enc: &str, caller_d
     let _ = write!(
         s,
         "    pub fn {name}(mut self, count: u16) -> {group_enc}<'buf> {{\n        \
-         let mut tmp = [0u8; 10];\n        \
+         let mut tmp = [0u8; {BUF_U32}];\n        \
          let n = nexus_fix_codec::encode_fix_uint(u32::from(count), &mut tmp);\n        \
          self.frame.field({tag}, &tmp[..n]);\n        \
          {group_enc} {{\n            \

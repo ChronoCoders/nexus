@@ -83,6 +83,7 @@ fn build_alpha_nos_with_groups() -> Vec<u8> {
         .party_role(2)
         .done()
         .finish_group()
+        .unwrap()
         .symbol(b"BTC-USD")
         .finish()
         .unwrap();
@@ -137,6 +138,7 @@ fn build_beta_md_with_groups() -> Vec<u8> {
         .md_entry_size(sz)
         .done()
         .finish_group()
+        .unwrap()
         .finish()
         .unwrap();
     msg.to_vec()
@@ -253,6 +255,7 @@ fn main() {
             .party_role(2)
             .done()
             .finish_group()
+            .unwrap()
             .symbol(b"BTC-USD")
             .finish()
             .unwrap();

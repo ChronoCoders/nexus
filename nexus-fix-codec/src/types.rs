@@ -1170,6 +1170,16 @@ pub fn parse_fix_multi_string(
 // Tier 1 encoding helpers (used by generated code)
 // ---------------------------------------------------------------------------
 
+/// The maximum number of bytes any owned FIX value type encodes to.
+///
+/// The widest is [`FixTzTimestamp`] (`YYYYMMDD-HH:MM:SS.nnnnnnnnn±HH:MM`, 33
+/// bytes). Generated encoder scratch buffers for the owned value types
+/// (decimal/timestamp/date/time/…) are sized to this constant so a scratch
+/// buffer can never silently fall behind a type's `encode()` requirement; each
+/// `encode()` keeps its own tighter buffer assert. Bump this if a wider value
+/// type is added — the `max_value_encode_len_covers_widest_type` test guards it.
+pub const MAX_VALUE_ENCODE_LEN: usize = 33;
+
 /// Encode a FIX integer field (INT type) to wire bytes.
 ///
 /// Writes the decimal representation (with leading `-` for negatives).
@@ -3032,6 +3042,19 @@ mod tests {
                 core::str::from_utf8(input).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn max_value_encode_len_covers_widest_type() {
+        // FixTzTimestamp at full nanosecond precision with a non-zero offset is
+        // the widest owned value type (33 bytes). Encoding it into a buffer of
+        // exactly MAX_VALUE_ENCODE_LEN must not trip the encode() buffer assert
+        // — this is the invariant generated encoder scratch buffers rely on.
+        let ts = FixTzTimestamp::parse(b"20260605-12:34:56.123456789+05:30").unwrap();
+        let mut buf = [0u8; MAX_VALUE_ENCODE_LEN];
+        let n = ts.encode(&mut buf);
+        assert_eq!(n, MAX_VALUE_ENCODE_LEN);
+        assert_eq!(&buf[..n], b"20260605-12:34:56.123456789+05:30");
     }
 
     // -- Copilot review fixes --

@@ -164,7 +164,12 @@ fn emit_wrap(
         "    pub fn wrap(header: super::header::HeaderDecoder<'buf>) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
     );
     s.push_str(&body);
-    s.push_str("        if m.checksum.is_present() {\n");
+    // Verify the CheckSum iff tag 10 was *seen* (the span is no longer EMPTY),
+    // not iff it has a non-empty value. A present-but-empty CheckSum (`10=\x01`)
+    // is malformed and must be rejected; gating on `is_present()` (len > 0) would
+    // skip it and accept the message, diverging from `validate_checksum`. The
+    // empty value falls into `verify_checksum`, which rejects it.
+    s.push_str("        if m.checksum != nexus_fix_codec::FieldSpan::EMPTY {\n");
     s.push_str(
         "            m.header.reader.verify_checksum(m.checksum).map_err(nexus_fix_codec::DecodeError::Checksum)?;\n",
     );
