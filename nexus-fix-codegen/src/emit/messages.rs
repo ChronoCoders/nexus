@@ -186,7 +186,13 @@ fn emit_wrap_loop(s: &mut String, arms: &[(String, String)]) {
         s.push_str(body);
         s.push_str("                }\n");
     }
-    s.push_str("                10 => m.checksum = f.value,\n");
+    // CheckSum (tag 10) is the FIX message terminator. Record it and stop —
+    // anything after it is trailing data, not part of this message, and must not
+    // be scanned into field spans.
+    s.push_str("                10 => {\n");
+    s.push_str("                    m.checksum = f.value;\n");
+    s.push_str("                    break;\n");
+    s.push_str("                }\n");
     s.push_str("                _ => {}\n            }\n");
     s.push_str("        }\n");
 }

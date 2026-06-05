@@ -1,9 +1,9 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nexus_fix_codec::{
     FixDate, FixDecimal, FixMonthYear, FixTenor, FixTime, FixTimestamp, FixTzTime, FixTzTimestamp,
-    encode_fix_char, encode_fix_int, encode_fix_seqnum, encode_fix_text, encode_fix_uint,
-    parse_fix_char, parse_fix_int, parse_fix_multi_char, parse_fix_multi_string, parse_fix_seqnum,
-    parse_fix_text, parse_fix_uint,
+    encode_fix_char, encode_fix_int, encode_fix_seqnum, encode_fix_uint, parse_fix_char,
+    parse_fix_int, parse_fix_multi_char, parse_fix_multi_string, parse_fix_seqnum, parse_fix_text,
+    parse_fix_uint,
 };
 
 fn bench_fix_decimal(c: &mut Criterion) {
@@ -311,13 +311,7 @@ fn bench_fix_text(c: &mut Criterion) {
     g.bench_function("parse_symbol", |b| {
         b.iter(|| parse_fix_text(black_box(b"BTC-USD")))
     });
-    let t = parse_fix_text(b"BTC-USD").unwrap();
-    g.bench_function("encode_symbol", |b| {
-        b.iter(|| {
-            let mut buf = [0u8; 16];
-            encode_fix_text(black_box(t), black_box(&mut buf))
-        })
-    });
+    // Text encoding is a plain `as_bytes()` copy — no dedicated helper to bench.
     g.finish();
 }
 

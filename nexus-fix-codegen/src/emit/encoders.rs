@@ -337,7 +337,9 @@ fn emit_encoder(s: &mut String, m: &RMessage) {
     }
 }
 
-/// A typed body setter (plus a `_bytes` raw escape for the parsed kinds).
+/// A typed body setter. Parsed *scalar* kinds also get a `_bytes` raw escape for
+/// pre-encoded values; enum fields do not (raw bytes would only bypass the
+/// variant contract).
 fn emit_body_setter(s: &mut String, f: &RField) {
     let name = snake(&f.name);
     let tag = format!("super::fields::TAG_{}", screaming(&f.name));
@@ -357,7 +359,9 @@ fn emit_body_setter(s: &mut String, f: &RField) {
                  self.frame.field({tag}, value.as_bytes());\n        self\n    }}\n\n"
             );
         }
-        emit_bytes_setter(s, &format!("{name}_bytes"), &tag);
+        // No `_bytes` escape hatch for enum fields: raw bytes would bypass the
+        // variant contract for no legitimate gain (unlike typed scalars, where a
+        // pre-encoded value is a real fast path).
         return;
     }
 

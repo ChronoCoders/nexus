@@ -1220,24 +1220,10 @@ pub fn encode_fix_char(value: AsciiChar) -> u8 {
     value.as_u8()
 }
 
-/// Encode a FIX text field by copying its bytes into `buf`.
-///
-/// Returns the number of bytes written.
-///
-/// # Panics
-/// Panics if `buf` is shorter than `text.as_bytes().len()`.
-#[inline]
-pub fn encode_fix_text(text: &AsciiTextStr, buf: &mut [u8]) -> usize {
-    let bytes = text.as_bytes();
-    assert!(
-        buf.len() >= bytes.len(),
-        "encode_fix_text: buffer too small (need {}, have {})",
-        bytes.len(),
-        buf.len()
-    );
-    buf[..bytes.len()].copy_from_slice(bytes);
-    bytes.len()
-}
+// Note: there is no `encode_fix_text`. A FIX text value is already its wire
+// form — callers pass `text.as_bytes()` straight to the writer. (Decoding earns
+// `parse_fix_text` because it validates printable ASCII; encoding is a plain
+// byte copy with nothing to add.)
 
 // ---------------------------------------------------------------------------
 // SWAR digit parsing
@@ -2662,7 +2648,7 @@ mod tests {
         assert_eq!(parse_fix_day_of_month(b"x"), Err(FixValueError::NotNumeric));
     }
 
-    // -- parse_fix_text / encode_fix_text --
+    // -- parse_fix_text --
 
     #[test]
     fn text_parse_valid() {
@@ -2688,22 +2674,6 @@ mod tests {
             parse_fix_text(&[b'A', 0x07, b'B']).err(),
             Some(FixValueError::NotPrintable)
         );
-    }
-
-    #[test]
-    fn text_encode_roundtrip() {
-        let t = parse_fix_text(b"SENDER").unwrap();
-        let mut buf = [0u8; 16];
-        let n = encode_fix_text(t, &mut buf);
-        assert_eq!(&buf[..n], b"SENDER");
-    }
-
-    #[test]
-    #[should_panic(expected = "buffer too small")]
-    fn text_encode_panics_when_too_small() {
-        let t = parse_fix_text(b"SENDER").unwrap();
-        let mut buf = [0u8; 3];
-        encode_fix_text(t, &mut buf);
     }
 
     // -- FixMonthYear --

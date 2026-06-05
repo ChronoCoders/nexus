@@ -261,4 +261,61 @@ fn main() {
             .unwrap();
         black_box(msg.len())
     });
+
+    let px_bid = nexus_fix_codec::FixDecimal {
+        mantissa: 11050,
+        scale: 4,
+    };
+    let px_offer = nexus_fix_codec::FixDecimal {
+        mantissa: 11052,
+        scale: 4,
+    };
+    let sz = nexus_fix_codec::FixDecimal {
+        mantissa: 1_000_000,
+        scale: 0,
+    };
+    measure("beta MD encode  (2 entries)", || {
+        let mut buf = [0u8; 512];
+        let msg =
+            venue_beta::encoders::MarketDataSnapshotFullRefreshEncoder::wrap(black_box(&mut buf))
+                .header_encoder()
+                .finish()
+                .symbol(b"EUR/USD")
+                .no_md_entries(2)
+                .entry()
+                .md_entry_type(venue_beta::fields::MDEntryType::BID)
+                .md_entry_px(px_bid)
+                .md_entry_size(sz)
+                .done()
+                .entry()
+                .md_entry_type(venue_beta::fields::MDEntryType::OFFER)
+                .md_entry_px(px_offer)
+                .md_entry_size(sz)
+                .done()
+                .finish_group()
+                .unwrap()
+                .finish()
+                .unwrap();
+        black_box(msg.len())
+    });
+
+    measure("alpha NOS encode  (shift path)", || {
+        // Undersized prefix reservation → finish() shifts the content right to
+        // make room for the canonical BodyLength.
+        let mut buf = [0u8; 256];
+        let msg =
+            venue_alpha::encoders::NewOrderSingleEncoder::wrap_reserved(black_box(&mut buf), 14)
+                .header_encoder()
+                .sender_comp_id(b"SENDER")
+                .target_comp_id(b"TARGET")
+                .msg_seq_num(42)
+                .sending_time(ts)
+                .finish()
+                .cl_ord_id(b"ORD-12345")
+                .side(venue_alpha::fields::Side::BUY)
+                .symbol(b"BTC-USD")
+                .finish()
+                .unwrap();
+        black_box(msg.len())
+    });
 }

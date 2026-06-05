@@ -28,8 +28,9 @@ contained.
 - Value-type parsers/encoders: `FixDecimal`, `FixDate`, `FixTime`,
   `FixTimestamp`; `parse_fix_int`/`uint`/`seqnum`/`bool` and their encoders
 - `parse_fix_char` / `encode_fix_char` — FIX `char` → `AsciiChar`
-- `parse_fix_text` / `encode_fix_text` — FIX `String`/`Currency`/`Exchange`/
-  `Country`/`Language`/`Symbol` as a zero-copy printable-ASCII `AsciiTextStr`
+- `parse_fix_text` — FIX `String`/`Currency`/`Exchange`/`Country`/`Language`/
+  `Symbol` as a zero-copy printable-ASCII `AsciiTextStr` (text *encoding* is a
+  plain `as_bytes()` copy, so there is no `encode_fix_text`)
 - `parse_fix_day_of_month` — `DayOfMonth` (`1..=31`)
 - `FixMonthYear` — `YYYYMM` / `YYYYMMDD` / `YYYYMM`+`wW`, byte-exact round-trip
 - `FixTenor` and `TenorUnit` — FIX 5.0 SP2 `Tenor` (`[DWMY]<n>`, canonical form)
