@@ -621,3 +621,184 @@ fn header_decode_and_msg_type_conversion() {
     assert!(venue_alpha::Dict::is_admin(mt));
     assert_eq!(h.msg_seq_num().unwrap().get(), 1);
 }
+
+#[test]
+fn alpha_group_view_len_and_empty() {
+    let msg = b"11=A\x01453=2\x01448=P1\x01452=1\x01448=P2\x01452=2\x01";
+    let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
+    let view = m.no_party_i_ds();
+    assert_eq!(view.len(), 2);
+    assert!(!view.is_empty());
+    let parties: Vec<_> = view.collect();
+    assert_eq!(parties.len(), 2);
+}
+
+#[test]
+fn alpha_group_view_absent() {
+    let msg = b"11=A\x01";
+    let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
+    let view = m.no_party_i_ds();
+    assert_eq!(view.len(), 0);
+    assert!(view.is_empty());
+    assert_eq!(view.collect::<Vec<_>>().len(), 0);
+}
+
+#[test]
+fn alpha_group_encode_round_trip() {
+    let mut buf = [0u8; 512];
+    let full = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+        .header_encoder()
+        .sender_comp_id(b"S")
+        .target_comp_id(b"T")
+        .msg_seq_num(1)
+        .sending_time(sending_time())
+        .finish()
+        .cl_ord_id(b"ORD1")
+        .side(venue_alpha::fields::Side::BUY)
+        .no_party_i_ds(2)
+        .entry()
+        .party_id(b"P1")
+        .party_role(1)
+        .done()
+        .entry()
+        .party_id(b"P2")
+        .party_role(2)
+        .done()
+        .finish_group()
+        .symbol(b"BTC")
+        .finish()
+        .unwrap();
+
+    assert!(nexus_fix_codec::validate_checksum(full).is_ok());
+
+    let m = venue_alpha::messages::NewOrderSingle::decode(full).unwrap();
+    assert_eq!(m.cl_ord_id().unwrap().as_bytes(), &b"ORD1"[..]);
+    assert_eq!(m.side(), Some(venue_alpha::fields::Side::BUY));
+    assert_eq!(m.symbol().unwrap().as_bytes(), &b"BTC"[..]);
+    let parties: Vec<_> = m.no_party_i_ds().collect();
+    assert_eq!(parties.len(), 2);
+    assert_eq!(parties[0].party_id().unwrap().as_bytes(), &b"P1"[..]);
+    assert_eq!(parties[0].party_role().unwrap().get(), 1);
+    assert_eq!(parties[1].party_id().unwrap().as_bytes(), &b"P2"[..]);
+    assert_eq!(parties[1].party_role().unwrap().get(), 2);
+}
+
+#[test]
+fn alpha_nested_group_encode_round_trip() {
+    let mut buf = [0u8; 512];
+    let full = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+        .header_encoder()
+        .sender_comp_id(b"S")
+        .target_comp_id(b"T")
+        .msg_seq_num(1)
+        .sending_time(sending_time())
+        .finish()
+        .cl_ord_id(b"ORD1")
+        .side(venue_alpha::fields::Side::BUY)
+        .no_party_i_ds(1)
+        .entry()
+        .party_id(b"P1")
+        .party_role(1)
+        .no_party_sub_i_ds(2)
+        .entry()
+        .party_sub_id(b"S1")
+        .party_sub_id_type(7)
+        .done()
+        .entry()
+        .party_sub_id(b"S2")
+        .party_sub_id_type(8)
+        .done()
+        .finish_group()
+        .done()
+        .finish_group()
+        .symbol(b"BTC")
+        .finish()
+        .unwrap();
+
+    assert!(nexus_fix_codec::validate_checksum(full).is_ok());
+
+    let m = venue_alpha::messages::NewOrderSingle::decode(full).unwrap();
+    let parties: Vec<_> = m.no_party_i_ds().collect();
+    assert_eq!(parties.len(), 1);
+    assert_eq!(parties[0].party_id().unwrap().as_bytes(), &b"P1"[..]);
+    assert_eq!(parties[0].party_role().unwrap().get(), 1);
+    let subs: Vec<_> = parties[0].no_party_sub_i_ds().collect();
+    assert_eq!(subs.len(), 2);
+    assert_eq!(subs[0].party_sub_id().unwrap().as_bytes(), &b"S1"[..]);
+    assert_eq!(subs[0].party_sub_id_type().unwrap().get(), 7);
+    assert_eq!(subs[1].party_sub_id().unwrap().as_bytes(), &b"S2"[..]);
+    assert_eq!(subs[1].party_sub_id_type().unwrap().get(), 8);
+}
+
+#[test]
+fn beta_group_encode_round_trip() {
+    let px_bid = nexus_fix_codec::FixDecimal {
+        mantissa: 11050,
+        scale: 4,
+    };
+    let px_offer = nexus_fix_codec::FixDecimal {
+        mantissa: 11052,
+        scale: 4,
+    };
+    let sz = nexus_fix_codec::FixDecimal {
+        mantissa: 1_000_000,
+        scale: 0,
+    };
+
+    let mut buf = [0u8; 512];
+    let full = venue_beta::encoders::MarketDataSnapshotFullRefreshEncoder::wrap(&mut buf)
+        .header_encoder()
+        .finish()
+        .symbol(b"EUR/USD")
+        .no_md_entries(2)
+        .entry()
+        .md_entry_type(venue_beta::fields::MDEntryType::BID)
+        .md_entry_px(px_bid)
+        .md_entry_size(sz)
+        .done()
+        .entry()
+        .md_entry_type(venue_beta::fields::MDEntryType::OFFER)
+        .md_entry_px(px_offer)
+        .md_entry_size(sz)
+        .done()
+        .finish_group()
+        .finish()
+        .unwrap();
+
+    assert!(nexus_fix_codec::validate_checksum(full).is_ok());
+
+    let m = venue_beta::messages::MarketDataSnapshotFullRefresh::decode(full).unwrap();
+    assert_eq!(m.symbol().unwrap().as_bytes(), &b"EUR/USD"[..]);
+    let entries: Vec<_> = m.no_md_entries().collect();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries[0].md_entry_type(),
+        Some(venue_beta::fields::MDEntryType::BID)
+    );
+    assert_eq!(entries[0].md_entry_px().unwrap().get(), px_bid);
+    assert_eq!(entries[0].md_entry_size().unwrap().get(), sz);
+    assert_eq!(
+        entries[1].md_entry_type(),
+        Some(venue_beta::fields::MDEntryType::OFFER)
+    );
+    assert_eq!(entries[1].md_entry_px().unwrap().get(), px_offer);
+}
+
+#[test]
+#[should_panic(expected = "group count mismatch")]
+fn alpha_group_count_mismatch_panics() {
+    let mut buf = [0u8; 512];
+    venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+        .header_encoder()
+        .sender_comp_id(b"S")
+        .target_comp_id(b"T")
+        .msg_seq_num(1)
+        .sending_time(sending_time())
+        .finish()
+        .cl_ord_id(b"ORD1")
+        .no_party_i_ds(2)
+        .entry()
+        .party_id(b"P1")
+        .done()
+        .finish_group();
+}

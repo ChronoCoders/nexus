@@ -4,8 +4,8 @@ use std::fmt::Write;
 use crate::dict::FieldType;
 
 use super::{
-    AccKind, HEADER, RField, RMember, RMessage, acc_kind, acc_return_type, byte_lit, pascal,
-    screaming, snake,
+    AccKind, HEADER, RField, RGroup, RMember, RMessage, acc_kind, acc_return_type, byte_lit,
+    group_type, pascal, screaming, snake,
 };
 
 /// Tags owned by FrameWriter — excluded from the header encoder typestate.
@@ -282,15 +282,25 @@ fn emit_encoder(s: &mut String, m: &RMessage) {
     );
     let _ = writeln!(s, "impl<'buf> {body}<'buf> {{");
 
+    let prefix = pascal(&m.name);
     let mut seen = HashSet::new();
-    for f in &fields {
-        if !seen.insert(f.number) || data_nums.contains(&f.number) {
-            continue;
-        }
-        if let Some(d) = paired_len.get(&f.number) {
-            emit_data_setter(s, f, d);
-        } else {
-            emit_body_setter(s, f);
+    for mem in &m.members {
+        match mem {
+            RMember::Field(f) => {
+                if !seen.insert(f.number) || data_nums.contains(&f.number) {
+                    continue;
+                }
+                if let Some(d) = paired_len.get(&f.number) {
+                    emit_data_setter(s, f, d);
+                } else {
+                    emit_body_setter(s, f);
+                }
+            }
+            RMember::Group(g) if seen.insert(g.number) => {
+                let group_enc = format!("{}Enc", group_type(&prefix, &g.name));
+                emit_body_group_entry(s, g, &group_enc);
+            }
+            RMember::Group(_) => {}
         }
     }
 
@@ -300,6 +310,15 @@ fn emit_encoder(s: &mut String, m: &RMessage) {
          pub fn finish(self) -> Result<&'buf [u8], nexus_fix_codec::EncodeError> {\n        \
          self.frame.finish()\n    }\n}\n\n",
     );
+
+    let mut seen_groups = HashSet::new();
+    for mem in &m.members {
+        if let RMember::Group(g) = mem
+            && seen_groups.insert(g.number)
+        {
+            emit_group_encoder_set(s, &prefix, &body, g, 0);
+        }
+    }
 }
 
 /// A typed body setter (plus a `_bytes` raw escape for the parsed kinds).
@@ -403,4 +422,203 @@ fn emit_data_setter(s: &mut String, len: &RField, data: &RField) {
          self.frame.field({len_tag}, &tmp[..n]);\n        \
          self.frame.field({data_tag}, value);\n        self\n    }}\n\n"
     );
+}
+
+// =============================================================================
+// Group encoders: `{Group}Enc` (count owner) + `{Group}EntryEnc` (field setters)
+// =============================================================================
+
+/// Group entry point on the Body: writes the count tag, returns the group encoder.
+fn emit_body_group_entry(s: &mut String, g: &RGroup, group_enc: &str) {
+    let name = snake(&g.name);
+    let tag = format!("super::fields::TAG_{}", screaming(&g.name));
+    let _ = write!(
+        s,
+        "    pub fn {name}(mut self, count: u16) -> {group_enc}<'buf> {{\n        \
+         let mut tmp = [0u8; 10];\n        \
+         let n = nexus_fix_codec::encode_fix_uint(u32::from(count), &mut tmp);\n        \
+         self.frame.field({tag}, &tmp[..n]);\n        \
+         {group_enc} {{ frame: self.frame, declared: count, written: 0 }}\n    \
+         }}\n\n"
+    );
+}
+
+/// Emit `GroupEnc` + `EntryEnc` structs and impls for a repeating group.
+///
+/// `return_type` is what `finish_group()` returns to — the Body for top-level
+/// groups, or the parent `EntryEnc` for nested groups. `depth` tracks nesting
+/// so parent state fields are threaded through the chain.
+fn emit_group_encoder_set(
+    s: &mut String,
+    prefix: &str,
+    return_type: &str,
+    g: &RGroup,
+    depth: usize,
+) {
+    let base = group_type(prefix, &g.name);
+    let group_enc = format!("{base}Enc");
+    let entry_enc = format!("{base}EntryEnc");
+
+    // --- GroupEnc struct ---
+    let _ = write!(
+        s,
+        "pub struct {group_enc}<'buf> {{\n    \
+         frame: nexus_fix_codec::FrameWriter<'buf>,\n    \
+         declared: u16,\n    \
+         written: u16,\n"
+    );
+    for i in 0..depth {
+        let _ = writeln!(s, "    parent_{i}_declared: u16,");
+        let _ = writeln!(s, "    parent_{i}_written: u16,");
+    }
+    s.push_str("}\n\n");
+
+    // --- GroupEnc impl ---
+    let _ = writeln!(s, "impl<'buf> {group_enc}<'buf> {{");
+
+    // entry()
+    let _ = write!(
+        s,
+        "    pub fn entry(self) -> {entry_enc}<'buf> {{\n        \
+         {entry_enc} {{\n            \
+         frame: self.frame,\n            \
+         group_declared: self.declared,\n            \
+         group_written: self.written + 1,\n"
+    );
+    for i in 0..depth {
+        let _ = writeln!(
+            s,
+            "            parent_{i}_declared: self.parent_{i}_declared,"
+        );
+        let _ = writeln!(
+            s,
+            "            parent_{i}_written: self.parent_{i}_written,"
+        );
+    }
+    s.push_str("        }\n    }\n\n");
+
+    // finish_group()
+    let _ = write!(
+        s,
+        "    pub fn finish_group(self) -> {return_type}<'buf> {{\n        \
+         assert_eq!(self.declared, self.written, \"group count mismatch\");\n        \
+         {return_type} {{\n            \
+         frame: self.frame,\n"
+    );
+    if depth > 0 {
+        let p = depth - 1;
+        let _ = writeln!(s, "            group_declared: self.parent_{p}_declared,");
+        let _ = writeln!(s, "            group_written: self.parent_{p}_written,");
+        for i in 0..p {
+            let _ = writeln!(
+                s,
+                "            parent_{i}_declared: self.parent_{i}_declared,"
+            );
+            let _ = writeln!(
+                s,
+                "            parent_{i}_written: self.parent_{i}_written,"
+            );
+        }
+    }
+    s.push_str("        }\n    }\n");
+    s.push_str("}\n\n");
+
+    // --- EntryEnc struct ---
+    let _ = write!(
+        s,
+        "pub struct {entry_enc}<'buf> {{\n    \
+         frame: nexus_fix_codec::FrameWriter<'buf>,\n    \
+         group_declared: u16,\n    \
+         group_written: u16,\n"
+    );
+    for i in 0..depth {
+        let _ = writeln!(s, "    parent_{i}_declared: u16,");
+        let _ = writeln!(s, "    parent_{i}_written: u16,");
+    }
+    s.push_str("}\n\n");
+
+    // --- EntryEnc impl ---
+    let _ = writeln!(s, "impl<'buf> {entry_enc}<'buf> {{");
+
+    let mut seen = HashSet::new();
+    for mem in &g.members {
+        match mem {
+            RMember::Field(f) if seen.insert(f.number) => {
+                emit_body_setter(s, f);
+            }
+            RMember::Group(inner) if seen.insert(inner.number) => {
+                let nested_enc = format!("{}Enc", group_type(&base, &inner.name));
+                emit_nested_group_entry(s, inner, &nested_enc, depth);
+            }
+            _ => {}
+        }
+    }
+
+    // done()
+    let _ = write!(
+        s,
+        "    pub fn done(self) -> {group_enc}<'buf> {{\n        \
+         {group_enc} {{\n            \
+         frame: self.frame,\n            \
+         declared: self.group_declared,\n            \
+         written: self.group_written,\n"
+    );
+    for i in 0..depth {
+        let _ = writeln!(
+            s,
+            "            parent_{i}_declared: self.parent_{i}_declared,"
+        );
+        let _ = writeln!(
+            s,
+            "            parent_{i}_written: self.parent_{i}_written,"
+        );
+    }
+    s.push_str("        }\n    }\n");
+    s.push_str("}\n\n");
+
+    // Recurse into nested groups
+    let mut seen_nested = HashSet::new();
+    for mem in &g.members {
+        if let RMember::Group(inner) = mem
+            && seen_nested.insert(inner.number)
+        {
+            emit_group_encoder_set(s, &base, &entry_enc, inner, depth + 1);
+        }
+    }
+}
+
+/// Nested group entry point on an EntryEnc: writes count, threads parent state.
+fn emit_nested_group_entry(s: &mut String, g: &RGroup, group_enc: &str, caller_depth: usize) {
+    let name = snake(&g.name);
+    let tag = format!("super::fields::TAG_{}", screaming(&g.name));
+    let _ = write!(
+        s,
+        "    pub fn {name}(mut self, count: u16) -> {group_enc}<'buf> {{\n        \
+         let mut tmp = [0u8; 10];\n        \
+         let n = nexus_fix_codec::encode_fix_uint(u32::from(count), &mut tmp);\n        \
+         self.frame.field({tag}, &tmp[..n]);\n        \
+         {group_enc} {{\n            \
+         frame: self.frame,\n            \
+         declared: count,\n            \
+         written: 0,\n"
+    );
+    for i in 0..caller_depth {
+        let _ = writeln!(
+            s,
+            "            parent_{i}_declared: self.parent_{i}_declared,"
+        );
+        let _ = writeln!(
+            s,
+            "            parent_{i}_written: self.parent_{i}_written,"
+        );
+    }
+    let _ = writeln!(
+        s,
+        "            parent_{caller_depth}_declared: self.group_declared,"
+    );
+    let _ = writeln!(
+        s,
+        "            parent_{caller_depth}_written: self.group_written,"
+    );
+    s.push_str("        }\n    }\n\n");
 }

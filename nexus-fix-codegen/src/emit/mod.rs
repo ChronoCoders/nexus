@@ -359,10 +359,10 @@ fn emit_enum_accessor(s: &mut String, f: &RField, name: &str, buf_expr: &str) {
     }
 }
 
-pub fn emit_group_accessor(s: &mut String, name: &str, iter: &str, buf_expr: &str) {
+pub fn emit_group_accessor(s: &mut String, name: &str, view: &str, buf_expr: &str) {
     let _ = write!(
         s,
-        "    pub fn {name}(&self) -> super::groups::{iter}<'buf> {{\n        super::groups::{iter}::new({buf_expr}, self.{name})\n    }}\n\n"
+        "    pub fn {name}(&self) -> super::groups::{view}<'buf> {{\n        super::groups::{view}::new({buf_expr}, self.{name})\n    }}\n\n"
     );
 }
 

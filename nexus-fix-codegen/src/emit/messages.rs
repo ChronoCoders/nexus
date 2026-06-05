@@ -219,16 +219,13 @@ fn group_body(g: &RGroup) -> String {
         snake(&g.name)
     );
     b.push_str("                loop {\n");
-    b.push_str("                    let mark = m.header.reader.pos();\n");
     b.push_str("                    match m.header.reader.next_field() {\n");
     let _ = writeln!(
         b,
         "                        Some(gf) if matches!(gf.tag, {pat}) => {{}}"
     );
-    b.push_str("                        _ => {\n");
-    b.push_str(
-        "                            m.header.reader = nexus_fix_codec::FieldReader::new(buf, mark);\n",
-    );
+    b.push_str("                        other => {\n");
+    b.push_str("                            m.header.overflow = other;\n");
     b.push_str("                            break;\n");
     b.push_str("                        }\n");
     b.push_str("                    }\n                }\n");
@@ -274,8 +271,8 @@ fn emit_accessors(s: &mut String, tops: &[Top], msg_name: &str) {
         match t {
             Top::Field(f) if seen.insert(f.number) => emit_value_accessor(s, f, buf_expr),
             Top::Group(g) if seen.insert(g.number) => {
-                let iter = format!("{}Iter", group_type(&prefix, &g.name));
-                emit_group_accessor(s, &snake(&g.name), &iter, buf_expr);
+                let view = format!("{}View", group_type(&prefix, &g.name));
+                emit_group_accessor(s, &snake(&g.name), &view, buf_expr);
             }
             _ => {}
         }
