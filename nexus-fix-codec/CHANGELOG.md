@@ -15,7 +15,11 @@ contained.
 - `FieldSpan` and `GroupSpan` zero-copy field reference types
 - SIMD SOH and `=` scanning: AVX-512, AVX2, SSE2, SWAR, scalar
 - `DelimiterScanner` iterator with SIMD mask caching
-- `FieldReader` with fused PSADBW checksum accumulation
+- `FieldReader`, a pure SOH-delimiter scanner; the FIX checksum is a separate
+  single-pass `verify_checksum` (not fused into the scan), so a trusted feed can
+  skip verification entirely
+- `FieldView::get_unchecked` — bypass printable-ASCII validation on text fields
+  for trusted venues (`unsafe`)
 - `FieldWriter` for writing `tag=value\x01` fields
 - `parse_tag`, `find_tag`, `checksum`, `validate_checksum` helpers
 - `encode_field`, `format_checksum` writer helpers

@@ -83,23 +83,26 @@ fn emit_wrap(
     data_handled: &HashSet<u32>,
     data_after: &HashMap<u32, &RField>,
 ) {
-    s.push_str(
-        "    pub fn wrap(header: super::header::HeaderDecoder<'buf>) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
-    );
-    s.push_str("        let mut m = Self {\n            header,\n");
+    // Build the shared decode body (struct init + field loop) once, then emit it
+    // into BOTH wrap_unchecked and wrap. The body is *duplicated* rather than
+    // factored into a shared call: a shared `wrap_unchecked()` call would return
+    // the (large) message struct by value, adding a struct move on the hot
+    // checked path. Each entry point builds the message in its own frame.
+    let mut body = String::new();
+    body.push_str("        let mut m = Self {\n            header,\n");
     let mut seen = HashSet::new();
     for t in tops {
         match t {
             Top::Field(f) if seen.insert(f.number) => {
                 let _ = writeln!(
-                    s,
+                    body,
                     "            {}: nexus_fix_codec::FieldSpan::EMPTY,",
                     snake(&f.name)
                 );
             }
             Top::Group(g) if seen.insert(g.number) => {
                 let _ = writeln!(
-                    s,
+                    body,
                     "            {}: nexus_fix_codec::GroupSpan::EMPTY,",
                     snake(&g.name)
                 );
@@ -107,8 +110,8 @@ fn emit_wrap(
             _ => {}
         }
     }
-    s.push_str("            checksum: nexus_fix_codec::FieldSpan::EMPTY,\n");
-    s.push_str("        };\n");
+    body.push_str("            checksum: nexus_fix_codec::FieldSpan::EMPTY,\n");
+    body.push_str("        };\n");
 
     let mut arms: Vec<(String, String)> = Vec::new();
     let mut seen_arm = HashSet::new();
@@ -137,13 +140,30 @@ fn emit_wrap(
     }
 
     if !arms.is_empty() {
-        let needs_buf = arms.iter().any(|(_, body)| body.contains("buf"));
+        let needs_buf = arms.iter().any(|(_, arm_body)| arm_body.contains("buf"));
         if needs_buf {
-            s.push_str("        let buf = m.header.reader.buf();\n");
+            body.push_str("        let buf = m.header.reader.buf();\n");
         }
-        emit_wrap_loop(s, &arms);
+        emit_wrap_loop(&mut body, &arms);
     }
 
+    // wrap_unchecked: scan + dispatch, no checksum verification.
+    s.push_str("    /// Decode the message body **without** verifying the FIX checksum.\n");
+    s.push_str("    ///\n");
+    s.push_str("    /// For trusted feeds only — replay, internal links, already-validated\n");
+    s.push_str("    /// data. Prefer [`wrap`](Self::wrap) for counterparty data.\n");
+    s.push_str(
+        "    pub fn wrap_unchecked(header: super::header::HeaderDecoder<'buf>) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
+    );
+    s.push_str(&body);
+    s.push_str("        Ok(m)\n    }\n\n");
+
+    // wrap: same body, then verify the checksum.
+    s.push_str("    /// Decode the message body and verify the FIX checksum (tag 10).\n");
+    s.push_str(
+        "    pub fn wrap(header: super::header::HeaderDecoder<'buf>) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
+    );
+    s.push_str(&body);
     s.push_str("        if m.checksum.is_present() {\n");
     s.push_str(
         "            m.header.reader.verify_checksum(m.checksum).map_err(nexus_fix_codec::DecodeError::Checksum)?;\n",
@@ -176,10 +196,17 @@ fn emit_wrap_loop(s: &mut String, arms: &[(String, String)]) {
 }
 
 fn emit_decode(s: &mut String) {
+    s.push_str("    /// Decode the message and verify the FIX checksum (tag 10).\n");
     s.push_str(
         "    pub fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
     );
     s.push_str("        Self::wrap(super::header::HeaderDecoder::decode(buf))\n");
+    s.push_str("    }\n\n");
+    s.push_str("    /// Decode **without** verifying the FIX checksum — for trusted feeds.\n");
+    s.push_str(
+        "    pub fn decode_unchecked(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
+    );
+    s.push_str("        Self::wrap_unchecked(super::header::HeaderDecoder::decode(buf))\n");
     s.push_str("    }\n\n");
 }
 
@@ -196,10 +223,9 @@ fn data_body(len: &RField, data: &RField) -> String {
         "                m.{} = nexus_fix_codec::FieldSpan::new(vstart as u32, dlen as u32);",
         snake(&data.name)
     );
-    // Skip past the DATA value (which may contain SOH bytes) without dropping
-    // the reader: `resync_after_data` keeps the running checksum and folds in
-    // the skipped bytes in place. A fresh `FieldReader::new` here would reset
-    // the accumulator and lose every field before the DATA field.
+    // Skip past the DATA value (which may contain SOH bytes) by repositioning
+    // the reader. The checksum is a separate pass, so there is no accumulator to
+    // keep in sync — `resync_after_data` is a pure jump.
     b.push_str("                let dend = (vstart + dlen + 1).min(buf.len());\n");
     b.push_str("                m.header.reader.resync_after_data(dend);\n");
     b

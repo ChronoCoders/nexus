@@ -459,6 +459,20 @@ fn alpha_checksum_absent_is_ok() {
 }
 
 #[test]
+fn alpha_decode_unchecked_skips_checksum() {
+    // Same bad-checksum message (10=000) `alpha_checksum_invalid` rejects:
+    // `decode` errors, but `decode_unchecked` accepts it and parses the body —
+    // the trusted-feed fast path.
+    let body = b"8=FIX.4.4\x0135=0\x01112=HB\x0110=000\x01";
+    assert!(matches!(
+        venue_alpha::messages::Heartbeat::decode(body),
+        Err(nexus_fix_codec::DecodeError::Checksum(_))
+    ));
+    let m = venue_alpha::messages::Heartbeat::decode_unchecked(body).unwrap();
+    assert_eq!(m.test_req_id().unwrap().as_bytes(), &b"HB"[..]);
+}
+
+#[test]
 fn alpha_exec_report_typed_and_raw_consistency() {
     let msg = b"37=ORD1\x0117=EX1\x01150=0\x0139=0\x0155=ETH\x0154=2\x0132=100\x0131=50.25\x01";
     let m = venue_alpha::messages::ExecutionReport::decode(msg).unwrap();

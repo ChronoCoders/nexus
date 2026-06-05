@@ -149,6 +149,25 @@ impl<'buf, T: FromFixValue<'buf>> FieldView<'buf, T> {
     }
 }
 
+/// Validation-bypass accessor for text fields — the trusted-feed fast path.
+impl<'buf> FieldView<'buf, &'buf AsciiTextStr> {
+    /// The text value **without** validating printable-ASCII.
+    ///
+    /// The checked path ([`get`](Self::get) / [`checked`](Self::checked)) runs
+    /// `AsciiTextStr` validation on every read; this skips it for trusted venues
+    /// or already-validated feeds. Same opt-in shape as `decode_unchecked`.
+    ///
+    /// # Safety
+    /// The caller asserts the field bytes are valid printable ASCII. Building an
+    /// `AsciiTextStr` over non-ASCII/control bytes is undefined behavior
+    /// downstream (`as_str`, char indexing rely on the invariant).
+    #[inline]
+    pub unsafe fn get_unchecked(&self) -> &'buf AsciiTextStr {
+        // SAFETY: the caller upholds the printable-ASCII invariant documented above.
+        unsafe { AsciiTextStr::from_bytes_unchecked(self.as_bytes()) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +223,14 @@ mod tests {
         let r: FieldView<&[u8]> = FieldView::new(present(raw), raw).unwrap();
         assert_eq!(r.get(), raw); // DATA: identity, always valid
         assert_eq!(r.as_bytes(), raw);
+    }
+
+    #[test]
+    fn text_unchecked_bypasses_validation() {
+        let sym = b"BTC-USD";
+        let t: FieldView<&AsciiTextStr> = FieldView::new(present(sym), sym).unwrap();
+        // SAFETY: the bytes are printable ASCII.
+        let s = unsafe { t.get_unchecked() };
+        assert_eq!(s.as_str(), "BTC-USD");
     }
 }

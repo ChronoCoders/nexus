@@ -163,6 +163,9 @@ fn main() {
     measure("alpha NOS decode  (no groups)", || {
         venue_alpha::messages::NewOrderSingle::decode(black_box(&nos_no_grp))
     });
+    measure("alpha NOS decode_unchecked  (no groups)", || {
+        venue_alpha::messages::NewOrderSingle::decode_unchecked(black_box(&nos_no_grp))
+    });
 
     // -- NOS with 2-entry party group --
 
@@ -188,6 +191,9 @@ fn main() {
     let md_grp = build_beta_md_with_groups();
     measure("beta MD decode  (2 entries)", || {
         venue_beta::messages::MarketDataSnapshotFullRefresh::decode(black_box(&md_grp))
+    });
+    measure("beta MD decode_unchecked  (2 entries)", || {
+        venue_beta::messages::MarketDataSnapshotFullRefresh::decode_unchecked(black_box(&md_grp))
     });
 
     measure("beta MD decode+iterate  (2 entries)", || {

@@ -228,7 +228,7 @@ fn main() {
         while parser.next_field().is_some() {
             count += 1;
         }
-        black_box(parser.checksum());
+        black_box(checksum(buf));
         count
     });
 

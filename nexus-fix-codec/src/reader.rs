@@ -1,9 +1,9 @@
-//! FIX field reader with SIMD-accelerated SOH scanning and checksum.
+//! FIX field reader with SIMD-accelerated SOH scanning.
 //!
-//! Combines SOH delimiter scanning, tag=value reading, and byte-sum
-//! checksum accumulation in a single pass. Each SIMD chunk load
-//! performs both `cmpeq` (SOH detection) and `PSADBW` (checksum
-//! accumulation), avoiding a second pass over the data.
+//! A pure SOH-delimiter scanner: each SIMD chunk load runs one `cmpeq` against
+//! `\x01` to find field boundaries. The FIX checksum is a separate concern,
+//! computed in a single contiguous pass at verification time, so a trusted feed
+//! can skip it entirely and pay nothing.
 //!
 //! Dispatch cascade (widest first, remainder flows down):
 //!
@@ -29,14 +29,12 @@ pub struct RawField {
     pub value: FieldSpan,
 }
 
-/// FIX field reader with fused checksum accumulation.
+/// FIX field reader: a pure SOH-delimited field scanner.
 ///
-/// Iterates over `tag=value\x01` fields, yielding [`RawField`] pairs.
-/// Accumulates a running byte-sum checksum via SIMD PSADBW alongside
-/// the SOH scan — no second pass needed.
-///
-/// The checksum is only meaningful after a complete scan of the
-/// message body. Partial iteration produces a partial sum.
+/// Iterates over `tag=value\x01` fields, yielding [`RawField`] pairs. The reader
+/// tracks position only; the FIX checksum is computed separately by a single
+/// contiguous pass ([`checksum`] / [`verify_checksum`](Self::verify_checksum)),
+/// so a caller that trusts its feed can skip verification entirely.
 ///
 /// # Example
 ///
@@ -49,14 +47,11 @@ pub struct RawField {
 /// while let Some(field) = parser.next_field() {
 ///     // field.tag, field.value
 /// }
-///
-/// let _checksum = parser.checksum();
 /// ```
 pub struct FieldReader<'a> {
     buf: &'a [u8],
     scan_pos: usize,
     field_start: usize,
-    checksum: u32,
     soh_mask: u64,
     mask_base: usize,
 }
@@ -68,7 +63,6 @@ impl<'a> FieldReader<'a> {
             buf,
             scan_pos: start,
             field_start: start,
-            checksum: 0,
             soh_mask: 0,
             mask_base: 0,
         }
@@ -79,40 +73,17 @@ impl<'a> FieldReader<'a> {
     ///
     /// A DATA field can't be SOH-scanned (its value contains SOH), so generated
     /// decoders compute its end from the preceding length and jump past it. The
-    /// running checksum must still cover every skipped byte. This corrects the
-    /// accumulator **in place** — single pass, each byte summed once — rather
-    /// than rescanning the prefix: the reader holds the invariant
-    /// `checksum == sum(buf[..scan_pos])` (the SIMD scan folds whole chunks in
-    /// and advances `scan_pos` to the chunk boundary), so we only fold the
-    /// short stretch between `scan_pos` and `data_end`, adding or subtracting to
-    /// undo any chunk-ahead overshoot.
+    /// reader is a pure position tracker, so this is a plain reposition — no
+    /// checksum bookkeeping. The DATA bytes are still covered by the standalone
+    /// checksum pass ([`verify_checksum`](Self::verify_checksum)), which sums a
+    /// contiguous range and is oblivious to embedded SOH.
     #[inline]
     pub fn resync_after_data(&mut self, data_end: usize) {
         let end = data_end.min(self.buf.len());
-        if end >= self.scan_pos {
-            for &b in &self.buf[self.scan_pos..end] {
-                self.checksum = self.checksum.wrapping_add(u32::from(b));
-            }
-        } else {
-            for &b in &self.buf[end..self.scan_pos] {
-                self.checksum = self.checksum.wrapping_sub(u32::from(b));
-            }
-        }
         self.field_start = end;
         self.scan_pos = end;
         self.soh_mask = 0;
         self.mask_base = 0;
-    }
-
-    /// FIX checksum: byte sum mod 256 of all scanned bytes, excluding
-    /// the checksum field itself (`10=XXX\x01`).
-    ///
-    /// Only meaningful after a complete scan of the message body.
-    /// Tag 10 bytes are automatically excluded when encountered
-    /// during parsing.
-    #[inline]
-    pub fn checksum(&self) -> u8 {
-        (self.checksum & 0xFF) as u8
     }
 
     /// The underlying message buffer.
@@ -127,12 +98,19 @@ impl<'a> FieldReader<'a> {
         self.field_start
     }
 
-    /// Validate the accumulated checksum against a tag 10 field value.
+    /// Verify the FIX checksum against the tag 10 (`CheckSum`) field value.
     ///
-    /// Parses the 3-digit ASCII value from `checksum_span` and compares
-    /// it to the running byte sum. Only meaningful after a complete scan.
+    /// Computes the checksum in a single contiguous pass over every byte before
+    /// the `10=` field (the FIX checksum covers `8=…` through the byte before
+    /// `10=`), parses the declared 3-digit value, and compares. `checksum_span`
+    /// is the *value* span of tag 10, so the field begins three bytes earlier
+    /// (`10=`).
+    ///
+    /// This is the verification half of the two-axis decode: a trusted feed can
+    /// skip it (decode_unchecked) and pay nothing.
     pub fn verify_checksum(&self, checksum_span: FieldSpan) -> Result<(), ChecksumError> {
-        let computed = self.checksum();
+        let body_end = (checksum_span.offset as usize).saturating_sub(3);
+        let computed = checksum(&self.buf[..body_end.min(self.buf.len())]);
         match parse_checksum_bytes(checksum_span.slice(self.buf)) {
             Some(expected) if expected == computed => Ok(()),
             Some(expected) => Err(ChecksumError { expected, computed }),
@@ -160,12 +138,6 @@ impl<'a> FieldReader<'a> {
 
         if tag_len == 0 || tag_len >= field_bytes.len() || field_bytes[tag_len] != b'=' {
             return None;
-        }
-
-        if tag == 10 {
-            for &b in &self.buf[field_start..=soh_pos] {
-                self.checksum = self.checksum.wrapping_sub(b as u32);
-            }
         }
 
         let value_start = field_start + tag_len + 1;
@@ -236,9 +208,8 @@ pub fn find_tag(buf: &[u8], start: usize, tag: u32) -> Option<FieldSpan> {
 
 /// Validate a FIX message checksum against tag 10.
 ///
-/// Parses all fields via [`FieldReader`] (fused PSADBW checksum),
-/// then compares the computed byte sum against the declared tag 10
-/// value.
+/// Scans for the tag 10 (`CheckSum`) field, then verifies via a single
+/// contiguous checksum pass over the preceding bytes.
 ///
 /// Returns `Ok(())` if valid, `Err(ChecksumError)` on mismatch.
 /// Returns `Ok(())` if tag 10 is absent (nothing to validate
@@ -253,19 +224,7 @@ pub fn validate_checksum(msg: &[u8]) -> Result<(), ChecksumError> {
         }
     }
 
-    let Some(span) = expected_span else {
-        return Ok(());
-    };
-
-    let computed = parser.checksum();
-    match parse_checksum_bytes(span.slice(msg)) {
-        Some(expected) if expected == computed => Ok(()),
-        Some(expected) => Err(ChecksumError { expected, computed }),
-        None => Err(ChecksumError {
-            expected: 0,
-            computed,
-        }),
-    }
+    expected_span.map_or(Ok(()), |span| parser.verify_checksum(span))
 }
 
 /// Parse a FIX CheckSum (tag 10) value: exactly three ASCII digits.
@@ -289,7 +248,7 @@ fn parse_checksum_bytes(bytes: &[u8]) -> Option<u8> {
 }
 
 // =============================================================================
-// SOH scanning with fused checksum accumulation
+// SOH scanning
 // =============================================================================
 
 impl FieldReader<'_> {
@@ -319,11 +278,11 @@ impl FieldReader<'_> {
         self.scan_next_soh()
     }
 
-    /// Cold path: load and scan SIMD chunks (fused checksum + SOH detection),
-    /// caching the delimiter mask for [`next_soh`] to drain. Kept out-of-line
-    /// and `#[cold]` so the per-field fast path above stays inlined and the
-    /// reader's scan state stays in registers across cached-mask drains,
-    /// instead of being spilled around a per-field `call`.
+    /// Cold path: load and scan SIMD chunks for the next SOH, caching the
+    /// delimiter mask for [`next_soh`] to drain. Kept out-of-line and `#[cold]`
+    /// so the per-field fast path above stays inlined and the reader's scan state
+    /// stays in registers across cached-mask drains, instead of being spilled
+    /// around a per-field `call`.
     #[cold]
     #[inline(never)]
     fn scan_next_soh(&mut self) -> Option<usize> {
@@ -343,11 +302,8 @@ impl FieldReader<'_> {
                 #[cfg(target_feature = "avx512bw")]
                 {
                     let soh = _mm512_set1_epi8(0x01_i8);
-                    let zero = _mm512_setzero_si512();
                     while i + 64 <= bytes.len() {
                         let chunk = _mm512_loadu_si512(bytes.as_ptr().add(i).cast());
-                        let sad = _mm512_sad_epu8(chunk, zero);
-                        self.checksum += Self::hsum_sad_512(sad);
                         let m = _mm512_cmpeq_epi8_mask(chunk, soh);
                         if m != 0 {
                             return Some(self.emit_soh_mask(m, i, 64));
@@ -359,13 +315,9 @@ impl FieldReader<'_> {
                 #[cfg(target_feature = "avx2")]
                 {
                     let soh = _mm256_set1_epi8(0x01_i8);
-                    let zero = _mm256_setzero_si256();
                     while i + 32 <= bytes.len() {
                         let chunk = _mm256_loadu_si256(bytes.as_ptr().add(i).cast());
-                        let sad = _mm256_sad_epu8(chunk, zero);
-                        self.checksum += Self::hsum_sad_256(sad);
-                        let cmp = _mm256_cmpeq_epi8(chunk, soh);
-                        let m = _mm256_movemask_epi8(cmp) as u32 as u64;
+                        let m = _mm256_movemask_epi8(_mm256_cmpeq_epi8(chunk, soh)) as u32 as u64;
                         if m != 0 {
                             return Some(self.emit_soh_mask(m, i, 32));
                         }
@@ -376,13 +328,9 @@ impl FieldReader<'_> {
                 // SSE2 — baseline on x86_64
                 {
                     let soh = _mm_set1_epi8(0x01_i8);
-                    let zero = _mm_setzero_si128();
                     while i + 16 <= bytes.len() {
                         let chunk = _mm_loadu_si128(bytes.as_ptr().add(i).cast());
-                        let sad = _mm_sad_epu8(chunk, zero);
-                        self.checksum += Self::hsum_sad_128(sad);
-                        let cmp = _mm_cmpeq_epi8(chunk, soh);
-                        let m = _mm_movemask_epi8(cmp) as u32 as u64;
+                        let m = _mm_movemask_epi8(_mm_cmpeq_epi8(chunk, soh)) as u32 as u64;
                         if m != 0 {
                             return Some(self.emit_soh_mask(m, i, 16));
                         }
@@ -399,9 +347,6 @@ impl FieldReader<'_> {
                 // SAFETY: bounds checked by the while condition
                 let chunk: [u8; 8] =
                     unsafe { bytes.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
-                for &b in &chunk {
-                    self.checksum += b as u32;
-                }
                 let word = u64::from_ne_bytes(chunk);
                 let xored = word ^ splat;
                 let swar_mask = xored.wrapping_sub(LO) & !xored & HI;
@@ -415,7 +360,6 @@ impl FieldReader<'_> {
 
         // ---- Scalar tail (< 8 bytes) ----
         while i < bytes.len() {
-            self.checksum += bytes[i] as u32;
             if bytes[i] == 0x01 {
                 let result = self.scan_pos + i;
                 self.scan_pos = result + 1;
@@ -426,47 +370,6 @@ impl FieldReader<'_> {
 
         self.scan_pos = self.buf.len();
         None
-    }
-}
-
-// =============================================================================
-// SIMD horizontal sum helpers
-// =============================================================================
-
-#[cfg(target_arch = "x86_64")]
-impl FieldReader<'_> {
-    #[inline(always)]
-    fn hsum_sad_128(v: __m128i) -> u32 {
-        // SAFETY: SSE2 is baseline on x86_64. Pure SIMD arithmetic.
-        unsafe {
-            let hi = _mm_srli_si128(v, 8);
-            let sum = _mm_add_epi64(v, hi);
-            _mm_cvtsi128_si32(sum) as u32
-        }
-    }
-
-    #[cfg(target_feature = "avx2")]
-    #[inline(always)]
-    fn hsum_sad_256(v: __m256i) -> u32 {
-        // SAFETY: AVX2 guaranteed by cfg. Pure SIMD arithmetic.
-        unsafe {
-            let lo = _mm256_castsi256_si128(v);
-            let hi = _mm256_extracti128_si256(v, 1);
-            let sum = _mm_add_epi64(lo, hi);
-            Self::hsum_sad_128(sum)
-        }
-    }
-
-    #[cfg(target_feature = "avx512bw")]
-    #[inline(always)]
-    fn hsum_sad_512(v: __m512i) -> u32 {
-        // SAFETY: AVX-512BW guaranteed by cfg. Pure SIMD arithmetic.
-        unsafe {
-            let lo = _mm512_castsi512_si256(v);
-            let hi = _mm512_extracti64x4_epi64(v, 1);
-            let sum = _mm256_add_epi64(lo, hi);
-            Self::hsum_sad_256(sum)
-        }
     }
 }
 
@@ -573,36 +476,22 @@ mod tests {
     }
 
     #[test]
-    fn checksum_matches_byte_sum() {
+    fn standalone_checksum_matches_byte_sum() {
         let msg = b"8=FIX.4.4\x0135=D\x0149=SENDER\x01";
-        let mut parser = FieldReader::new(msg, 0);
-        while parser.next_field().is_some() {}
-
         let expected: u8 = msg.iter().map(|&b| b as u32).sum::<u32>() as u8;
-        assert_eq!(parser.checksum(), expected);
+        assert_eq!(checksum(msg), expected);
     }
 
     #[test]
-    fn checksum_from_offset() {
-        let msg = b"8=FIX.4.4\x0135=D\x01";
-        let mut parser = FieldReader::new(msg, 10);
-        while parser.next_field().is_some() {}
-
-        let expected: u8 = msg[10..].iter().map(|&b| b as u32).sum::<u32>() as u8;
-        assert_eq!(parser.checksum(), expected);
-    }
-
-    #[test]
-    fn checksum_various_lengths() {
-        for len in 1..=200 {
+    fn standalone_checksum_various_lengths() {
+        // Sweep every length so the standalone checksum's auto-vectorized tiers
+        // (and tail) are all exercised.
+        for len in 1..=300 {
             let value = "X".repeat(len);
             let msg = format!("1={}\x01", value);
             let msg = msg.as_bytes();
-
             let expected: u8 = msg.iter().map(|&b| b as u32).sum::<u32>() as u8;
-            let mut parser = FieldReader::new(msg, 0);
-            while parser.next_field().is_some() {}
-            assert_eq!(parser.checksum(), expected, "len={}", len);
+            assert_eq!(checksum(msg), expected, "len={}", len);
         }
     }
 
@@ -643,22 +532,20 @@ mod tests {
         assert_eq!(fields[14].tag, 10);
         assert_eq!(fields[14].value.slice(msg), b"178");
 
-        // Checksum excludes the tag 10 field
-        let tag10_field = b"10=178\x01";
-        let body_sum: u32 = msg.iter().map(|&b| b as u32).sum::<u32>()
-            - tag10_field.iter().map(|&b| b as u32).sum::<u32>();
-        assert_eq!(parser.checksum(), (body_sum & 0xFF) as u8);
+        // FIX checksum covers every byte before the "10=" field.
+        let body = &msg[..msg.len() - b"10=178\x01".len()];
+        let body_sum: u8 = body.iter().map(|&b| b as u32).sum::<u32>() as u8;
+        assert_eq!(checksum(body), body_sum);
     }
 
     #[test]
-    fn checksum_excludes_tag_10() {
-        let msg = b"35=D\x0149=SENDER\x0110=099\x01";
-        let mut parser = FieldReader::new(msg, 0);
-        while parser.next_field().is_some() {}
-
+    fn verify_checksum_excludes_tag_10() {
+        // CheckSum covers only the bytes before "10=". Build the message with
+        // the correct value and confirm verification passes.
         let body = b"35=D\x0149=SENDER\x01";
-        let expected: u8 = body.iter().map(|&b| b as u32).sum::<u32>() as u8;
-        assert_eq!(parser.checksum(), expected);
+        let sum = checksum(body);
+        let msg = format!("35=D\x0149=SENDER\x0110={sum:03}\x01");
+        assert!(validate_checksum(msg.as_bytes()).is_ok());
     }
 
     #[test]
@@ -674,7 +561,7 @@ mod tests {
         assert!(parser.next_field().is_none());
 
         let expected: u8 = msg.iter().map(|&b| b as u32).sum::<u32>() as u8;
-        assert_eq!(parser.checksum(), expected);
+        assert_eq!(checksum(msg), expected);
     }
 
     #[test]
@@ -691,10 +578,8 @@ mod tests {
         }
         assert_eq!(count, 50);
 
-        let tag10_field = b"10=v\x01";
-        let expected: u8 = (msg.iter().map(|&b| b as u32).sum::<u32>()
-            - tag10_field.iter().map(|&b| b as u32).sum::<u32>()) as u8;
-        assert_eq!(parser.checksum(), expected);
+        let expected: u8 = msg.iter().map(|&b| b as u32).sum::<u32>() as u8;
+        assert_eq!(checksum(&msg), expected);
     }
 
     #[test]
@@ -862,18 +747,7 @@ mod tests {
         assert!(parser.next_field().is_none());
 
         let expected: u8 = msg.iter().map(|&b| b as u32).sum::<u32>() as u8;
-        assert_eq!(parser.checksum(), expected);
-    }
-
-    #[test]
-    fn checksum_excludes_tag_10_mid_message() {
-        let msg = b"35=D\x0110=099\x0149=SENDER\x01";
-        let mut parser = FieldReader::new(msg, 0);
-        let fields: Vec<_> = parser.by_ref().collect();
-        assert_eq!(fields.len(), 3);
-
-        let body_sum: u32 = b"35=D\x0149=SENDER\x01".iter().map(|&b| b as u32).sum();
-        assert_eq!(parser.checksum(), (body_sum & 0xFF) as u8);
+        assert_eq!(checksum(msg), expected);
     }
 
     #[test]
@@ -895,10 +769,10 @@ mod tests {
     }
 
     #[test]
-    fn resync_after_data_keeps_checksum_exact() {
-        // The generated DATA-field skip relies on `resync_after_data` keeping the
-        // running checksum exact across an in-place jump past an embedded-SOH
-        // value. (Regression: replacing the reader reset the accumulator to 0.)
+    fn resync_after_data_repositions() {
+        // The generated DATA-field skip jumps the reader past a length-prefixed
+        // value that may contain embedded SOH, then continues scanning. Verify
+        // the reposition lands exactly on the next field.
         // value "a\x01b\x01c" — 5 bytes, two embedded SOH.
         let msg = b"8=FIX.4.4\x0195=5\x0196=a\x01b\x01c\x0155=X\x01";
 
@@ -919,8 +793,12 @@ mod tests {
         assert_eq!(f55.value.slice(msg), b"X");
         assert!(r.next_field().is_none());
 
-        // No tag 10 here, so the accumulator must equal the whole-message sum.
-        assert_eq!(r.checksum(), checksum(msg));
+        // The standalone checksum covers the DATA bytes (incl. embedded SOH)
+        // with a flat contiguous sum — no special handling needed.
+        assert_eq!(
+            checksum(msg),
+            msg.iter().map(|&b| b as u32).sum::<u32>() as u8
+        );
     }
 
     // =========================================================================
