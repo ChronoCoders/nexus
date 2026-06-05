@@ -109,9 +109,18 @@ fn build_alpha_nos_no_groups() -> Vec<u8> {
 
 fn build_beta_md_with_groups() -> Vec<u8> {
     let mut buf = [0u8; 512];
-    let px_bid = nexus_fix_codec::FixDecimal { mantissa: 11050, scale: 4 };
-    let px_offer = nexus_fix_codec::FixDecimal { mantissa: 11052, scale: 4 };
-    let sz = nexus_fix_codec::FixDecimal { mantissa: 1_000_000, scale: 0 };
+    let px_bid = nexus_fix_codec::FixDecimal {
+        mantissa: 11050,
+        scale: 4,
+    };
+    let px_offer = nexus_fix_codec::FixDecimal {
+        mantissa: 11052,
+        scale: 4,
+    };
+    let sz = nexus_fix_codec::FixDecimal {
+        mantissa: 1_000_000,
+        scale: 0,
+    };
     let msg = venue_beta::encoders::MarketDataSnapshotFullRefreshEncoder::wrap(&mut buf)
         .header_encoder()
         .finish()
@@ -182,7 +191,8 @@ fn main() {
     });
 
     measure("beta MD decode+iterate  (2 entries)", || {
-        let m = venue_beta::messages::MarketDataSnapshotFullRefresh::decode(black_box(&md_grp)).unwrap();
+        let m = venue_beta::messages::MarketDataSnapshotFullRefresh::decode(black_box(&md_grp))
+            .unwrap();
         let mut count = 0u32;
         for e in m.no_md_entries() {
             black_box(e.md_entry_px());
