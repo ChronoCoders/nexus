@@ -15,3 +15,4 @@ workspace = true
 
 [dependencies]
 nexus-fix-codec = { path = "../nexus-fix-codec" }
+nexus-net = { path = "../nexus-net" }

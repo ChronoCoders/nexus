@@ -9,9 +9,9 @@
 //!
 //! # Buffer-too-small policy
 //!
-//! Two layers, two behaviors. [`FrameWriter`] — the user-facing message builder
-//! — **never panics** on a small buffer: an overflowing field poisons the writer
-//! and [`finish`](FrameWriter::finish) returns [`EncodeError::BufferFull`], so
+//! Two layers, two behaviors. [`FrameFormatter`] — the user-facing message builder
+//! — **never panics** on a small buffer: an overflowing field poisons the formatter
+//! and [`finish`](FrameFormatter::finish) returns [`EncodeError::BufferFull`], so
 //! the caller owns the failure. The lower-level primitives ([`encode_field`] and
 //! the value-type `encode` methods like [`FixDecimal::encode`](crate::FixDecimal::encode))
 //! instead **assert** capacity up front — an internal contract that lets them
@@ -95,18 +95,19 @@ impl<'a> FieldWriter<'a> {
 /// # Example
 ///
 /// ```
-/// use nexus_fix_codec::FrameWriter;
+/// use nexus_fix_codec::FrameFormatter;
 ///
 /// let mut buf = [0u8; 128];
-/// let mut f = FrameWriter::new(&mut buf, b"FIX.4.4", b"D"); // 8=, reserve 9=, 35=D
+/// let mut f = FrameFormatter::new(&mut buf, b"FIX.4.4", b"D"); // 8=, reserve 9=, 35=D
 /// f.field(49, b"SENDER");
 /// f.field(56, b"TARGET");
 /// f.field(11, b"ORD-1");
-/// let msg = f.finish().unwrap();
+/// let (start, len) = f.finish().unwrap();
+/// let msg = &buf[start..start + len];
 /// assert!(msg.starts_with(b"8=FIX.4.4\x019="));
 /// assert!(nexus_fix_codec::validate_checksum(msg).is_ok());
 /// ```
-pub struct FrameWriter<'buf> {
+pub struct FrameFormatter<'buf> {
     buf: &'buf mut [u8],
     begin_string: &'static [u8],
     /// Start of the body-length-counted region (after the reserved prefix).
@@ -117,7 +118,7 @@ pub struct FrameWriter<'buf> {
     full: bool,
 }
 
-impl<'buf> FrameWriter<'buf> {
+impl<'buf> FrameFormatter<'buf> {
     /// Begin a message: reserve the front prefix and write `35=<msg_type>`.
     ///
     /// The reservation defaults to the widest the `8=…9=…` prefix could need
@@ -173,16 +174,15 @@ impl<'buf> FrameWriter<'buf> {
         self.full
     }
 
-    /// Finish the message: write `8=…9=<canonical>` and append the checksum,
-    /// returning the framed message slice.
+    /// Finish the message: write `8=…9=<canonical>` and append the checksum.
     ///
-    /// The returned slice may start a few bytes into `buf` (the prefix is
-    /// right-aligned), so transmit exactly the returned slice — not `&buf[..]`.
+    /// Returns `(start, len)` — the byte offset and length of the finished
+    /// message within the buffer. The message is at `buf[start..start + len]`.
     ///
     /// # Errors
     /// [`EncodeError::BufferFull`](crate::EncodeError::BufferFull) if any field,
     /// the prefix, or the checksum did not fit.
-    pub fn finish(mut self) -> Result<&'buf [u8], EncodeError> {
+    pub fn finish(mut self) -> Result<(usize, usize), EncodeError> {
         if self.full {
             return Err(EncodeError::BufferFull);
         }
@@ -222,20 +222,20 @@ impl<'buf> FrameWriter<'buf> {
         // Checksum covers everything from `8=` up to (not including) `10=`.
         let sum = crate::checksum(&self.buf[start..self.pos]);
         let end = encode_field(self.buf, self.pos, 10, &format_checksum(sum));
-        Ok(&self.buf[start..end])
+        Ok((start, end - start))
     }
 }
 
-/// Resume an encoder stage from an in-progress [`FrameWriter`].
+/// Resume an encoder stage from an in-progress [`FrameFormatter`].
 ///
 /// Generated message encoders implement this so the venue-shared header encoder
 /// can return control to the per-message body stage when its `end()` is called,
 /// without the header encoder needing to name the concrete message type. It's
 /// the typestate handoff: header writer → message body writer, carrying the
 /// buffer along.
-pub trait FromFrame<'buf> {
+pub trait FromFormatter<'buf> {
     /// Resume encoding from `frame`.
-    fn from_frame(frame: FrameWriter<'buf>) -> Self;
+    fn from_formatter(frame: FrameFormatter<'buf>) -> Self;
 }
 
 /// Widest the `8=…9=…` prefix can be for a buffer of `buf_len` bytes: the `8=`
@@ -575,16 +575,17 @@ mod tests {
         assert_eq!(buf[msg_end - 1], 0x01);
     }
 
-    // ---- FrameWriter ----
+    // ---- FrameFormatter ----
 
     #[test]
     fn frame_basic_roundtrips() {
         let mut buf = [0u8; 128];
-        let mut f = FrameWriter::new(&mut buf, b"FIX.4.4", b"D");
+        let mut f = FrameFormatter::new(&mut buf, b"FIX.4.4", b"D");
         f.field(49, b"SENDER");
         f.field(56, b"TARGET");
         f.field(11, b"ORD-1");
-        let msg = f.finish().unwrap();
+        let (start, len) = f.finish().unwrap();
+        let msg = &buf[start..start + len];
 
         assert!(msg.starts_with(b"8=FIX.4.4\x019="));
         assert!(crate::validate_checksum(msg).is_ok());
@@ -604,9 +605,10 @@ mod tests {
         // Small body → BodyLength has fewer digits than the reservation;
         // the value must still be canonical (no leading zeros).
         let mut buf = [0u8; 4096];
-        let mut f = FrameWriter::new(&mut buf, b"FIX.4.4", b"0");
+        let mut f = FrameFormatter::new(&mut buf, b"FIX.4.4", b"0");
         f.field(112, b"HB");
-        let msg = f.finish().unwrap();
+        let (start, len) = f.finish().unwrap();
+        let msg = &buf[start..start + len];
 
         let mut r = crate::FieldReader::new(msg, 0);
         let fields: Vec<_> = r.by_ref().collect();
@@ -621,15 +623,14 @@ mod tests {
         // into it, so the message starts a few bytes in (no shift, body never
         // moved). buf.len() has 4 digits, the body's BodyLength only 2.
         let mut buf = [0u8; 1024];
-        let base = buf.as_ptr() as usize;
-        let mut f = FrameWriter::new(&mut buf, b"FIX.4.4", b"D");
+        let mut f = FrameFormatter::new(&mut buf, b"FIX.4.4", b"D");
         f.field(11, b"A");
-        let msg = f.finish().unwrap();
-        let offset = msg.as_ptr() as usize - base;
+        let (start, len) = f.finish().unwrap();
         assert!(
-            offset > 0,
+            start > 0,
             "right-aligned prefix should start past offset 0"
         );
+        let msg = &buf[start..start + len];
         assert!(crate::validate_checksum(msg).is_ok());
         assert!(msg.starts_with(b"8=FIX.4.4\x019="));
     }
@@ -638,7 +639,7 @@ mod tests {
     fn frame_buffer_full_no_panic() {
         // Too small even for the prefix — must error, never panic.
         let mut buf = [0u8; 8];
-        let mut f = FrameWriter::new(&mut buf, b"FIX.4.4", b"D");
+        let mut f = FrameFormatter::new(&mut buf, b"FIX.4.4", b"D");
         f.field(49, b"SENDER");
         assert_eq!(f.finish(), Err(crate::EncodeError::BufferFull));
     }
@@ -647,7 +648,7 @@ mod tests {
     fn frame_field_overflow_poisons() {
         // The body overruns mid-write → poisoned → BufferFull at finish.
         let mut buf = [0u8; 32];
-        let mut f = FrameWriter::new(&mut buf, b"FIX.4.4", b"D");
+        let mut f = FrameFormatter::new(&mut buf, b"FIX.4.4", b"D");
         f.field(11, b"THIS-IS-A-VERY-LONG-CLORDID-THAT-WONT-FIT");
         assert!(f.is_full());
         assert_eq!(f.finish(), Err(crate::EncodeError::BufferFull));
@@ -658,10 +659,11 @@ mod tests {
         // Reserve room for a 1-digit BodyLength, then write a body that needs
         // two digits → finish() shifts the content to make prefix room.
         let mut buf = [0u8; 128];
-        let mut f = FrameWriter::with_reserved(&mut buf, b"FIX.4.4", b"D", 14);
+        let mut f = FrameFormatter::with_reserved(&mut buf, b"FIX.4.4", b"D", 14);
         f.field(49, b"SENDER");
         f.field(56, b"TARGET");
-        let msg = f.finish().unwrap();
+        let (start, len) = f.finish().unwrap();
+        let msg = &buf[start..start + len];
 
         assert!(crate::validate_checksum(msg).is_ok());
         let mut r = crate::FieldReader::new(msg, 0);
