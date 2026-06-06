@@ -87,23 +87,19 @@ fn logon(seq: u32, hbi: u32) -> Vec<u8> {
 }
 
 fn logout(seq: u32) -> Vec<u8> {
-    format!("34={seq}\x0135=5\x0149=TARGET\x0156=SENDER\x01")
-        .into_bytes()
+    format!("34={seq}\x0135=5\x0149=TARGET\x0156=SENDER\x01").into_bytes()
 }
 
 fn heartbeat(seq: u32) -> Vec<u8> {
-    format!("34={seq}\x0135=0\x0149=TARGET\x0156=SENDER\x01")
-        .into_bytes()
+    format!("34={seq}\x0135=0\x0149=TARGET\x0156=SENDER\x01").into_bytes()
 }
 
 fn test_request(seq: u32, id: &str) -> Vec<u8> {
-    format!("34={seq}\x0135=1\x0149=TARGET\x0156=SENDER\x01112={id}\x01")
-        .into_bytes()
+    format!("34={seq}\x0135=1\x0149=TARGET\x0156=SENDER\x01112={id}\x01").into_bytes()
 }
 
 fn resend_request(seq: u32, begin: u32, end: u32) -> Vec<u8> {
-    format!("34={seq}\x017={begin}\x0116={end}\x0135=2\x0149=TARGET\x0156=SENDER\x01")
-        .into_bytes()
+    format!("34={seq}\x017={begin}\x0116={end}\x0135=2\x0149=TARGET\x0156=SENDER\x01").into_bytes()
 }
 
 fn sequence_reset(seq: u32, new_seq: u32, gap_fill: bool) -> Vec<u8> {
@@ -115,8 +111,7 @@ fn sequence_reset(seq: u32, new_seq: u32, gap_fill: bool) -> Vec<u8> {
 }
 
 fn app_msg(seq: u32) -> Vec<u8> {
-    format!("34={seq}\x0135=D\x0149=TARGET\x0156=SENDER\x01")
-        .into_bytes()
+    format!("34={seq}\x0135=D\x0149=TARGET\x0156=SENDER\x01").into_bytes()
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
@@ -131,7 +126,13 @@ fn acceptor_logon() {
     assert_eq!(out.event(), Some(Event::Established { heart_bt_int_s: 30 }));
     let admins = admin_msgs(out);
     assert_eq!(admins.len(), 1);
-    assert!(matches!(admins[0], AdminMsg::Logon { seq: 1, heart_bt_int_s: 30 }));
+    assert!(matches!(
+        admins[0],
+        AdminMsg::Logon {
+            seq: 1,
+            heart_bt_int_s: 30
+        }
+    ));
 }
 
 #[test]
@@ -158,10 +159,17 @@ fn logout_round_trip() {
     let msg = logout(2);
     let (out, _) = s.on_message(&msg, now).unwrap();
     assert_eq!(s.state().state(), State::Disconnected);
-    assert_eq!(out.event(), Some(Event::Disconnected {
-        reason: nexus_fix_engine::DisconnectReason::Logout,
-    }));
-    assert!(admin_msgs(out).iter().any(|a| matches!(a, AdminMsg::Logout { .. })));
+    assert_eq!(
+        out.event(),
+        Some(Event::Disconnected {
+            reason: nexus_fix_engine::DisconnectReason::Logout,
+        })
+    );
+    assert!(
+        admin_msgs(out)
+            .iter()
+            .any(|a| matches!(a, AdminMsg::Logout { .. }))
+    );
 }
 
 #[test]
@@ -188,7 +196,10 @@ fn test_request_echoed_as_heartbeat() {
     let admins = admin_msgs(out);
     assert_eq!(admins.len(), 1);
     match admins[0] {
-        AdminMsg::Heartbeat { echo: Some((id, len)), .. } => {
+        AdminMsg::Heartbeat {
+            echo: Some((id, len)),
+            ..
+        } => {
             assert_eq!(&id[..len as usize], b"PROBE1");
         }
         _ => panic!("expected Heartbeat with echo"),
@@ -209,7 +220,11 @@ fn resend_request_triggers_gap_fill() {
         out.event(),
         Some(Event::ResendRange { begin: 2, end: 3 })
     ));
-    assert!(admin_msgs(out).iter().any(|a| matches!(a, AdminMsg::SequenceReset { .. })));
+    assert!(
+        admin_msgs(out)
+            .iter()
+            .any(|a| matches!(a, AdminMsg::SequenceReset { .. }))
+    );
 }
 
 #[test]
@@ -239,7 +254,13 @@ fn app_message_surfaces_header() {
     let msg = app_msg(2);
     let (out, hdr) = s.on_message(&msg, now).unwrap();
     assert!(hdr.is_some());
-    assert_eq!(out.event(), Some(Event::App { seq_num: 2, poss_dup: false }));
+    assert_eq!(
+        out.event(),
+        Some(Event::App {
+            seq_num: 2,
+            poss_dup: false
+        })
+    );
 }
 
 #[test]
@@ -254,6 +275,8 @@ fn comp_id_mismatch_disconnects() {
     assert_eq!(s.state().state(), State::Disconnected);
     assert!(matches!(
         out.event(),
-        Some(Event::Disconnected { reason: nexus_fix_engine::DisconnectReason::CompIdMismatch })
+        Some(Event::Disconnected {
+            reason: nexus_fix_engine::DisconnectReason::CompIdMismatch
+        })
     ));
 }

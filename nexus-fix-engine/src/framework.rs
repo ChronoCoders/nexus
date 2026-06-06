@@ -1,7 +1,9 @@
 use core::marker::PhantomData;
 use std::time::Instant;
 
-use nexus_fix_codec::{FixDictionary, FixHeader, find_tag, parse_fix_bool, parse_fix_seqnum, parse_fix_uint};
+use nexus_fix_codec::{
+    FixDictionary, FixHeader, find_tag, parse_fix_bool, parse_fix_seqnum, parse_fix_uint,
+};
 
 use crate::{Out, SessionState, State};
 
@@ -20,7 +22,10 @@ impl CompId {
         }
         let mut bytes = [0u8; COMP_ID_CAP];
         bytes[..s.len()].copy_from_slice(s);
-        Some(Self { bytes, len: s.len() as u8 })
+        Some(Self {
+            bytes,
+            len: s.len() as u8,
+        })
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -80,7 +85,11 @@ pub struct Session<D: FixDictionary> {
 
 impl<D: FixDictionary> Session<D> {
     pub fn new(state: SessionState, config: SessionConfig) -> Self {
-        Self { state, config, _dict: PhantomData }
+        Self {
+            state,
+            config,
+            _dict: PhantomData,
+        }
     }
 
     pub fn state(&self) -> &SessionState {
@@ -128,8 +137,7 @@ impl<D: FixDictionary> Session<D> {
 
         match header.raw_msg_type().map(|v| v.as_bytes()) {
             Some(b"A") => {
-                let hbi = find_tag(buf, 0, 108)
-                    .ok_or(SessionError::MissingField { tag: 108 })?;
+                let hbi = find_tag(buf, 0, 108).ok_or(SessionError::MissingField { tag: 108 })?;
                 let heart_bt_int = parse_fix_uint(hbi.slice(buf))
                     .map_err(|_| SessionError::MalformedField { tag: 108 })?;
                 let reset = find_tag(buf, 0, 141)
@@ -137,41 +145,54 @@ impl<D: FixDictionary> Session<D> {
                     .unwrap_or(false);
                 // Acceptor replies with its own Logon; initiator already sent one.
                 let send_reply = self.state.state() != State::LogonSent;
-                Ok((self.state.on_logon(seq, heart_bt_int, reset, send_reply, now), None))
+                Ok((
+                    self.state
+                        .on_logon(seq, heart_bt_int, reset, send_reply, now),
+                    None,
+                ))
             }
             Some(b"5") => Ok((self.state.on_logout(seq, poss_dup, now), None)),
             Some(b"0") => Ok((self.state.on_heartbeat(seq, poss_dup, now), None)),
             Some(b"1") => {
-                let test_req_id = find_tag(buf, 0, 112)
-                    .map_or_else(|| b"".as_ref(), |s| s.slice(buf));
-                Ok((self.state.on_test_request(seq, poss_dup, test_req_id, now), None))
+                let test_req_id =
+                    find_tag(buf, 0, 112).map_or_else(|| b"".as_ref(), |s| s.slice(buf));
+                Ok((
+                    self.state.on_test_request(seq, poss_dup, test_req_id, now),
+                    None,
+                ))
             }
             Some(b"2") => {
-                let begin = find_tag(buf, 0, 7)
-                    .ok_or(SessionError::MissingField { tag: 7 })?;
+                let begin = find_tag(buf, 0, 7).ok_or(SessionError::MissingField { tag: 7 })?;
                 let begin = parse_fix_seqnum(begin.slice(buf))
-                    .map_err(|_| SessionError::MalformedField { tag: 7 })? as u32;
-                let end = find_tag(buf, 0, 16)
-                    .ok_or(SessionError::MissingField { tag: 16 })?;
+                    .map_err(|_| SessionError::MalformedField { tag: 7 })?
+                    as u32;
+                let end = find_tag(buf, 0, 16).ok_or(SessionError::MissingField { tag: 16 })?;
                 let end = parse_fix_seqnum(end.slice(buf))
-                    .map_err(|_| SessionError::MalformedField { tag: 16 })? as u32;
-                Ok((self.state.on_resend_request(seq, poss_dup, begin, end, now), None))
+                    .map_err(|_| SessionError::MalformedField { tag: 16 })?
+                    as u32;
+                Ok((
+                    self.state.on_resend_request(seq, poss_dup, begin, end, now),
+                    None,
+                ))
             }
             Some(b"4") => {
-                let new_seq = find_tag(buf, 0, 36)
-                    .ok_or(SessionError::MissingField { tag: 36 })?;
+                let new_seq = find_tag(buf, 0, 36).ok_or(SessionError::MissingField { tag: 36 })?;
                 let new_seq = parse_fix_seqnum(new_seq.slice(buf))
-                    .map_err(|_| SessionError::MalformedField { tag: 36 })? as u32;
+                    .map_err(|_| SessionError::MalformedField { tag: 36 })?
+                    as u32;
                 let gap_fill = find_tag(buf, 0, 123)
                     .and_then(|s| parse_fix_bool(s.slice(buf)).ok())
                     .unwrap_or(false);
-                Ok((self.state.on_sequence_reset(seq, new_seq, gap_fill, now), None))
+                Ok((
+                    self.state.on_sequence_reset(seq, new_seq, gap_fill, now),
+                    None,
+                ))
             }
             Some(b"3") => {
-                let ref_seq = find_tag(buf, 0, 45)
-                    .ok_or(SessionError::MissingField { tag: 45 })?;
+                let ref_seq = find_tag(buf, 0, 45).ok_or(SessionError::MissingField { tag: 45 })?;
                 let ref_seq = parse_fix_seqnum(ref_seq.slice(buf))
-                    .map_err(|_| SessionError::MalformedField { tag: 45 })? as u32;
+                    .map_err(|_| SessionError::MalformedField { tag: 45 })?
+                    as u32;
                 Ok((self.state.on_reject(seq, poss_dup, ref_seq, now), None))
             }
             Some(_) => {
