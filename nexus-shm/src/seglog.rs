@@ -142,6 +142,32 @@ unsafe impl Send for Slot {}
 /// active becomes readable, clean standby becomes active. The hot-path append
 /// never blocks on cleaning; the conductor must finish before the *next*
 /// rotation (size segments with enough headroom for the expected message rate).
+///
+/// # Global offset addressing
+///
+/// Sequential reads use a monotonically increasing `u64` position that spans
+/// all segments. The physical slot is derived via modular arithmetic:
+///
+/// ```text
+/// segment_number = pos / segment_size
+/// local_offset   = pos % segment_size
+/// slot_index     = segment_number % 3
+/// ```
+///
+/// This works because the init order (`current=0, prev=2, standby=1`) is
+/// chosen so that the rotation cycle (`current→prev, standby→current,
+/// old_prev→standby`) visits slots in order 0 → 1 → 2 → 0 → …:
+///
+/// ```text
+/// epoch 0: current=0  prev=2  standby=1
+/// epoch 1: current=1  prev=0  standby=2
+/// epoch 2: current=2  prev=1  standby=0
+/// epoch 3: current=0  prev=2  standby=1   (cycle repeats)
+/// ```
+///
+/// At any point, only the current (`epoch`) and previous (`epoch − 1`)
+/// segments are readable. Older segments have been handed to the conductor
+/// for cleaning.
 pub struct SegmentedLog {
     // conductor is dropped first (joins thread), then slots (unmaps memory).
     conductor: ConductorHandle,
@@ -212,8 +238,8 @@ impl SegmentedLog {
             slots: [s0, s1, s2],
             segment_size: size,
             current: 0,
-            prev: 1,
-            standby: 2,
+            prev: 2,
+            standby: 1,
             cursor: 0,
             epoch: 0,
             // Slot 0 is current at generation 0. Slots 1 and 2 hold no valid
@@ -293,6 +319,70 @@ impl SegmentedLog {
             if off + FRAME_HDR + body > self.segment_size {
                 return None;
             }
+            Some(std::slice::from_raw_parts(ptr.add(FRAME_HDR), body))
+        }
+    }
+
+    /// Monotonically increasing global offset at the current write position.
+    pub fn write_pos(&self) -> u64 {
+        self.epoch as u64 * self.segment_size as u64 + self.cursor as u64
+    }
+
+    /// Global offset at the start of the oldest readable segment.
+    pub fn read_start(&self) -> u64 {
+        if self.epoch == 0 {
+            0
+        } else {
+            (self.epoch as u64 - 1) * self.segment_size as u64
+        }
+    }
+
+    /// Read the next committed record at `pos`, advancing past it.
+    ///
+    /// Returns `None` when caught up to the writer or when `pos` references
+    /// an evicted segment. The slot is determined by `pos / segment_size % 3`;
+    /// the init order guarantees this maps directly to the physical slot index.
+    pub fn read_next(&self, pos: &mut u64) -> Option<&[u8]> {
+        let seg_size = self.segment_size as u64;
+        let seg = *pos / seg_size;
+        let local = (*pos % seg_size) as usize;
+        let epoch = self.epoch as u64;
+
+        if seg > epoch || (epoch > 0 && seg + 1 < epoch) {
+            return None;
+        }
+
+        let slot = (seg % 3) as usize;
+
+        if local + FRAME_HDR > self.segment_size {
+            if seg < epoch {
+                *pos = (seg + 1) * seg_size;
+                return self.read_next(pos);
+            }
+            return None;
+        }
+
+        let data = self.slots[slot].data;
+        // SAFETY: `slot` is `seg % 3` where `seg` is either `epoch` (current) or
+        // `epoch - 1` (prev), both live mmap'd segments. `local` is bounded by
+        // `segment_size` via the modulo. The `local + FRAME_HDR` check above ensures
+        // we don't read past the segment for the header. The `local + FRAME_HDR + body`
+        // check below prevents reading past the segment for the payload.
+        unsafe {
+            let ptr = data.add(local);
+            let stored = (*commit_len_ptr(ptr)).load(Ordering::Acquire);
+            if stored == 0 {
+                if seg < epoch {
+                    *pos = (seg + 1) * seg_size;
+                    return self.read_next(pos);
+                }
+                return None;
+            }
+            let body = (stored - 1) as usize;
+            if local + FRAME_HDR + body > self.segment_size {
+                return None;
+            }
+            *pos += footprint(body) as u64;
             Some(std::slice::from_raw_parts(ptr.add(FRAME_HDR), body))
         }
     }
@@ -398,17 +488,17 @@ mod tests {
             log.append(&[0u8; 8]).unwrap();
         }
         // rotation 1 triggered by the first of the next 4 appends:
-        //   slot 0 → prev, slot 2 → current, slot 1 → standby (conductor cleaning slot 1)
+        //   slot 0 → prev, slot 1 → current, slot 2 → standby (conductor cleaning slot 2)
         for _ in 0..4 {
             log.append(&[0u8; 8]).unwrap();
         }
-        // wait for conductor to finish cleaning slot 1 before triggering rotation 2
+        // wait for conductor to finish cleaning slot 2 before triggering rotation 2
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while !log.conductor.ready.load(Ordering::Acquire) {
             assert!(std::time::Instant::now() < deadline, "conductor timed out");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        // rotation 2: slot 2 → prev, slot 1 → current, slot 0 → standby
+        // rotation 2: slot 1 → prev, slot 2 → current, slot 0 → standby
         log.append(&[0u8; 1]).unwrap();
         // slot 0 is standby → no longer readable
         assert_eq!(log.read(o0), None);
@@ -426,7 +516,7 @@ mod tests {
         for _ in 0..3 {
             log.append(&[0u8; 8]).unwrap();
         }
-        // Rotation 1: slot 2 → current (gen 1), slot 0 → prev
+        // Rotation 1: slot 1 → current (gen 1), slot 0 → prev
         for _ in 0..4 {
             log.append(&[0u8; 8]).unwrap();
         }
@@ -435,7 +525,7 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "conductor timed out");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        // Rotation 2: slot 1 → current (gen 2), slot 2 → prev, slot 0 → standby
+        // Rotation 2: slot 2 → current (gen 2), slot 1 → prev, slot 0 → standby
         for _ in 0..4 {
             log.append(&[0u8; 8]).unwrap();
         }
@@ -444,7 +534,7 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "conductor timed out");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        // Rotation 3: slot 0 → current (gen 3), slot 1 → prev, slot 2 → standby.
+        // Rotation 3: slot 0 → current (gen 3), slot 2 → prev, slot 1 → standby.
         // Slot 0 is current again — same slot index as `stale` — but gen 3 != gen 0.
         log.append(&[0u8; 8]).unwrap();
         assert_eq!(log.read(stale), None);
@@ -468,6 +558,253 @@ mod tests {
         let mut log = open(&b, 1 << 16);
         let off = log.append(&[]).unwrap();
         assert_eq!(log.read(off), Some(b"".as_ref()));
+        cleanup(&b);
+    }
+
+    // ── sequential scan tests ────────────────────────────────────────────
+
+    #[test]
+    fn scan_single_segment() {
+        let b = base("scan1");
+        cleanup(&b);
+        let mut log = open(&b, 1 << 16);
+        log.append(b"aaa").unwrap();
+        log.append(b"bb").unwrap();
+        log.append(b"cccc").unwrap();
+
+        let mut pos = log.read_start();
+        assert_eq!(log.read_next(&mut pos), Some(b"aaa".as_ref()));
+        assert_eq!(log.read_next(&mut pos), Some(b"bb".as_ref()));
+        assert_eq!(log.read_next(&mut pos), Some(b"cccc".as_ref()));
+        assert_eq!(log.read_next(&mut pos), None);
+        cleanup(&b);
+    }
+
+    #[test]
+    fn scan_across_rotation() {
+        let b = base("scanrot");
+        cleanup(&b);
+        // footprint(8) = 16; 4 records per segment; segment_size = 64
+        let mut log = open(&b, 64);
+        log.append(&[1u8; 8]).unwrap();
+        log.append(&[2u8; 8]).unwrap();
+        log.append(&[3u8; 8]).unwrap();
+        log.append(&[4u8; 8]).unwrap();
+        // segment full, next append triggers rotation
+        log.append(&[5u8; 8]).unwrap();
+        log.append(&[6u8; 8]).unwrap();
+
+        let mut pos = log.read_start();
+        assert_eq!(log.read_next(&mut pos), Some([1u8; 8].as_ref()));
+        assert_eq!(log.read_next(&mut pos), Some([2u8; 8].as_ref()));
+        assert_eq!(log.read_next(&mut pos), Some([3u8; 8].as_ref()));
+        assert_eq!(log.read_next(&mut pos), Some([4u8; 8].as_ref()));
+        // crosses into current segment
+        assert_eq!(log.read_next(&mut pos), Some([5u8; 8].as_ref()));
+        assert_eq!(log.read_next(&mut pos), Some([6u8; 8].as_ref()));
+        assert_eq!(log.read_next(&mut pos), None);
+        cleanup(&b);
+    }
+
+    #[test]
+    fn scan_resumes_after_append() {
+        let b = base("scanresume");
+        cleanup(&b);
+        let mut log = open(&b, 1 << 16);
+        log.append(b"first").unwrap();
+
+        let mut pos = log.read_start();
+        assert_eq!(log.read_next(&mut pos), Some(b"first".as_ref()));
+        assert_eq!(log.read_next(&mut pos), None);
+
+        log.append(b"second").unwrap();
+        assert_eq!(log.read_next(&mut pos), Some(b"second".as_ref()));
+        assert_eq!(log.read_next(&mut pos), None);
+        cleanup(&b);
+    }
+
+    #[test]
+    fn scan_evicted_returns_none() {
+        let b = base("scanevict");
+        cleanup(&b);
+        // footprint(8) = 16; 4 records per segment; segment_size = 64
+        let mut log = open(&b, 64);
+        let start = log.read_start();
+        // fill segment 0
+        for _ in 0..4 {
+            log.append(&[0u8; 8]).unwrap();
+        }
+        // rotation 1
+        for _ in 0..4 {
+            log.append(&[0u8; 8]).unwrap();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !log.conductor.ready.load(Ordering::Acquire) {
+            assert!(std::time::Instant::now() < deadline, "conductor timed out");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // rotation 2 — segment 0 is now standby, evicted
+        log.append(&[0u8; 8]).unwrap();
+
+        let mut pos = start;
+        assert_eq!(log.read_next(&mut pos), None);
+        cleanup(&b);
+    }
+
+    #[test]
+    fn write_pos_increases_monotonically() {
+        let b = base("wpos");
+        cleanup(&b);
+        // Large segment so no rotation needed for this test.
+        let mut log = open(&b, 1 << 16);
+        let mut prev_pos = log.write_pos();
+        assert_eq!(prev_pos, 0);
+        for _ in 0..12 {
+            log.append(&[0u8; 8]).unwrap();
+            let wp = log.write_pos();
+            assert!(wp > prev_pos, "write_pos must increase: {wp} <= {prev_pos}");
+            prev_pos = wp;
+        }
+        cleanup(&b);
+    }
+
+    #[test]
+    fn write_pos_increases_across_rotation() {
+        let b = base("wposrot");
+        cleanup(&b);
+        // footprint(8) = 16; 4 records per segment
+        let mut log = open(&b, 64);
+        let mut prev_pos = 0u64;
+        for i in 0..4 {
+            log.append(&[i as u8; 8]).unwrap();
+            let wp = log.write_pos();
+            assert!(wp > prev_pos, "write_pos must increase: {wp} <= {prev_pos}");
+            prev_pos = wp;
+        }
+        // triggers rotation
+        log.append(&[4u8; 8]).unwrap();
+        let wp = log.write_pos();
+        assert!(wp > prev_pos, "write_pos must increase after rotation: {wp} <= {prev_pos}");
+        cleanup(&b);
+    }
+
+    #[test]
+    fn slot_order_is_sequential() {
+        let b = base("slotord");
+        cleanup(&b);
+        // footprint(8) = 16; 4 records per segment; segment_size = 64
+        let mut log = open(&b, 64);
+        assert_eq!(log.current, 0);
+        // fill and rotate
+        for _ in 0..4 { log.append(&[0u8; 8]).unwrap(); }
+        log.append(&[0u8; 8]).unwrap();
+        assert_eq!(log.current, 1);
+        // fill and rotate again
+        for _ in 0..3 { log.append(&[0u8; 8]).unwrap(); }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !log.conductor.ready.load(Ordering::Acquire) {
+            assert!(std::time::Instant::now() < deadline, "conductor timed out");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        log.append(&[0u8; 8]).unwrap();
+        assert_eq!(log.current, 2);
+        cleanup(&b);
+    }
+
+    #[test]
+    fn scan_empty_log() {
+        let b = base("scanempty");
+        cleanup(&b);
+        let log = open(&b, 1 << 16);
+        let mut pos = log.read_start();
+        assert_eq!(pos, 0);
+        assert_eq!(log.read_next(&mut pos), None);
+        assert_eq!(log.write_pos(), 0);
+        cleanup(&b);
+    }
+
+    #[test]
+    fn scan_empty_payloads() {
+        let b = base("scanemptypay");
+        cleanup(&b);
+        let mut log = open(&b, 1 << 16);
+        log.append(&[]).unwrap();
+        log.append(&[]).unwrap();
+        log.append(b"x").unwrap();
+
+        let mut pos = log.read_start();
+        assert_eq!(log.read_next(&mut pos), Some(b"".as_ref()));
+        assert_eq!(log.read_next(&mut pos), Some(b"".as_ref()));
+        assert_eq!(log.read_next(&mut pos), Some(b"x".as_ref()));
+        assert_eq!(log.read_next(&mut pos), None);
+        cleanup(&b);
+    }
+
+    #[test]
+    fn scan_variable_size_records() {
+        let b = base("scanvar");
+        cleanup(&b);
+        let mut log = open(&b, 1 << 16);
+        log.append(b"a").unwrap();
+        log.append(b"bb").unwrap();
+        log.append(b"ccccccccc").unwrap(); // 9 bytes, aligns up to 16
+        log.append(b"dd").unwrap();
+
+        let mut pos = log.read_start();
+        assert_eq!(log.read_next(&mut pos), Some(b"a".as_ref()));
+        assert_eq!(log.read_next(&mut pos), Some(b"bb".as_ref()));
+        assert_eq!(log.read_next(&mut pos), Some(b"ccccccccc".as_ref()));
+        assert_eq!(log.read_next(&mut pos), Some(b"dd".as_ref()));
+        assert_eq!(log.read_next(&mut pos), None);
+        cleanup(&b);
+    }
+
+    #[test]
+    fn scan_cursor_matches_write_pos_after_drain() {
+        let b = base("scandrain");
+        cleanup(&b);
+        let mut log = open(&b, 64);
+        log.append(&[1u8; 8]).unwrap();
+        log.append(&[2u8; 8]).unwrap();
+        log.append(&[3u8; 8]).unwrap();
+
+        let mut pos = log.read_start();
+        while log.read_next(&mut pos).is_some() {}
+        assert_eq!(pos, log.write_pos());
+
+        // also holds after rotation
+        log.append(&[4u8; 8]).unwrap(); // fills segment
+        log.append(&[5u8; 8]).unwrap(); // triggers rotation
+        while log.read_next(&mut pos).is_some() {}
+        assert_eq!(pos, log.write_pos());
+        cleanup(&b);
+    }
+
+    #[test]
+    fn read_start_advances_after_rotation() {
+        let b = base("readstart");
+        cleanup(&b);
+        // footprint(8) = 16; 4 records per segment; segment_size = 64
+        let mut log = open(&b, 64);
+        assert_eq!(log.read_start(), 0);
+
+        // fill segment 0, trigger rotation
+        for _ in 0..4 { log.append(&[0u8; 8]).unwrap(); }
+        log.append(&[0u8; 8]).unwrap();
+        // epoch 1: prev = segment 0, current = segment 1
+        assert_eq!(log.read_start(), 0);
+
+        // fill segment 1, trigger rotation
+        for _ in 0..3 { log.append(&[0u8; 8]).unwrap(); }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !log.conductor.ready.load(Ordering::Acquire) {
+            assert!(std::time::Instant::now() < deadline, "conductor timed out");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        log.append(&[0u8; 8]).unwrap();
+        // epoch 2: prev = segment 1, current = segment 2
+        // segment 0 is evicted; read_start should be at segment 1
+        assert_eq!(log.read_start(), 64);
         cleanup(&b);
     }
 }
