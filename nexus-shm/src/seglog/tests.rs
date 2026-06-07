@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use super::frame::footprint;
-use super::{Conductor, ConductorBuilder, SegmentedLog, SegmentedLogError};
+use super::{Conductor, ConductorBuilder, LogError, OpenError, SegmentedLog};
 
 struct TempDir(PathBuf);
 
@@ -618,7 +618,7 @@ fn open_strict_rejects_mismatch() {
         .open_strict();
     assert!(matches!(
         result,
-        Err(SegmentedLogError::ConfigMismatch { .. })
+        Err(OpenError::ConfigMismatch { .. })
     ));
 }
 
@@ -692,7 +692,7 @@ fn conductor_session_in_use_rejected() {
     let result = c.session().segment_size(1 << 16).session_id(5).open();
     assert!(matches!(
         result,
-        Err(SegmentedLogError::SessionInUse { session_id: 5 })
+        Err(OpenError::SessionInUse { session_id: 5 })
     ));
 }
 
@@ -727,7 +727,7 @@ fn session_lock_cross_conductor() {
     let result = c2.session().segment_size(1 << 16).session_id(5).open();
     assert!(matches!(
         result,
-        Err(SegmentedLogError::SessionInUse { session_id: 5 })
+        Err(OpenError::SessionInUse { session_id: 5 })
     ));
 }
 
@@ -1212,7 +1212,7 @@ fn session_id_mismatch_on_corrupted_directory() {
     let result = c.session().segment_size(1 << 16).session_id(20).open();
     assert!(matches!(
         result,
-        Err(SegmentedLogError::ConfigMismatch {
+        Err(OpenError::ConfigMismatch {
             field: "session_id",
             ..
         })

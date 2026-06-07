@@ -22,7 +22,7 @@ pub use lock::Liveness;
 pub use pod::Pod;
 pub use region::MapOptions;
 pub use seglog::{
-    Conductor, ConductorBuilder, Frame, LogOffset, SegmentedLog, SegmentedLogBuilder,
-    SegmentedLogError,
+    Conductor, ConductorBuilder, Frame, LogError, LogOffset, OpenError, SegmentedLog,
+    SegmentedLogBuilder,
 };
 pub use segment::{Segment, Status};

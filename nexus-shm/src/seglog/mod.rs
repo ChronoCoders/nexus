@@ -18,7 +18,7 @@ use frame::{ALIGN, FRAME_HDR, align_up, commit_len_ptr, footprint, session_id_pt
 use manifest::Manifest;
 
 pub use conductor::{Conductor, ConductorBuilder};
-pub use error::SegmentedLogError;
+pub use error::{LogError, OpenError};
 pub use frame::{Frame, LogOffset};
 
 const MANIFEST_FILE: &str = "journal.manifest";
@@ -104,17 +104,17 @@ impl<'a> SegmentedLogBuilder<'a> {
     /// If the session directory contains an existing manifest, its structural
     /// config (segment size) takes precedence over the builder's settings.
     /// Use [`open_strict`](Self::open_strict) to error on mismatch instead.
-    pub fn open(self) -> Result<SegmentedLog, SegmentedLogError> {
+    pub fn open(self) -> Result<SegmentedLog, OpenError> {
         self.open_inner(false)
     }
 
     /// Open or recover a session log, erroring if the manifest's structural
     /// config does not match the builder's settings.
-    pub fn open_strict(self) -> Result<SegmentedLog, SegmentedLogError> {
+    pub fn open_strict(self) -> Result<SegmentedLog, OpenError> {
         self.open_inner(true)
     }
 
-    fn open_inner(self, strict: bool) -> Result<SegmentedLog, SegmentedLogError> {
+    fn open_inner(self, strict: bool) -> Result<SegmentedLog, OpenError> {
         let id = match self.session_id {
             Some(id) => {
                 self.conductor.register_explicit_id(id)?;
@@ -127,10 +127,13 @@ impl<'a> SegmentedLogBuilder<'a> {
         std::fs::create_dir_all(&session_dir)?;
 
         let session_lock = platform::FileLock::try_lock(session_dir.join(SESSION_LOCK_FILE))?
-            .ok_or(SegmentedLogError::SessionInUse { session_id: id })?;
+            .ok_or(OpenError::SessionInUse { session_id: id })?;
 
         let map = self.map_options();
         let size = align_up(self.segment_size.max(FRAME_HDR * 8));
+        if size > u32::MAX as usize {
+            return Err(OpenError::SegmentTooLarge { size });
+        }
         let name_bytes = self.name.as_deref().unwrap_or("").as_bytes();
         let res = SessionResources {
             tx: self.conductor.sender(),
@@ -226,10 +229,10 @@ impl SegmentedLog {
         session_id: u32,
         name: &[u8],
         res: SessionResources,
-    ) -> Result<Self, SegmentedLogError> {
+    ) -> Result<Self, OpenError> {
         let manifest = Manifest::create(&manifest_path(dir), size as u64, session_id, name)?;
 
-        let mk = |i: u8| -> Result<Slot, SegmentedLogError> {
+        let mk = |i: u8| -> Result<Slot, OpenError> {
             let seg = Segment::create(&seg_path(dir, i), size, map)?;
             let data = seg.data();
             Ok(Slot {
@@ -276,13 +279,13 @@ impl SegmentedLog {
         strict: bool,
         expected_session_id: u32,
         res: SessionResources,
-    ) -> Result<Self, SegmentedLogError> {
+    ) -> Result<Self, OpenError> {
         let manifest = Manifest::open(&manifest_path(dir))?;
         let manifest_size = manifest.segment_size() as usize;
         let session_id = manifest.session_id();
 
         if session_id != expected_session_id {
-            return Err(SegmentedLogError::ConfigMismatch {
+            return Err(OpenError::ConfigMismatch {
                 field: "session_id",
                 expected: expected_session_id as u64,
                 found: session_id as u64,
@@ -290,7 +293,7 @@ impl SegmentedLog {
         }
 
         if strict && manifest_size != requested_size {
-            return Err(SegmentedLogError::ConfigMismatch {
+            return Err(OpenError::ConfigMismatch {
                 field: "segment_size",
                 expected: requested_size as u64,
                 found: manifest_size as u64,
@@ -311,7 +314,7 @@ impl SegmentedLog {
             }
         };
 
-        let mk = |i: u8| -> Result<Slot, SegmentedLogError> {
+        let mk = |i: u8| -> Result<Slot, OpenError> {
             let path = seg_path(dir, i);
             let seg = if path.exists() {
                 Segment::attach(&path, map)?
@@ -375,11 +378,11 @@ impl SegmentedLog {
     ///
     /// Returns a [`LogOffset`] valid for reads until the slot is rotated out
     /// (two rotations after this write).
-    pub fn append(&mut self, payload: &[u8]) -> Result<LogOffset, SegmentedLogError> {
+    pub fn append(&mut self, payload: &[u8]) -> Result<LogOffset, LogError> {
         let body = payload.len();
         let foot = footprint(body);
         if foot > self.segment_size {
-            return Err(SegmentedLogError::RecordTooLarge {
+            return Err(LogError::RecordTooLarge {
                 max: self.segment_size.saturating_sub(FRAME_HDR),
             });
         }
@@ -532,9 +535,9 @@ impl SegmentedLog {
         }
     }
 
-    fn rotate(&mut self) -> Result<(), SegmentedLogError> {
+    fn rotate(&mut self) -> Result<(), LogError> {
         if !self.ready.load(Ordering::Acquire) {
-            return Err(SegmentedLogError::StandbyNotReady);
+            return Err(LogError::StandbyNotReady);
         }
         let old_prev = self.prev;
         self.prev = self.current;
@@ -553,7 +556,7 @@ impl SegmentedLog {
                 segment_size: self.segment_size,
                 ready: Arc::clone(&self.ready),
             })
-            .map_err(|_| SegmentedLogError::ConductorGone)?;
+            .map_err(|_| LogError::ConductorGone)?;
         Ok(())
     }
 }

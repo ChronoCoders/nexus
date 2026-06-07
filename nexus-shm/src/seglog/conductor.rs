@@ -66,7 +66,7 @@ fn write_counter(file: &mut std::fs::File, val: u32) {
 /// current counter, increments it, and writes back. The lock is released
 /// when the `FileLock` drops. The counter file is a plain ASCII integer
 /// for easy inspection.
-fn claim_next_session_id(dir: &Path) -> Result<u32, super::SegmentedLogError> {
+fn claim_next_session_id(dir: &Path) -> Result<u32, super::OpenError> {
     let mut lock = platform::FileLock::blocking(dir.join(LOCK_FILE))?;
     let current = read_counter(lock.file());
     let next = current + 1;
@@ -76,7 +76,7 @@ fn claim_next_session_id(dir: &Path) -> Result<u32, super::SegmentedLogError> {
 
 /// Ensure the counter is at least `id` so future auto-assignments won't
 /// collide with explicitly chosen IDs.
-fn ensure_counter_at_least(dir: &Path, id: u32) -> Result<(), super::SegmentedLogError> {
+fn ensure_counter_at_least(dir: &Path, id: u32) -> Result<(), super::OpenError> {
     let mut lock = platform::FileLock::blocking(dir.join(LOCK_FILE))?;
     let current = read_counter(lock.file());
     if id > current {
@@ -123,7 +123,7 @@ impl ConductorBuilder {
     }
 
     /// Open the conductor, creating the root directory if needed.
-    pub fn open(self) -> Result<Conductor, super::SegmentedLogError> {
+    pub fn open(self) -> Result<Conductor, super::OpenError> {
         std::fs::create_dir_all(&self.dir)?;
 
         let (tx, rx) = std::sync::mpsc::sync_channel(self.clean_queue_depth);
@@ -164,7 +164,7 @@ impl Conductor {
     ///
     /// Creates the directory if it does not exist. Use [`ConductorBuilder`]
     /// for custom configuration (e.g. clean queue depth).
-    pub fn open(dir: impl AsRef<Path>) -> Result<Self, super::SegmentedLogError> {
+    pub fn open(dir: impl AsRef<Path>) -> Result<Self, super::OpenError> {
         ConductorBuilder::new(dir).open()
     }
 
@@ -174,7 +174,7 @@ impl Conductor {
     }
 
     /// List session IDs that have manifests on disk.
-    pub fn sessions_on_disk(&self) -> Result<Vec<u32>, super::SegmentedLogError> {
+    pub fn sessions_on_disk(&self) -> Result<Vec<u32>, super::OpenError> {
         let mut ids = Vec::new();
         for entry in std::fs::read_dir(&self.dir)? {
             let entry = entry?;
@@ -196,12 +196,12 @@ impl Conductor {
     ///
     /// Uses a lock file (`conductor.lock`) to coordinate across processes.
     /// Multiple conductors on the same directory will never assign the same ID.
-    pub(crate) fn next_session_id(&self) -> Result<u32, super::SegmentedLogError> {
+    pub(crate) fn next_session_id(&self) -> Result<u32, super::OpenError> {
         claim_next_session_id(&self.dir)
     }
 
     /// Ensure the lock counter won't collide with an explicitly chosen ID.
-    pub(crate) fn register_explicit_id(&self, id: u32) -> Result<(), super::SegmentedLogError> {
+    pub(crate) fn register_explicit_id(&self, id: u32) -> Result<(), super::OpenError> {
         ensure_counter_at_least(&self.dir, id)
     }
 
