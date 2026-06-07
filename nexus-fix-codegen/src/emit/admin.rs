@@ -131,9 +131,14 @@ fn emit_admin_type(
         );
     }
     s.push_str("            checksum: nexus_fix_codec::FieldSpan::EMPTY,\n        };\n");
-    s.push_str("        while let Some(f) = m.header.reader.next_field() {\n            match f.tag {\n");
+    s.push_str(
+        "        while let Some(f) = m.header.reader.next_field() {\n            match f.tag {\n",
+    );
     for &(tag, field_name, _) in proto_fields {
-        let _ = writeln!(s, "                {tag} => {{ m.{field_name} = f.value; }}");
+        let _ = writeln!(
+            s,
+            "                {tag} => {{ m.{field_name} = f.value; }}"
+        );
     }
     for f in &extra {
         let _ = writeln!(
@@ -148,7 +153,9 @@ fn emit_admin_type(
     );
 
     // decode
-    s.push_str("    pub fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {\n");
+    s.push_str(
+        "    pub fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
+    );
     s.push_str(
         "        Self::wrap_unchecked(super::header::HeaderDecoder::decode(buf))\n    }\n\n",
     );

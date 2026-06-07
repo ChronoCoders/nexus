@@ -181,8 +181,7 @@ impl<D: FixDictionary> Session<D> {
                 let send_reply = !was_logon_sent;
                 self.state
                     .on_logon(seq, heart_bt_int, reset, send_reply, now);
-                let msg = D::Logon::decode(buf)
-                    .map_err(|_| SessionError::MalformedMessage)?;
+                let msg = D::Logon::decode(buf).map_err(|_| SessionError::MalformedMessage)?;
                 Ok(if was_logon_sent {
                     Message::LogonAcknowledged { msg }
                 } else {
@@ -192,8 +191,7 @@ impl<D: FixDictionary> Session<D> {
             Some(b"5") => {
                 let was_logout_pending = self.state.state() == State::LogoutPending;
                 self.state.on_logout(seq, poss_dup, now);
-                let msg = D::Logout::decode(buf)
-                    .map_err(|_| SessionError::MalformedMessage)?;
+                let msg = D::Logout::decode(buf).map_err(|_| SessionError::MalformedMessage)?;
                 Ok(if was_logout_pending {
                     Message::LogoutAcknowledged { msg }
                 } else {
@@ -203,8 +201,7 @@ impl<D: FixDictionary> Session<D> {
             Some(b"0") => {
                 self.state.on_heartbeat(seq, poss_dup, now);
                 Ok(Message::Heartbeat {
-                    msg: D::Heartbeat::decode(buf)
-                        .map_err(|_| SessionError::MalformedMessage)?,
+                    msg: D::Heartbeat::decode(buf).map_err(|_| SessionError::MalformedMessage)?,
                 })
             }
             Some(b"1") => {
@@ -212,8 +209,7 @@ impl<D: FixDictionary> Session<D> {
                     find_tag(buf, 0, 112).map_or_else(|| b"".as_ref(), |s| s.slice(buf));
                 self.state.on_test_request(seq, poss_dup, test_req_id, now);
                 Ok(Message::TestRequest {
-                    msg: D::TestRequest::decode(buf)
-                        .map_err(|_| SessionError::MalformedMessage)?,
+                    msg: D::TestRequest::decode(buf).map_err(|_| SessionError::MalformedMessage)?,
                 })
             }
             Some(b"2") => {
@@ -252,8 +248,7 @@ impl<D: FixDictionary> Session<D> {
                     as u32;
                 self.state.on_reject(seq, poss_dup, ref_seq, now);
                 Ok(Message::Reject {
-                    msg: D::Reject::decode(buf)
-                        .map_err(|_| SessionError::MalformedMessage)?,
+                    msg: D::Reject::decode(buf).map_err(|_| SessionError::MalformedMessage)?,
                 })
             }
             Some(_) => {
