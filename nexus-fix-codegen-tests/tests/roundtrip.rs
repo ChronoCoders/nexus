@@ -141,7 +141,7 @@ fn sending_time() -> nexus_fix_codec::FixTimestamp {
 #[test]
 fn alpha_encodes_round_trip() {
     let mut buf = [0u8; 256];
-    let msg = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+    let (start, len) = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
         .header_encoder()
         .sender_comp_id(b"BUYSIDE")
         .target_comp_id(b"SELLSIDE")
@@ -153,6 +153,7 @@ fn alpha_encodes_round_trip() {
         .symbol(b"ETH-USD")
         .finish()
         .unwrap();
+    let msg = &buf[start..start + len];
 
     // A complete, valid FIX message — header, body, framing, checksum.
     assert!(msg.starts_with(b"8=FIX.4.4\x019="));
@@ -178,7 +179,7 @@ fn alpha_encodes_typed_decimal_and_optional_header() {
         scale: 1,
     };
     let mut buf = [0u8; 256];
-    let msg = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+    let (start, len) = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
         .header_encoder()
         .sender_comp_id(b"S")
         .target_comp_id(b"T")
@@ -192,6 +193,7 @@ fn alpha_encodes_typed_decimal_and_optional_header() {
         .order_qty(qty) // typed FixDecimal in, encoded for us
         .finish()
         .unwrap();
+    let msg = &buf[start..start + len];
 
     let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
     assert!(m.header().poss_dup_flag().unwrap().get());
@@ -201,7 +203,7 @@ fn alpha_encodes_typed_decimal_and_optional_header() {
 #[test]
 fn alpha_encodes_data_field() {
     let mut buf = [0u8; 128];
-    let msg = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+    let (start, len) = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
         .header_encoder()
         .sender_comp_id(b"S")
         .target_comp_id(b"T")
@@ -212,6 +214,7 @@ fn alpha_encodes_data_field() {
         .raw_data(b"x\x01y")
         .finish()
         .unwrap();
+    let msg = &buf[start..start + len];
     assert!(nexus_fix_codec::validate_checksum(msg).is_ok());
     let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
     assert_eq!(m.raw_data_length().unwrap().get(), 3);
@@ -523,7 +526,7 @@ fn alpha_encode_undersized_reservation_shifts_and_stays_valid() {
     // wrap_reserved with a prefix reservation too small for the BodyLength digits
     // forces finish() to shift the content right; the message must stay valid.
     let mut buf = [0u8; 256];
-    let msg = venue_alpha::encoders::NewOrderSingleEncoder::wrap_reserved(&mut buf, 14)
+    let (start, len) = venue_alpha::encoders::NewOrderSingleEncoder::wrap_reserved(&mut buf, 14)
         .header_encoder()
         .sender_comp_id(b"SENDER")
         .target_comp_id(b"TARGET")
@@ -535,6 +538,7 @@ fn alpha_encode_undersized_reservation_shifts_and_stays_valid() {
         .symbol(b"BTC-USD")
         .finish()
         .unwrap();
+    let msg = &buf[start..start + len];
     assert!(msg.starts_with(b"8=FIX.4.4\x01"));
     assert!(nexus_fix_codec::validate_checksum(msg).is_ok());
     let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
@@ -728,7 +732,7 @@ fn alpha_group_view_absent() {
 #[test]
 fn alpha_group_encode_round_trip() {
     let mut buf = [0u8; 512];
-    let full = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+    let (start, len) = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
         .header_encoder()
         .sender_comp_id(b"S")
         .target_comp_id(b"T")
@@ -751,6 +755,7 @@ fn alpha_group_encode_round_trip() {
         .symbol(b"BTC")
         .finish()
         .unwrap();
+    let full = &buf[start..start + len];
 
     assert!(nexus_fix_codec::validate_checksum(full).is_ok());
 
@@ -769,7 +774,7 @@ fn alpha_group_encode_round_trip() {
 #[test]
 fn alpha_nested_group_encode_round_trip() {
     let mut buf = [0u8; 512];
-    let full = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+    let (start, len) = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
         .header_encoder()
         .sender_comp_id(b"S")
         .target_comp_id(b"T")
@@ -799,6 +804,7 @@ fn alpha_nested_group_encode_round_trip() {
         .symbol(b"BTC")
         .finish()
         .unwrap();
+    let full = &buf[start..start + len];
 
     assert!(nexus_fix_codec::validate_checksum(full).is_ok());
 
@@ -831,7 +837,7 @@ fn beta_group_encode_round_trip() {
     };
 
     let mut buf = [0u8; 512];
-    let full = venue_beta::encoders::MarketDataSnapshotFullRefreshEncoder::wrap(&mut buf)
+    let (start, len) = venue_beta::encoders::MarketDataSnapshotFullRefreshEncoder::wrap(&mut buf)
         .header_encoder()
         .finish()
         .symbol(b"EUR/USD")
@@ -850,6 +856,7 @@ fn beta_group_encode_round_trip() {
         .unwrap()
         .finish()
         .unwrap();
+    let full = &buf[start..start + len];
 
     assert!(nexus_fix_codec::validate_checksum(full).is_ok());
 

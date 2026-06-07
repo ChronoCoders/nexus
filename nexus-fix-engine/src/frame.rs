@@ -263,7 +263,9 @@ impl FrameReader {
         };
 
         let body_start = soh2 + 1;
-        let message_end = body_start + body_len + CHECKSUM_LEN;
+        let Some(message_end) = body_start.checked_add(body_len).and_then(|n| n.checked_add(CHECKSUM_LEN)) else {
+            return ParseResult::Garbage;
+        };
 
         if message_end > self.max_message_size {
             return ParseResult::TooLarge {
@@ -309,6 +311,10 @@ impl FrameReaderBuilder {
     /// returns `true`. Default: 0.5 (50%).
     #[must_use]
     pub fn compact_at(mut self, ratio: f64) -> Self {
+        assert!(
+            (0.0..=1.0).contains(&ratio),
+            "compact_at must be between 0.0 and 1.0, got {ratio}"
+        );
         self.compact_at = ratio;
         self
     }
@@ -706,6 +712,31 @@ mod tests {
     }
 
     #[test]
+    fn garbage_body_length_addition_overflow() {
+        // body_len parses successfully but body_start + body_len + CHECKSUM_LEN
+        // overflows usize — must be treated as garbage, not wrap around.
+        let val = (usize::MAX - 10).to_string();
+        let mut garbage = format!("8=FIX.4.4\x019={val}\x01").into_bytes();
+        let msg = heartbeat();
+        garbage.extend_from_slice(&msg);
+
+        let mut reader = FrameReader::builder().build();
+        reader.read(&garbage).unwrap();
+
+        let err = reader.next().unwrap_err();
+        assert!(matches!(err, FrameError::Garbage { .. }));
+
+        let frame = reader.next().unwrap().unwrap();
+        assert_eq!(frame, msg.as_slice());
+    }
+
+    #[test]
+    #[should_panic(expected = "compact_at must be between 0.0 and 1.0")]
+    fn compact_at_rejects_invalid() {
+        let _ = FrameReader::builder().compact_at(1.5).build();
+    }
+
+    #[test]
     fn garbage_all_discarded_when_no_header() {
         let mut reader = FrameReader::builder().build();
         reader.read(b"no valid message here at all").unwrap();
@@ -843,7 +874,7 @@ mod tests {
         let mut writer = FrameWriter::builder().buffer_capacity(4096).build();
 
         let spare = writer.spare();
-        let mut fmt = nexus_fix_codec::FrameFormatter::new(spare, b"FIX.4.4", b"0");
+        let fmt = nexus_fix_codec::FrameFormatter::new(spare, b"FIX.4.4", b"0");
         let (start, len) = fmt.finish().unwrap();
         writer.commit(start, len);
 
@@ -858,7 +889,7 @@ mod tests {
 
         // First message.
         let spare = writer.spare();
-        let mut fmt = nexus_fix_codec::FrameFormatter::new(spare, b"FIX.4.4", b"0");
+        let fmt = nexus_fix_codec::FrameFormatter::new(spare, b"FIX.4.4", b"0");
         let (start, len1) = fmt.finish().unwrap();
         writer.commit(start, len1);
 
@@ -883,7 +914,7 @@ mod tests {
         let mut writer = FrameWriter::builder().buffer_capacity(4096).build();
 
         let spare = writer.spare();
-        let mut fmt = nexus_fix_codec::FrameFormatter::new(spare, b"FIX.4.4", b"0");
+        let fmt = nexus_fix_codec::FrameFormatter::new(spare, b"FIX.4.4", b"0");
         let (start, len) = fmt.finish().unwrap();
         writer.commit(start, len);
 
@@ -897,7 +928,7 @@ mod tests {
         let mut writer = FrameWriter::builder().buffer_capacity(4096).build();
 
         let spare = writer.spare();
-        let mut fmt = nexus_fix_codec::FrameFormatter::new(spare, b"FIX.4.4", b"0");
+        let fmt = nexus_fix_codec::FrameFormatter::new(spare, b"FIX.4.4", b"0");
         let (start, len) = fmt.finish().unwrap();
         writer.commit(start, len);
 
@@ -912,7 +943,7 @@ mod tests {
         let before = writer.remaining();
 
         let spare = writer.spare();
-        let mut fmt = nexus_fix_codec::FrameFormatter::new(spare, b"FIX.4.4", b"0");
+        let fmt = nexus_fix_codec::FrameFormatter::new(spare, b"FIX.4.4", b"0");
         let (start, len) = fmt.finish().unwrap();
         writer.commit(start, len);
 
@@ -926,7 +957,7 @@ mod tests {
         let mut writer = FrameWriter::builder().buffer_capacity(4096).build();
 
         let spare = writer.spare();
-        let mut fmt = nexus_fix_codec::FrameFormatter::new(spare, b"FIX.4.4", b"0");
+        let fmt = nexus_fix_codec::FrameFormatter::new(spare, b"FIX.4.4", b"0");
         let (start, len) = fmt.finish().unwrap();
         assert!(start > 0, "expected nonzero start from right-alignment");
         writer.commit(start, len);
