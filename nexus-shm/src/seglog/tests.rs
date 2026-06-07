@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use super::frame::footprint;
-use super::{Conductor, SegmentedLog, SegmentedLogError};
+use super::{Conductor, ConductorBuilder, SegmentedLog, SegmentedLogError};
 
 struct TempDir(PathBuf);
 
@@ -25,12 +25,12 @@ impl Drop for TempDir {
 }
 
 fn open(conductor: &mut Conductor, size: usize) -> SegmentedLog {
-    conductor.builder().segment_size(size).open().unwrap()
+    conductor.session().segment_size(size).open().unwrap()
 }
 
 fn open_id(conductor: &mut Conductor, size: usize, id: u32) -> SegmentedLog {
     conductor
-        .builder()
+        .session()
         .segment_size(size)
         .session_id(id)
         .open()
@@ -211,7 +211,7 @@ fn session_name_roundtrip() {
     let d = TempDir::new("sessname");
     let mut c = Conductor::open(d.path()).unwrap();
     let log = c
-        .builder()
+        .session()
         .segment_size(1 << 16)
         .session_id(1)
         .name("fix-binance-prod")
@@ -235,7 +235,7 @@ fn session_name_survives_recovery() {
     {
         let mut c = Conductor::open(d.path()).unwrap();
         let mut log = c
-            .builder()
+            .session()
             .segment_size(1 << 16)
             .session_id(1)
             .name("fix-session-alpha")
@@ -612,7 +612,7 @@ fn open_strict_rejects_mismatch() {
 
     let mut c = Conductor::open(d.path()).unwrap();
     let result = c
-        .builder()
+        .session()
         .segment_size(1 << 20)
         .session_id(1)
         .open_strict();
@@ -632,7 +632,7 @@ fn open_non_strict_uses_manifest_config() {
     }
 
     let mut c = Conductor::open(d.path()).unwrap();
-    let mut log = c.builder().segment_size(1024).session_id(1).open().unwrap();
+    let mut log = c.session().segment_size(1024).session_id(1).open().unwrap();
     assert_eq!(log.segment_size(), 64);
     log.append(&[0u8; 8]).unwrap();
 }
@@ -641,9 +641,27 @@ fn open_non_strict_uses_manifest_config() {
 fn builder_creates_fresh() {
     let d = TempDir::new("builder-fresh");
     let mut c = Conductor::open(d.path()).unwrap();
-    let mut log = c.builder().segment_size(128).open().unwrap();
+    let mut log = c.session().segment_size(128).open().unwrap();
     let off = log.append(b"test").unwrap();
     assert_eq!(log.read(off).unwrap().payload(), b"test");
+}
+
+#[test]
+fn conductor_builder_custom_queue_depth() {
+    let d = TempDir::new("cond-builder");
+    let mut c = ConductorBuilder::new(d.path())
+        .clean_queue_depth(16)
+        .open()
+        .unwrap();
+    let mut log = open_id(&mut c, 64, 1);
+    // Rotate several times — deeper queue should handle it without stalling
+    for i in 0u32..40 {
+        if !log.ready.load(Ordering::Acquire) {
+            wait_conductor(&log);
+        }
+        log.append(&i.to_le_bytes()).unwrap();
+    }
+    assert!(log.epoch >= 9);
 }
 
 // ---- conductor: multi-session ----
@@ -671,7 +689,42 @@ fn conductor_session_in_use_rejected() {
     let mut c = Conductor::open(d.path()).unwrap();
     let _log = open_id(&mut c, 1 << 16, 5);
 
-    let result = c.builder().segment_size(1 << 16).session_id(5).open();
+    let result = c.session().segment_size(1 << 16).session_id(5).open();
+    assert!(matches!(
+        result,
+        Err(SegmentedLogError::SessionInUse { session_id: 5 })
+    ));
+}
+
+#[test]
+fn session_lock_released_on_drop() {
+    let d = TempDir::new("sess-lock-drop");
+    let mut c = Conductor::open(d.path()).unwrap();
+
+    {
+        let _log = open_id(&mut c, 1 << 16, 5);
+        // Session 5 is locked while _log is alive
+    }
+    // _log dropped — OFD lock released
+
+    // Should be able to reopen the same session
+    let mut log = open_id(&mut c, 1 << 16, 5);
+    log.append(b"reopened").unwrap();
+    let mut pos = log.read_start();
+    assert_eq!(log.read_next(&mut pos).unwrap().payload(), b"reopened");
+}
+
+#[test]
+fn session_lock_cross_conductor() {
+    let d = TempDir::new("sess-lock-cross");
+
+    // Conductor 1 opens session 5
+    let mut c1 = Conductor::open(d.path()).unwrap();
+    let _log1 = open_id(&mut c1, 1 << 16, 5);
+
+    // Conductor 2 (simulating another process) tries the same session
+    let mut c2 = Conductor::open(d.path()).unwrap();
+    let result = c2.session().segment_size(1 << 16).session_id(5).open();
     assert!(matches!(
         result,
         Err(SegmentedLogError::SessionInUse { session_id: 5 })
@@ -683,11 +736,11 @@ fn conductor_auto_assigns_session_id() {
     let d = TempDir::new("auto-id");
     let mut c = Conductor::open(d.path()).unwrap();
 
-    let log1 = c.builder().segment_size(1 << 16).open().unwrap();
+    let log1 = c.session().segment_size(1 << 16).open().unwrap();
     let id1 = log1.session_id();
     assert!(id1 > 0);
 
-    let log2 = c.builder().segment_size(1 << 16).open().unwrap();
+    let log2 = c.session().segment_size(1 << 16).open().unwrap();
     let id2 = log2.session_id();
     assert_ne!(id1, id2);
 }
@@ -717,7 +770,7 @@ fn conductor_auto_id_skips_existing_on_disk() {
     }
 
     let mut c = Conductor::open(d.path()).unwrap();
-    let log = c.builder().segment_size(1 << 16).open().unwrap();
+    let log = c.session().segment_size(1 << 16).open().unwrap();
     assert!(log.session_id() > 5);
 }
 
@@ -730,8 +783,8 @@ fn two_conductors_no_id_collision() {
     let mut c1 = Conductor::open(d.path()).unwrap();
     let mut c2 = Conductor::open(d.path()).unwrap();
 
-    let log1 = c1.builder().segment_size(1 << 16).open().unwrap();
-    let log2 = c2.builder().segment_size(1 << 16).open().unwrap();
+    let log1 = c1.session().segment_size(1 << 16).open().unwrap();
+    let log2 = c2.session().segment_size(1 << 16).open().unwrap();
 
     assert_ne!(log1.session_id(), log2.session_id());
 }
@@ -746,7 +799,7 @@ fn two_conductors_explicit_then_auto() {
 
     // Process 2 auto-assigns — must be > 10
     let mut c2 = Conductor::open(d.path()).unwrap();
-    let log2 = c2.builder().segment_size(1 << 16).open().unwrap();
+    let log2 = c2.session().segment_size(1 << 16).open().unwrap();
     assert!(log2.session_id() > 10);
 }
 
@@ -785,6 +838,7 @@ fn session_files_in_subdirectory() {
     let mut c = Conductor::open(d.path()).unwrap();
     let _log = open_id(&mut c, 1 << 16, 42);
 
+    assert!(d.path().join("42").join("session.lock").exists());
     assert!(d.path().join("42").join("journal.manifest").exists());
     assert!(d.path().join("42").join("seg0.dat").exists());
     assert!(d.path().join("42").join("seg1.dat").exists());
@@ -810,7 +864,7 @@ fn builder_pretouch_option() {
     let d = TempDir::new("pretouch");
     let mut c = Conductor::open(d.path()).unwrap();
     let mut log = c
-        .builder()
+        .session()
         .segment_size(1 << 16)
         .session_id(1)
         .pretouch(true)
@@ -967,7 +1021,7 @@ fn stress_concurrent_id_assignment() {
                 let mut c = Conductor::open(&p).unwrap();
                 let mut ids = Vec::new();
                 for _ in 0..5 {
-                    let log = c.builder().segment_size(1 << 16).open().unwrap();
+                    let log = c.session().segment_size(1 << 16).open().unwrap();
                     ids.push(log.session_id());
                 }
                 ids
@@ -997,8 +1051,6 @@ fn stress_concurrent_id_assignment() {
 fn stress_rotation_then_recovery() {
     let d = TempDir::new("stress-rec");
 
-    let expected_tail: Vec<u8>;
-
     {
         let mut c = Conductor::open(d.path()).unwrap();
         let mut log = open_id(&mut c, 64, 1);
@@ -1010,13 +1062,6 @@ fn stress_rotation_then_recovery() {
             }
             log.append(&i.to_le_bytes()).unwrap();
         }
-
-        // Remember what the last record in current segment looks like
-        let epoch = log.epoch;
-        expected_tail = ((epoch as u32 * 4)..50)
-            .flat_map(|i| i.to_le_bytes())
-            .collect::<Vec<_>>();
-        let _ = expected_tail; // just to silence unused if we restructure
     }
 
     // Recovery
@@ -1164,7 +1209,7 @@ fn session_id_mismatch_on_corrupted_directory() {
 
     // Now try to open session 20 — the manifest inside says session_id=10
     let mut c = Conductor::open(d.path()).unwrap();
-    let result = c.builder().segment_size(1 << 16).session_id(20).open();
+    let result = c.session().segment_size(1 << 16).session_id(20).open();
     assert!(matches!(
         result,
         Err(SegmentedLogError::ConfigMismatch {

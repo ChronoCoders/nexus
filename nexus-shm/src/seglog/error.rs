@@ -20,6 +20,7 @@ pub enum SegmentedLogError {
     SessionNotFound {
         session_id: u32,
     },
+    ConductorGone,
     Shm(ShmError),
     Io(std::io::Error),
 }
@@ -48,6 +49,9 @@ impl fmt::Display for SegmentedLogError {
             }
             Self::SessionNotFound { session_id } => {
                 write!(f, "no manifest found for session {session_id}")
+            }
+            Self::ConductorGone => {
+                write!(f, "conductor cleanup thread has shut down")
             }
             Self::Shm(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),

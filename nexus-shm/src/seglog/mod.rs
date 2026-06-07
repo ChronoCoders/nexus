@@ -2,9 +2,11 @@ mod conductor;
 mod error;
 mod frame;
 mod manifest;
+mod platform;
 #[cfg(test)]
 mod tests;
 
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,11 +18,18 @@ use conductor::CleanRequest;
 use frame::{ALIGN, FRAME_HDR, align_up, commit_len_ptr, footprint, session_id_ptr};
 use manifest::Manifest;
 
-pub use conductor::Conductor;
+pub use conductor::{Conductor, ConductorBuilder};
 pub use error::SegmentedLogError;
 pub use frame::{Frame, LogOffset};
 
 const MANIFEST_FILE: &str = "journal.manifest";
+const SESSION_LOCK_FILE: &str = "session.lock";
+
+struct SessionResources {
+    tx: std::sync::mpsc::SyncSender<CleanRequest>,
+    ready: Arc<AtomicBool>,
+    session_lock: File,
+}
 
 struct Slot {
     _segment: Segment,
@@ -34,7 +43,7 @@ unsafe impl Send for Slot {}
 
 /// Builder for configuring and opening a [`SegmentedLog`].
 ///
-/// Obtained via [`Conductor::builder()`]. The conductor tracks session
+/// Obtained via [`Conductor::session()`]. The conductor tracks session
 /// ownership and provides the background cleanup thread.
 pub struct SegmentedLogBuilder<'a> {
     conductor: &'a mut Conductor,
@@ -115,36 +124,34 @@ impl<'a> SegmentedLogBuilder<'a> {
             None => self.conductor.next_session_id()?,
         };
 
-        if self.conductor.is_active(id) {
-            return Err(SegmentedLogError::SessionInUse { session_id: id });
-        }
-
         let session_dir = self.conductor.dir().join(id.to_string());
         std::fs::create_dir_all(&session_dir)?;
+
+        let session_lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(session_dir.join(SESSION_LOCK_FILE))?;
+        if !platform::try_lock_exclusive(&session_lock)? {
+            return Err(SegmentedLogError::SessionInUse { session_id: id });
+        }
 
         let map = self.map_options();
         let size = align_up(self.segment_size.max(FRAME_HDR * 8));
         let name_bytes = self.name.as_deref().unwrap_or("").as_bytes();
-        let tx = self.conductor.sender();
-        let ready = Arc::new(AtomicBool::new(true));
-
-        let mpath = manifest_path(&session_dir);
-        let log = if mpath.exists() {
-            SegmentedLog::recover(&session_dir, size, map, strict, id, tx, Arc::clone(&ready))?
-        } else {
-            SegmentedLog::create_fresh(
-                &session_dir,
-                size,
-                map,
-                id,
-                name_bytes,
-                tx,
-                Arc::clone(&ready),
-            )?
+        let res = SessionResources {
+            tx: self.conductor.sender(),
+            ready: Arc::new(AtomicBool::new(true)),
+            session_lock,
         };
 
-        self.conductor.mark_active(id);
-        Ok(log)
+        let mpath = manifest_path(&session_dir);
+        if mpath.exists() {
+            SegmentedLog::recover(&session_dir, size, map, strict, id, res)
+        } else {
+            SegmentedLog::create_fresh(&session_dir, size, map, id, name_bytes, res)
+        }
     }
 }
 
@@ -163,10 +170,11 @@ impl<'a> SegmentedLogBuilder<'a> {
 ///
 /// ```text
 /// {conductor_dir}/{session_id}/
-///   journal.manifest   <- structural config + epoch + session metadata
-///   seg0.dat           <- rotation slot 0
-///   seg1.dat           <- rotation slot 1
-///   seg2.dat           <- rotation slot 2
+///   session.lock      <- OFD-locked while open
+///   journal.manifest  <- structural config + epoch + session metadata
+///   seg0.dat          <- rotation slot 0
+///   seg1.dat          <- rotation slot 1
+///   seg2.dat          <- rotation slot 2
 /// ```
 ///
 /// # Global offset addressing
@@ -199,6 +207,7 @@ pub struct SegmentedLog {
     manifest: Manifest,
     tx: std::sync::mpsc::SyncSender<CleanRequest>,
     ready: Arc<AtomicBool>,
+    _session_lock: File,
     segment_size: usize,
     session_id: u32,
     current: usize,
@@ -224,8 +233,7 @@ impl SegmentedLog {
         map: MapOptions,
         session_id: u32,
         name: &[u8],
-        tx: std::sync::mpsc::SyncSender<CleanRequest>,
-        ready: Arc<AtomicBool>,
+        res: SessionResources,
     ) -> Result<Self, SegmentedLogError> {
         let manifest = Manifest::create(&manifest_path(dir), size as u64, session_id, name)?;
 
@@ -253,8 +261,9 @@ impl SegmentedLog {
         Ok(Self {
             slots: [s0, s1, s2],
             manifest,
-            tx,
-            ready,
+            tx: res.tx,
+            ready: res.ready,
+            _session_lock: res.session_lock,
             segment_size: size,
             session_id,
             current: 0,
@@ -262,6 +271,8 @@ impl SegmentedLog {
             standby: 1,
             cursor: 0,
             epoch: 0,
+            // u32::MAX marks inactive slots — no real epoch will match,
+            // so reads against prev/standby correctly return None.
             slot_gen: [0, u32::MAX, u32::MAX],
         })
     }
@@ -272,8 +283,7 @@ impl SegmentedLog {
         map: MapOptions,
         strict: bool,
         expected_session_id: u32,
-        tx: std::sync::mpsc::SyncSender<CleanRequest>,
-        ready: Arc<AtomicBool>,
+        res: SessionResources,
     ) -> Result<Self, SegmentedLogError> {
         let manifest = Manifest::open(&manifest_path(dir))?;
         let manifest_size = manifest.segment_size() as usize;
@@ -339,8 +349,9 @@ impl SegmentedLog {
         Ok(Self {
             slots,
             manifest,
-            tx,
-            ready,
+            tx: res.tx,
+            ready: res.ready,
+            _session_lock: res.session_lock,
             segment_size: size,
             session_id,
             current,
@@ -390,6 +401,13 @@ impl SegmentedLog {
         // bytes. Frame header fields are at 4-byte-aligned offsets within the
         // segment. The sentinel store at `data.add(next)` is bounds-checked before
         // it is written.
+        // Write order matters for lock-free correctness:
+        //   1. Copy payload bytes
+        //   2. Write session_id
+        //   3. Zero the next frame's commit_len (sentinel for readers/recovery)
+        //   4. Release-store this frame's commit_len (publishes the frame)
+        // A reader loading commit_len with Acquire sees either 0 (not yet
+        // committed) or the final value — never a partial payload.
         unsafe {
             let ptr = data.add(off);
             std::ptr::copy_nonoverlapping(payload.as_ptr(), ptr.add(FRAME_HDR), body);
@@ -398,6 +416,9 @@ impl SegmentedLog {
             if next + FRAME_HDR <= self.segment_size {
                 (*commit_len_ptr(data.add(next))).store(0, Ordering::Relaxed);
             }
+            // commit_len encodes body length as `len + 1` so that zero
+            // means "uncommitted". This allows zero-length payloads (stored
+            // as 1) while reserving 0 as the sentinel for readers/recovery.
             (*commit_len_ptr(ptr)).store((body as u32).wrapping_add(1), Ordering::Release);
         }
         self.cursor += foot;
@@ -534,11 +555,13 @@ impl SegmentedLog {
         self.manifest.set_epoch(self.epoch);
 
         self.ready.store(false, Ordering::Release);
-        let _ = self.tx.try_send(CleanRequest {
-            data: self.slots[old_prev].data,
-            segment_size: self.segment_size,
-            ready: Arc::clone(&self.ready),
-        });
+        self.tx
+            .send(CleanRequest {
+                data: self.slots[old_prev].data,
+                segment_size: self.segment_size,
+                ready: Arc::clone(&self.ready),
+            })
+            .map_err(|_| SegmentedLogError::ConductorGone)?;
         Ok(())
     }
 }
@@ -548,9 +571,14 @@ impl Drop for SegmentedLog {
         // Wait for any in-flight clean request to finish before unmapping
         // segments. The conductor thread holds a raw pointer into our mmap'd
         // data — if we unmap first, it would touch freed memory.
+        //
+        // yield_now() is appropriate here because the conductor's work is a
+        // single atomic store — this spin completes in nanoseconds. A sleep
+        // would add milliseconds of unnecessary latency to drop.
         while !self.ready.load(Ordering::Acquire) {
             std::thread::yield_now();
         }
+        // _session_lock is dropped here, releasing the OFD lock.
     }
 }
 
@@ -567,6 +595,9 @@ fn recover_tail(data: *mut u8, segment_size: usize) -> usize {
             break;
         }
         let body = (stored - 1) as usize;
+        if body > segment_size {
+            break;
+        }
         let foot = footprint(body);
         if cur + foot > segment_size {
             break;

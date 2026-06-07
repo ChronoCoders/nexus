@@ -1,16 +1,12 @@
-use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Seek, SeekFrom, Write as _};
-use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
-use nix::fcntl::{FcntlArg, fcntl};
-use nix::libc;
-
 use super::frame::commit_len_ptr;
+use super::platform;
 
 pub(crate) struct CleanRequest {
     pub(crate) data: *mut u8,
@@ -27,36 +23,31 @@ pub(crate) struct CleanRequest {
 // no pending clean via the ready flag in practice).
 unsafe impl Send for CleanRequest {}
 
+/// Background cleanup loop for evicted segments.
+///
+/// Runs on a dedicated thread, processing one `CleanRequest` per segment
+/// rotation. The thread stays alive as long as any `SyncSender` clone
+/// exists — the `Conductor` holds one, and each `SegmentedLog` holds
+/// another. When all senders drop, `rx.recv()` returns `Err`, the
+/// for-loop exits, and the thread returns (unblocking `Conductor::drop`'s
+/// `join()`).
 fn conductor_main(rx: std::sync::mpsc::Receiver<CleanRequest>) {
     for req in rx {
+        // TODO: archive the evicted segment to disk before cleaning
+        //       (read segment data via req.data/req.segment_size, write
+        //       to archive dir, then zero).
+
         // SAFETY: `req.data` points to the start of a live mmap'd segment.
         // See `CleanRequest` Send impl for lifetime reasoning.
         unsafe { (*commit_len_ptr(req.data)).store(0, Ordering::Release) };
+        // segment_size is unused today but carried for archival (will need
+        // it to know how many bytes to flush before zeroing).
         let _ = req.segment_size;
         req.ready.store(true, Ordering::Release);
     }
 }
 
 const LOCK_FILE: &str = "conductor.lock";
-
-fn lock_exclusive(file: &File) {
-    let mut lk: libc::flock = unsafe { std::mem::zeroed() };
-    lk.l_type = libc::F_WRLCK as libc::c_short;
-    lk.l_whence = libc::SEEK_SET as libc::c_short;
-    lk.l_start = 0;
-    lk.l_len = 0; // entire file
-    // F_OFD_SETLKW: blocking, per-fd (not per-process)
-    let _ = fcntl(file.as_fd(), FcntlArg::F_OFD_SETLKW(&lk));
-}
-
-fn unlock(file: &File) {
-    let mut lk: libc::flock = unsafe { std::mem::zeroed() };
-    lk.l_type = libc::F_UNLCK as libc::c_short;
-    lk.l_whence = libc::SEEK_SET as libc::c_short;
-    lk.l_start = 0;
-    lk.l_len = 0;
-    let _ = fcntl(file.as_fd(), FcntlArg::F_OFD_SETLK(&lk));
-}
 
 fn open_lock_file(dir: &Path) -> Result<File, super::SegmentedLogError> {
     Ok(OpenOptions::new()
@@ -86,13 +77,13 @@ fn write_counter(file: &mut File, val: u32) {
 /// file is a plain ASCII integer for easy inspection.
 fn claim_next_session_id(dir: &Path) -> Result<u32, super::SegmentedLogError> {
     let mut file = open_lock_file(dir)?;
-    lock_exclusive(&file);
+    platform::lock_exclusive_blocking(&file)?;
 
     let current = read_counter(&mut file);
     let next = current + 1;
     write_counter(&mut file, next);
 
-    unlock(&file);
+    platform::unlock(&file)?;
     Ok(next)
 }
 
@@ -100,22 +91,74 @@ fn claim_next_session_id(dir: &Path) -> Result<u32, super::SegmentedLogError> {
 /// collide with explicitly chosen IDs.
 fn ensure_counter_at_least(dir: &Path, id: u32) -> Result<(), super::SegmentedLogError> {
     let mut file = open_lock_file(dir)?;
-    lock_exclusive(&file);
+    platform::lock_exclusive_blocking(&file)?;
 
     let current = read_counter(&mut file);
     if id > current {
         write_counter(&mut file, id);
     }
 
-    unlock(&file);
+    platform::unlock(&file)?;
     Ok(())
+}
+
+const DEFAULT_CLEAN_QUEUE_DEPTH: usize = 4;
+
+/// Builder for configuring a [`Conductor`].
+///
+/// Use this when the default configuration is not suitable — for example,
+/// to increase the clean queue depth when running many concurrent sessions.
+///
+/// ```no_run
+/// # use nexus_shm::ConductorBuilder;
+/// let mut conductor = ConductorBuilder::new("/tmp/journal")
+///     .clean_queue_depth(16)
+///     .open()
+///     .unwrap();
+/// ```
+pub struct ConductorBuilder {
+    dir: PathBuf,
+    clean_queue_depth: usize,
+}
+
+impl ConductorBuilder {
+    pub fn new(dir: impl AsRef<Path>) -> Self {
+        Self {
+            dir: dir.as_ref().to_path_buf(),
+            clean_queue_depth: DEFAULT_CLEAN_QUEUE_DEPTH,
+        }
+    }
+
+    /// Maximum number of outstanding segment-clean requests (default: 4).
+    ///
+    /// Each session can have at most one outstanding clean request at a time.
+    /// If multiple sessions rotate simultaneously and the queue is full,
+    /// `append` will block briefly until the conductor thread drains one.
+    pub fn clean_queue_depth(mut self, depth: usize) -> Self {
+        self.clean_queue_depth = depth;
+        self
+    }
+
+    /// Open the conductor, creating the root directory if needed.
+    pub fn open(self) -> Result<Conductor, super::SegmentedLogError> {
+        std::fs::create_dir_all(&self.dir)?;
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(self.clean_queue_depth);
+        let thread = std::thread::spawn(move || conductor_main(rx));
+
+        Ok(Conductor {
+            dir: self.dir,
+            tx: Some(tx),
+            thread: Some(thread),
+        })
+    }
 }
 
 /// Top-level journal manager.
 ///
 /// Owns the background cleanup thread and the root directory. All
 /// [`SegmentedLog`](super::SegmentedLog) instances are opened through
-/// the conductor via [`builder()`](Self::builder).
+/// the conductor via [`session()`](Self::session).
 ///
 /// # Directory layout
 ///
@@ -123,6 +166,7 @@ fn ensure_counter_at_least(dir: &Path, id: u32) -> Result<(), super::SegmentedLo
 /// {dir}/
 ///   conductor.lock      <- session ID counter (flock'd during assignment)
 ///   {session_id}/
+///     session.lock      <- OFD-locked while open (prevents double-open)
 ///     journal.manifest
 ///     seg0.dat, seg1.dat, seg2.dat
 /// ```
@@ -130,32 +174,19 @@ pub struct Conductor {
     dir: PathBuf,
     tx: Option<std::sync::mpsc::SyncSender<CleanRequest>>,
     thread: Option<JoinHandle<()>>,
-    active: HashSet<u32>,
 }
 
 impl Conductor {
-    /// Open a conductor rooted at `dir`.
+    /// Open a conductor rooted at `dir` with default configuration.
     ///
-    /// Scans for existing session subdirectories (those containing a
-    /// `journal.manifest` file) but does not open any sessions — call
-    /// [`builder()`](Self::builder) to open or create individual sessions.
+    /// Creates the directory if it does not exist. Use [`ConductorBuilder`]
+    /// for custom configuration (e.g. clean queue depth).
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, super::SegmentedLogError> {
-        let dir = dir.as_ref().to_path_buf();
-        std::fs::create_dir_all(&dir)?;
-
-        let (tx, rx) = std::sync::mpsc::sync_channel(4);
-        let thread = std::thread::spawn(move || conductor_main(rx));
-
-        Ok(Self {
-            dir,
-            tx: Some(tx),
-            thread: Some(thread),
-            active: HashSet::new(),
-        })
+        ConductorBuilder::new(dir).open()
     }
 
     /// Return a builder for opening or creating a session log.
-    pub fn builder(&mut self) -> super::SegmentedLogBuilder<'_> {
+    pub fn session(&mut self) -> super::SegmentedLogBuilder<'_> {
         super::SegmentedLogBuilder::new(self)
     }
 
@@ -197,19 +228,6 @@ impl Conductor {
 
     pub(crate) fn sender(&self) -> std::sync::mpsc::SyncSender<CleanRequest> {
         self.tx.as_ref().expect("conductor shut down").clone()
-    }
-
-    pub(crate) fn mark_active(&mut self, id: u32) {
-        self.active.insert(id);
-    }
-
-    pub(crate) fn is_active(&self, id: u32) -> bool {
-        self.active.contains(&id)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn release(&mut self, id: u32) {
-        self.active.remove(&id);
     }
 }
 
