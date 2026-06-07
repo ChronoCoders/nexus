@@ -616,10 +616,7 @@ fn open_strict_rejects_mismatch() {
         .segment_size(1 << 20)
         .session_id(1)
         .open_strict();
-    assert!(matches!(
-        result,
-        Err(OpenError::ConfigMismatch { .. })
-    ));
+    assert!(matches!(result, Err(OpenError::ConfigMismatch { .. })));
 }
 
 #[test]
