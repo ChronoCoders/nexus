@@ -808,10 +808,8 @@ mod tests {
 
     #[test]
     fn message_too_large_followed_by_valid() {
-        let big = new_order(b"VERY-LONG-ORDER-ID-THAT-IS-BIG");
+        let mut data = new_order(b"VERY-LONG-ORDER-ID-THAT-IS-BIG");
         let small = heartbeat();
-
-        let mut data = big.clone();
         data.extend_from_slice(&small);
 
         let mut reader = FrameReader::builder().max_message_size(50).build();
