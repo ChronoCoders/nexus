@@ -8,7 +8,7 @@ use super::{
     group_type, pascal, screaming, snake,
 };
 
-/// Tags owned by FrameWriter — excluded from the header encoder typestate.
+/// Tags owned by FrameFormatter — excluded from the header encoder typestate.
 const FRAME_TAGS: &[u32] = &[8, 9, 10, 35];
 
 // Scratch-buffer widths emitted into generated setters, sized to each kind's
@@ -108,7 +108,7 @@ fn emit_header_encoder(s: &mut String, fields: &[EncHeaderField]) {
     s.push('\n');
     s.push_str(
         "pub struct HeaderEncoder<'buf, S, B> {\n    \
-         frame: nexus_fix_codec::FrameWriter<'buf>,\n    \
+         frame: nexus_fix_codec::FrameFormatter<'buf>,\n    \
          _marker: PhantomData<(S, B)>,\n}\n\n",
     );
 
@@ -116,7 +116,7 @@ fn emit_header_encoder(s: &mut String, fields: &[EncHeaderField]) {
     s.push_str(
         "impl<'buf, B> HeaderEncoder<'buf, HeaderS0, B> {\n    \
          #[inline]\n    \
-         fn start(frame: nexus_fix_codec::FrameWriter<'buf>) -> Self {\n        \
+         fn start(frame: nexus_fix_codec::FrameFormatter<'buf>) -> Self {\n        \
          HeaderEncoder { frame, _marker: PhantomData }\n    }\n}\n\n",
     );
 
@@ -138,11 +138,11 @@ fn emit_header_encoder(s: &mut String, fields: &[EncHeaderField]) {
     let finish_impl = |s: &mut String, state: usize| {
         let _ = write!(
             s,
-            "impl<'buf, B: nexus_fix_codec::FromFrame<'buf>> HeaderEncoder<'buf, HeaderS{state}, B> {{\n    \
+            "impl<'buf, B: nexus_fix_codec::FromFormatter<'buf>> HeaderEncoder<'buf, HeaderS{state}, B> {{\n    \
              /// Finish the header and continue to the message body stage.\n    \
              #[inline]\n    \
              pub fn finish(self) -> B {{\n        \
-             B::from_frame(self.frame)\n    }}\n}}\n\n"
+             B::from_formatter(self.frame)\n    }}\n}}\n\n"
         );
     };
     for i in 0..=n {
@@ -256,20 +256,23 @@ fn emit_encoder(s: &mut String, m: &RMessage) {
     // --- start stage: wrap / wrap_reserved / header_encoder ---
     let _ = write!(
         s,
-        "pub struct {enc}<'buf> {{\n    frame: nexus_fix_codec::FrameWriter<'buf>,\n}}\n\n"
+        "pub struct {enc}<'buf> {{\n    frame: nexus_fix_codec::FrameFormatter<'buf>,\n}}\n\n"
     );
-    let _ = writeln!(s, "impl<'buf> {enc}<'buf> {{");
+    let _ = writeln!(
+        s,
+        "#[allow(clippy::elidable_lifetime_names)]\nimpl<'buf> {enc}<'buf> {{"
+    );
     let _ = write!(
         s,
         "    /// Begin encoding into `buf` (writes `8=`, reserves `9=`, writes `35=`).\n    \
          pub fn wrap(buf: &'buf mut [u8]) -> Self {{\n        \
-         Self {{ frame: nexus_fix_codec::FrameWriter::new(buf, super::BEGIN_STRING, {msgtype}) }}\n    }}\n\n"
+         Self {{ frame: nexus_fix_codec::FrameFormatter::new(buf, super::BEGIN_STRING, {msgtype}) }}\n    }}\n\n"
     );
     let _ = write!(
         s,
         "    /// As [`wrap`](Self::wrap) with an explicit `8=…9=…` prefix reservation.\n    \
          pub fn wrap_reserved(buf: &'buf mut [u8], reserved: usize) -> Self {{\n        \
-         Self {{ frame: nexus_fix_codec::FrameWriter::with_reserved(buf, super::BEGIN_STRING, {msgtype}, reserved) }}\n    }}\n\n"
+         Self {{ frame: nexus_fix_codec::FrameFormatter::with_reserved(buf, super::BEGIN_STRING, {msgtype}, reserved) }}\n    }}\n\n"
     );
     let _ = write!(
         s,
@@ -278,19 +281,22 @@ fn emit_encoder(s: &mut String, m: &RMessage) {
          HeaderEncoder::start(self.frame)\n    }}\n}}\n\n"
     );
 
-    // --- body stage: FromFrame + typed setters + finish ---
+    // --- body stage: FromFormatter + typed setters + finish ---
     let _ = write!(
         s,
-        "pub struct {body}<'buf> {{\n    frame: nexus_fix_codec::FrameWriter<'buf>,\n}}\n\n"
+        "pub struct {body}<'buf> {{\n    frame: nexus_fix_codec::FrameFormatter<'buf>,\n}}\n\n"
     );
     let _ = write!(
         s,
-        "impl<'buf> nexus_fix_codec::FromFrame<'buf> for {body}<'buf> {{\n    \
+        "impl<'buf> nexus_fix_codec::FromFormatter<'buf> for {body}<'buf> {{\n    \
          #[inline]\n    \
-         fn from_frame(frame: nexus_fix_codec::FrameWriter<'buf>) -> Self {{\n        \
+         fn from_formatter(frame: nexus_fix_codec::FrameFormatter<'buf>) -> Self {{\n        \
          Self {{ frame }}\n    }}\n}}\n\n"
     );
-    let _ = writeln!(s, "impl<'buf> {body}<'buf> {{");
+    let _ = writeln!(
+        s,
+        "#[allow(clippy::elidable_lifetime_names)]\nimpl<'buf> {body}<'buf> {{"
+    );
 
     let prefix = pascal(&m.name);
     let mut seen = HashSet::new();
@@ -316,14 +322,13 @@ fn emit_encoder(s: &mut String, m: &RMessage) {
 
     s.push_str(
         "    /// Finish the message: write `8=`/`9=<canonical BodyLength>` and the\n    \
-         /// `10=<checksum>` trailer, returning the framed message slice.\n    \
+         /// `10=<checksum>` trailer.\n    \
          ///\n    \
-         /// The returned slice may start a few bytes into the buffer (the\n    \
-         /// `8=…9=…` prefix is right-aligned), so transmit exactly the returned\n    \
-         /// slice — not the whole buffer. Returns\n    \
-         /// [`EncodeError::BufferFull`](nexus_fix_codec::EncodeError) if any\n    \
+         /// Returns `(start, len)` — the byte offset and length of the finished\n    \
+         /// message within the buffer. The message is at `buf[start..start + len]`.\n    \
+         /// Returns [`EncodeError::BufferFull`](nexus_fix_codec::EncodeError) if any\n    \
          /// field, the prefix, or the checksum did not fit.\n    \
-         pub fn finish(self) -> Result<&'buf [u8], nexus_fix_codec::EncodeError> {\n        \
+         pub fn finish(self) -> Result<(usize, usize), nexus_fix_codec::EncodeError> {\n        \
          self.frame.finish()\n    }\n}\n\n",
     );
 
@@ -499,7 +504,7 @@ fn emit_group_encoder_set(
     let _ = write!(
         s,
         "pub struct {group_enc}<'buf> {{\n    \
-         frame: nexus_fix_codec::FrameWriter<'buf>,\n    \
+         frame: nexus_fix_codec::FrameFormatter<'buf>,\n    \
          declared: u16,\n    \
          written: u16,\n"
     );
@@ -510,7 +515,10 @@ fn emit_group_encoder_set(
     s.push_str("}\n\n");
 
     // --- GroupEnc impl ---
-    let _ = writeln!(s, "impl<'buf> {group_enc}<'buf> {{");
+    let _ = writeln!(
+        s,
+        "#[allow(clippy::elidable_lifetime_names)]\nimpl<'buf> {group_enc}<'buf> {{"
+    );
 
     // entry()
     let _ = write!(
@@ -569,7 +577,7 @@ fn emit_group_encoder_set(
     let _ = write!(
         s,
         "pub struct {entry_enc}<'buf> {{\n    \
-         frame: nexus_fix_codec::FrameWriter<'buf>,\n    \
+         frame: nexus_fix_codec::FrameFormatter<'buf>,\n    \
          group_declared: u16,\n    \
          group_written: u16,\n"
     );
@@ -580,7 +588,10 @@ fn emit_group_encoder_set(
     s.push_str("}\n\n");
 
     // --- EntryEnc impl ---
-    let _ = writeln!(s, "impl<'buf> {entry_enc}<'buf> {{");
+    let _ = writeln!(
+        s,
+        "#[allow(clippy::elidable_lifetime_names)]\nimpl<'buf> {entry_enc}<'buf> {{"
+    );
 
     let mut seen = HashSet::new();
     for mem in &g.members {

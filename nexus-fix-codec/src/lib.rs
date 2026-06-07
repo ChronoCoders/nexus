@@ -41,7 +41,7 @@ pub use types::{
     parse_fix_int, parse_fix_multi_char, parse_fix_multi_string, parse_fix_seqnum, parse_fix_text,
     parse_fix_uint,
 };
-pub use writer::{FieldWriter, FrameWriter, FromFrame, encode_field, format_checksum};
+pub use writer::{FieldWriter, FrameFormatter, FromFormatter, encode_field, format_checksum};
 
 #[cfg(feature = "nexus-decimal")]
 pub use types::DecimalConvError;

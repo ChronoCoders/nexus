@@ -64,7 +64,7 @@ fn measure<F: Fn() -> R, R>(name: &str, f: F) {
 fn build_alpha_nos_with_groups() -> Vec<u8> {
     let mut buf = [0u8; 512];
     let ts = nexus_fix_codec::FixTimestamp::parse(b"20260603-12:00:00").unwrap();
-    let msg = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+    let (start, len) = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
         .header_encoder()
         .sender_comp_id(b"SENDER")
         .target_comp_id(b"TARGET")
@@ -87,13 +87,13 @@ fn build_alpha_nos_with_groups() -> Vec<u8> {
         .symbol(b"BTC-USD")
         .finish()
         .unwrap();
-    msg.to_vec()
+    buf[start..start + len].to_vec()
 }
 
 fn build_alpha_nos_no_groups() -> Vec<u8> {
     let mut buf = [0u8; 256];
     let ts = nexus_fix_codec::FixTimestamp::parse(b"20260603-12:00:00").unwrap();
-    let msg = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
+    let (start, len) = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
         .header_encoder()
         .sender_comp_id(b"SENDER")
         .target_comp_id(b"TARGET")
@@ -105,7 +105,7 @@ fn build_alpha_nos_no_groups() -> Vec<u8> {
         .symbol(b"BTC-USD")
         .finish()
         .unwrap();
-    msg.to_vec()
+    buf[start..start + len].to_vec()
 }
 
 fn build_beta_md_with_groups() -> Vec<u8> {
@@ -122,7 +122,7 @@ fn build_beta_md_with_groups() -> Vec<u8> {
         mantissa: 1_000_000,
         scale: 0,
     };
-    let msg = venue_beta::encoders::MarketDataSnapshotFullRefreshEncoder::wrap(&mut buf)
+    let (start, len) = venue_beta::encoders::MarketDataSnapshotFullRefreshEncoder::wrap(&mut buf)
         .header_encoder()
         .finish()
         .symbol(b"EUR/USD")
@@ -141,7 +141,7 @@ fn build_beta_md_with_groups() -> Vec<u8> {
         .unwrap()
         .finish()
         .unwrap();
-    msg.to_vec()
+    buf[start..start + len].to_vec()
 }
 
 fn main() {
@@ -219,7 +219,7 @@ fn main() {
 
     measure("alpha NOS encode  (no groups)", || {
         let mut buf = [0u8; 256];
-        let msg = venue_alpha::encoders::NewOrderSingleEncoder::wrap(black_box(&mut buf))
+        let (_, len) = venue_alpha::encoders::NewOrderSingleEncoder::wrap(black_box(&mut buf))
             .header_encoder()
             .sender_comp_id(b"SENDER")
             .target_comp_id(b"TARGET")
@@ -231,12 +231,12 @@ fn main() {
             .symbol(b"BTC-USD")
             .finish()
             .unwrap();
-        black_box(msg.len())
+        black_box(len)
     });
 
     measure("alpha NOS encode  (2 parties)", || {
         let mut buf = [0u8; 512];
-        let msg = venue_alpha::encoders::NewOrderSingleEncoder::wrap(black_box(&mut buf))
+        let (_, len) = venue_alpha::encoders::NewOrderSingleEncoder::wrap(black_box(&mut buf))
             .header_encoder()
             .sender_comp_id(b"SENDER")
             .target_comp_id(b"TARGET")
@@ -259,7 +259,7 @@ fn main() {
             .symbol(b"BTC-USD")
             .finish()
             .unwrap();
-        black_box(msg.len())
+        black_box(len)
     });
 
     let px_bid = nexus_fix_codec::FixDecimal {
@@ -276,7 +276,7 @@ fn main() {
     };
     measure("beta MD encode  (2 entries)", || {
         let mut buf = [0u8; 512];
-        let msg =
+        let (_, len) =
             venue_beta::encoders::MarketDataSnapshotFullRefreshEncoder::wrap(black_box(&mut buf))
                 .header_encoder()
                 .finish()
@@ -296,14 +296,14 @@ fn main() {
                 .unwrap()
                 .finish()
                 .unwrap();
-        black_box(msg.len())
+        black_box(len)
     });
 
     measure("alpha NOS encode  (shift path)", || {
         // Undersized prefix reservation → finish() shifts the content right to
         // make room for the canonical BodyLength.
         let mut buf = [0u8; 256];
-        let msg =
+        let (_, len) =
             venue_alpha::encoders::NewOrderSingleEncoder::wrap_reserved(black_box(&mut buf), 14)
                 .header_encoder()
                 .sender_comp_id(b"SENDER")
@@ -316,6 +316,6 @@ fn main() {
                 .symbol(b"BTC-USD")
                 .finish()
                 .unwrap();
-        black_box(msg.len())
+        black_box(len)
     });
 }
