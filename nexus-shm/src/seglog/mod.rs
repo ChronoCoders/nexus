@@ -24,6 +24,10 @@ pub use frame::{Frame, LogOffset};
 const MANIFEST_FILE: &str = "journal.manifest";
 const SESSION_LOCK_FILE: &str = "session.lock";
 
+// ---------------------------------------------------------------------------
+// Internal types
+// ---------------------------------------------------------------------------
+
 struct SessionResources {
     tx: std::sync::mpsc::SyncSender<CleanRequest>,
     ready: Arc<AtomicBool>,
@@ -39,6 +43,10 @@ struct Slot {
 // that mapping. The mapping lives in shared memory, not thread-local state.
 // Concurrent access is governed by the frame-level atomics.
 unsafe impl Send for Slot {}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 /// Builder for configuring and opening a [`SegmentedLog`].
 ///
@@ -92,13 +100,6 @@ impl<'a> SegmentedLogBuilder<'a> {
         self
     }
 
-    fn map_options(&self) -> MapOptions {
-        MapOptions {
-            pretouch: self.pretouch,
-            huge_pages: self.huge_pages,
-        }
-    }
-
     /// Open or recover a session log.
     ///
     /// If the session directory contains an existing manifest, its structural
@@ -146,6 +147,13 @@ impl<'a> SegmentedLogBuilder<'a> {
             SegmentedLog::recover(&session_dir, size, map, strict, id, res)
         } else {
             SegmentedLog::create_fresh(&session_dir, size, map, id, name_bytes, res)
+        }
+    }
+
+    fn map_options(&self) -> MapOptions {
+        MapOptions {
+            pretouch: self.pretouch,
+            huge_pages: self.huge_pages,
         }
     }
 }
@@ -213,151 +221,7 @@ pub struct SegmentedLog {
     slot_gen: [u32; 3],
 }
 
-fn seg_path(dir: &Path, i: u8) -> PathBuf {
-    dir.join(format!("seg{i}.dat"))
-}
-
-fn manifest_path(dir: &Path) -> PathBuf {
-    dir.join(MANIFEST_FILE)
-}
-
 impl SegmentedLog {
-    fn create_fresh(
-        dir: &Path,
-        size: usize,
-        map: MapOptions,
-        session_id: u32,
-        name: &[u8],
-        res: SessionResources,
-    ) -> Result<Self, OpenError> {
-        let manifest = Manifest::create(&manifest_path(dir), size as u64, session_id, name)?;
-
-        let mk = |i: u8| -> Result<Slot, OpenError> {
-            let seg = Segment::create(&seg_path(dir, i), size, map)?;
-            let data = seg.data();
-            Ok(Slot {
-                _segment: seg,
-                data,
-            })
-        };
-
-        let s0 = mk(0)?;
-        let s1 = mk(1)?;
-        let s2 = mk(2)?;
-
-        // SAFETY: each slot data pointer is the start of a freshly mapped segment
-        // with at least FRAME_HDR bytes and 4-byte alignment from mmap.
-        unsafe {
-            (*commit_len_ptr(s0.data)).store(0, Ordering::Relaxed);
-            (*commit_len_ptr(s1.data)).store(0, Ordering::Relaxed);
-            (*commit_len_ptr(s2.data)).store(0, Ordering::Relaxed);
-        }
-
-        Ok(Self {
-            slots: [s0, s1, s2],
-            manifest,
-            tx: res.tx,
-            ready: res.ready,
-            _session_lock: res.session_lock,
-            segment_size: size,
-            session_id,
-            current: 0,
-            prev: 2,
-            standby: 1,
-            cursor: 0,
-            epoch: 0,
-            // u32::MAX marks inactive slots — no real epoch will match,
-            // so reads against prev/standby correctly return None.
-            slot_gen: [0, u32::MAX, u32::MAX],
-        })
-    }
-
-    fn recover(
-        dir: &Path,
-        requested_size: usize,
-        map: MapOptions,
-        strict: bool,
-        expected_session_id: u32,
-        res: SessionResources,
-    ) -> Result<Self, OpenError> {
-        let manifest = Manifest::open(&manifest_path(dir))?;
-        let manifest_size = manifest.segment_size() as usize;
-        let session_id = manifest.session_id();
-
-        if session_id != expected_session_id {
-            return Err(OpenError::ConfigMismatch {
-                field: "session_id",
-                expected: expected_session_id as u64,
-                found: session_id as u64,
-            });
-        }
-
-        if strict && manifest_size != requested_size {
-            return Err(OpenError::ConfigMismatch {
-                field: "segment_size",
-                expected: requested_size as u64,
-                found: manifest_size as u64,
-            });
-        }
-
-        let size = manifest_size;
-        let epoch = manifest.epoch();
-
-        let (current, prev, standby) = match epoch {
-            0 => (0, 2, 1),
-            1 => (1, 0, 2),
-            _ => {
-                let c = (epoch % 3) as usize;
-                let p = ((epoch - 1) % 3) as usize;
-                let s = 3 - c - p;
-                (c, p, s)
-            }
-        };
-
-        let mk = |i: u8| -> Result<Slot, OpenError> {
-            let path = seg_path(dir, i);
-            let seg = if path.exists() {
-                Segment::attach(&path, map)?
-            } else {
-                Segment::create(&path, size, map)?
-            };
-            let data = seg.data();
-            Ok(Slot {
-                _segment: seg,
-                data,
-            })
-        };
-
-        let s0 = mk(0)?;
-        let s1 = mk(1)?;
-        let s2 = mk(2)?;
-        let slots = [s0, s1, s2];
-
-        let cursor = recover_tail(slots[current].data, size);
-
-        let mut slot_gen = [u32::MAX; 3];
-        slot_gen[current] = epoch as u32;
-        if epoch > 0 {
-            slot_gen[prev] = (epoch - 1) as u32;
-        }
-
-        Ok(Self {
-            slots,
-            manifest,
-            tx: res.tx,
-            ready: res.ready,
-            _session_lock: res.session_lock,
-            segment_size: size,
-            session_id,
-            current,
-            prev,
-            standby,
-            cursor,
-            epoch,
-            slot_gen,
-        })
-    }
-
     pub fn segment_size(&self) -> usize {
         self.segment_size
     }
@@ -535,6 +399,152 @@ impl SegmentedLog {
         }
     }
 
+    // -- private --
+
+    fn create_fresh(
+        dir: &Path,
+        size: usize,
+        map: MapOptions,
+        session_id: u32,
+        name: &[u8],
+        res: SessionResources,
+    ) -> Result<Self, OpenError> {
+        let manifest = Manifest::create(&manifest_path(dir), size as u64, session_id, name)?;
+
+        let mk = |i: u8| -> Result<Slot, OpenError> {
+            let seg = Segment::create(&seg_path(dir, i), size, map)?;
+            let data = seg.data();
+            Ok(Slot {
+                _segment: seg,
+                data,
+            })
+        };
+
+        let s0 = mk(0)?;
+        let s1 = mk(1)?;
+        let s2 = mk(2)?;
+
+        // SAFETY: each slot data pointer is the start of a freshly mapped segment
+        // with at least FRAME_HDR bytes and 4-byte alignment from mmap.
+        unsafe {
+            (*commit_len_ptr(s0.data)).store(0, Ordering::Relaxed);
+            (*commit_len_ptr(s1.data)).store(0, Ordering::Relaxed);
+            (*commit_len_ptr(s2.data)).store(0, Ordering::Relaxed);
+        }
+
+        Ok(Self {
+            slots: [s0, s1, s2],
+            manifest,
+            tx: res.tx,
+            ready: res.ready,
+            _session_lock: res.session_lock,
+            segment_size: size,
+            session_id,
+            current: 0,
+            prev: 2,
+            standby: 1,
+            cursor: 0,
+            epoch: 0,
+            // u32::MAX marks inactive slots — no real epoch will match,
+            // so reads against prev/standby correctly return None.
+            slot_gen: [0, u32::MAX, u32::MAX],
+        })
+    }
+
+    fn recover(
+        dir: &Path,
+        requested_size: usize,
+        map: MapOptions,
+        strict: bool,
+        expected_session_id: u32,
+        res: SessionResources,
+    ) -> Result<Self, OpenError> {
+        let manifest = Manifest::open(&manifest_path(dir))?;
+        let manifest_size = manifest.segment_size() as usize;
+        let session_id = manifest.session_id();
+
+        if session_id != expected_session_id {
+            return Err(OpenError::ConfigMismatch {
+                field: "session_id",
+                expected: expected_session_id as u64,
+                found: session_id as u64,
+            });
+        }
+
+        if strict && manifest_size != requested_size {
+            return Err(OpenError::ConfigMismatch {
+                field: "segment_size",
+                expected: requested_size as u64,
+                found: manifest_size as u64,
+            });
+        }
+
+        let size = manifest_size;
+        let epoch = manifest.epoch();
+
+        let (current, prev, standby) = match epoch {
+            0 => (0, 2, 1),
+            1 => (1, 0, 2),
+            _ => {
+                let c = (epoch % 3) as usize;
+                let p = ((epoch - 1) % 3) as usize;
+                let s = 3 - c - p;
+                (c, p, s)
+            }
+        };
+
+        let mk = |i: u8| -> Result<Slot, OpenError> {
+            let path = seg_path(dir, i);
+            let seg = if path.exists() {
+                Segment::attach(&path, map)?
+            } else {
+                Segment::create(&path, size, map)?
+            };
+            let data = seg.data();
+            Ok(Slot {
+                _segment: seg,
+                data,
+            })
+        };
+
+        let s0 = mk(0)?;
+        let s1 = mk(1)?;
+        let s2 = mk(2)?;
+        let slots = [s0, s1, s2];
+
+        let cursor = recover_tail(slots[current].data, size);
+
+        // The standby segment may contain stale committed frames from a
+        // previous epoch. Zero its commit_len so those frames are not
+        // mistaken for valid data when this slot becomes active.
+        // SAFETY: standby is a valid slot index into a live mmap'd segment.
+        unsafe {
+            (*commit_len_ptr(slots[standby].data)).store(0, Ordering::Relaxed);
+        }
+
+        let mut slot_gen = [u32::MAX; 3];
+        slot_gen[current] = epoch as u32;
+        if epoch > 0 {
+            slot_gen[prev] = (epoch - 1) as u32;
+        }
+
+        Ok(Self {
+            slots,
+            manifest,
+            tx: res.tx,
+            ready: res.ready,
+            _session_lock: res.session_lock,
+            segment_size: size,
+            session_id,
+            current,
+            prev,
+            standby,
+            cursor,
+            epoch,
+            slot_gen,
+        })
+    }
+
     fn rotate(&mut self) -> Result<(), LogError> {
         if !self.ready.load(Ordering::Acquire) {
             return Err(LogError::StandbyNotReady);
@@ -549,7 +559,6 @@ impl SegmentedLog {
 
         self.manifest.set_epoch(self.epoch);
 
-        self.ready.store(false, Ordering::Release);
         self.tx
             .send(CleanRequest {
                 data: self.slots[old_prev].data,
@@ -557,6 +566,7 @@ impl SegmentedLog {
                 ready: Arc::clone(&self.ready),
             })
             .map_err(|_| LogError::ConductorGone)?;
+        self.ready.store(false, Ordering::Release);
         Ok(())
     }
 }
@@ -575,6 +585,18 @@ impl Drop for SegmentedLog {
         }
         // _session_lock is dropped here, releasing the OFD lock.
     }
+}
+
+// ---------------------------------------------------------------------------
+// Free functions
+// ---------------------------------------------------------------------------
+
+fn seg_path(dir: &Path, i: u8) -> PathBuf {
+    dir.join(format!("seg{i}.dat"))
+}
+
+fn manifest_path(dir: &Path) -> PathBuf {
+    dir.join(MANIFEST_FILE)
 }
 
 /// Scan from the start of a segment to find the write tail.

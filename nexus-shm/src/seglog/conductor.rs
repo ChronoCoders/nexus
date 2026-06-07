@@ -7,6 +7,13 @@ use std::thread::JoinHandle;
 use super::frame::commit_len_ptr;
 use super::platform;
 
+const LOCK_FILE: &str = "conductor.lock";
+const DEFAULT_CLEAN_QUEUE_DEPTH: usize = 4;
+
+// ---------------------------------------------------------------------------
+// Internal types
+// ---------------------------------------------------------------------------
+
 pub(crate) struct CleanRequest {
     pub(crate) data: *mut u8,
     pub(crate) segment_size: usize,
@@ -22,70 +29,9 @@ pub(crate) struct CleanRequest {
 // no pending clean via the ready flag in practice).
 unsafe impl Send for CleanRequest {}
 
-/// Background cleanup loop for evicted segments.
-///
-/// Runs on a dedicated thread, processing one `CleanRequest` per segment
-/// rotation. The thread stays alive as long as any `SyncSender` clone
-/// exists — the `Conductor` holds one, and each `SegmentedLog` holds
-/// another. When all senders drop, `rx.recv()` returns `Err`, the
-/// for-loop exits, and the thread returns (unblocking `Conductor::drop`'s
-/// `join()`).
-fn conductor_main(rx: std::sync::mpsc::Receiver<CleanRequest>) {
-    for req in rx {
-        // TODO: archive the evicted segment to disk before cleaning
-        //       (read segment data via req.data/req.segment_size, write
-        //       to archive dir, then zero).
-
-        // SAFETY: `req.data` points to the start of a live mmap'd segment.
-        // See `CleanRequest` Send impl for lifetime reasoning.
-        unsafe { (*commit_len_ptr(req.data)).store(0, Ordering::Release) };
-        // segment_size is unused today but carried for archival (will need
-        // it to know how many bytes to flush before zeroing).
-        let _ = req.segment_size;
-        req.ready.store(true, Ordering::Release);
-    }
-}
-
-const LOCK_FILE: &str = "conductor.lock";
-
-fn read_counter(file: &mut std::fs::File) -> u32 {
-    let mut buf = String::new();
-    let _ = file.read_to_string(&mut buf);
-    buf.trim().parse().unwrap_or(0)
-}
-
-fn write_counter(file: &mut std::fs::File, val: u32) {
-    let _ = file.seek(SeekFrom::Start(0));
-    let _ = file.set_len(0);
-    let _ = write!(file, "{val}");
-}
-
-/// Atomically claim the next session ID using a lock file.
-///
-/// Acquires an exclusive lock on `{dir}/conductor.lock`, reads the
-/// current counter, increments it, and writes back. The lock is released
-/// when the `FileLock` drops. The counter file is a plain ASCII integer
-/// for easy inspection.
-fn claim_next_session_id(dir: &Path) -> Result<u32, super::OpenError> {
-    let mut lock = platform::FileLock::blocking(dir.join(LOCK_FILE))?;
-    let current = read_counter(lock.file());
-    let next = current + 1;
-    write_counter(lock.file(), next);
-    Ok(next)
-}
-
-/// Ensure the counter is at least `id` so future auto-assignments won't
-/// collide with explicitly chosen IDs.
-fn ensure_counter_at_least(dir: &Path, id: u32) -> Result<(), super::OpenError> {
-    let mut lock = platform::FileLock::blocking(dir.join(LOCK_FILE))?;
-    let current = read_counter(lock.file());
-    if id > current {
-        write_counter(lock.file(), id);
-    }
-    Ok(())
-}
-
-const DEFAULT_CLEAN_QUEUE_DEPTH: usize = 4;
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 /// Builder for configuring a [`Conductor`].
 ///
@@ -147,7 +93,7 @@ impl ConductorBuilder {
 ///
 /// ```text
 /// {dir}/
-///   conductor.lock      <- session ID counter (flock'd during assignment)
+///   conductor.lock      <- session ID counter (OFD-locked during assignment)
 ///   {session_id}/
 ///     session.lock      <- OFD-locked while open (prevents double-open)
 ///     journal.manifest
@@ -223,4 +169,70 @@ impl Drop for Conductor {
             let _ = t.join();
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Free functions
+// ---------------------------------------------------------------------------
+
+/// Background cleanup loop for evicted segments.
+///
+/// Runs on a dedicated thread, processing one `CleanRequest` per segment
+/// rotation. The thread stays alive as long as any `SyncSender` clone
+/// exists — the `Conductor` holds one, and each `SegmentedLog` holds
+/// another. When all senders drop, `rx.recv()` returns `Err`, the
+/// for-loop exits, and the thread returns (unblocking `Conductor::drop`'s
+/// `join()`).
+fn conductor_main(rx: std::sync::mpsc::Receiver<CleanRequest>) {
+    for req in rx {
+        // TODO: archive the evicted segment to disk before cleaning
+        //       (read segment data via req.data/req.segment_size, write
+        //       to archive dir, then zero).
+
+        // SAFETY: `req.data` points to the start of a live mmap'd segment.
+        // See `CleanRequest` Send impl for lifetime reasoning.
+        unsafe { (*commit_len_ptr(req.data)).store(0, Ordering::Release) };
+        // segment_size is unused today but carried for archival (will need
+        // it to know how many bytes to flush before zeroing).
+        let _ = req.segment_size;
+        req.ready.store(true, Ordering::Release);
+    }
+}
+
+/// Atomically claim the next session ID using a lock file.
+///
+/// Acquires an exclusive lock on `{dir}/conductor.lock`, reads the
+/// current counter, increments it, and writes back. The lock is released
+/// when the `FileLock` drops. The counter file is a plain ASCII integer
+/// for easy inspection.
+fn claim_next_session_id(dir: &Path) -> Result<u32, super::OpenError> {
+    let mut lock = platform::FileLock::blocking(dir.join(LOCK_FILE))?;
+    let current = read_counter(lock.file())?;
+    let next = current + 1;
+    write_counter(lock.file(), next)?;
+    Ok(next)
+}
+
+/// Ensure the counter is at least `id` so future auto-assignments won't
+/// collide with explicitly chosen IDs.
+fn ensure_counter_at_least(dir: &Path, id: u32) -> Result<(), super::OpenError> {
+    let mut lock = platform::FileLock::blocking(dir.join(LOCK_FILE))?;
+    let current = read_counter(lock.file())?;
+    if id > current {
+        write_counter(lock.file(), id)?;
+    }
+    Ok(())
+}
+
+fn read_counter(file: &mut std::fs::File) -> Result<u32, std::io::Error> {
+    let mut buf = String::new();
+    file.read_to_string(&mut buf)?;
+    Ok(buf.trim().parse().unwrap_or(0))
+}
+
+fn write_counter(file: &mut std::fs::File, val: u32) -> Result<(), std::io::Error> {
+    file.seek(SeekFrom::Start(0))?;
+    file.set_len(0)?;
+    write!(file, "{val}")?;
+    Ok(())
 }
