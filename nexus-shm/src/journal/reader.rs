@@ -32,14 +32,14 @@ impl<H: RecordHeader> Reader<H> {
                 }
                 return Ok(None);
             }
-            let seg = &self.segments[self.seg_idx];
             // SAFETY: cursor is an 8-aligned offset within the mapped data.
-            let cl = unsafe { seg.commit_len_at(self.cursor) }.load(Ordering::Acquire);
+            let cl = unsafe { self.segments[self.seg_idx].commit_len_at(self.cursor) }
+                .load(Ordering::Acquire);
             if cl == 0 {
                 return Ok(None);
             }
             // SAFETY: cl > 0 was Acquire-loaded, so the frame header is published.
-            if unsafe { seg.frame_kind_at(self.cursor) } == TYPE_PAD {
+            if unsafe { self.segments[self.seg_idx].frame_kind_at(self.cursor) } == TYPE_PAD {
                 self.cursor += align_up(cl as usize);
                 if self.cursor + FRAME_HEADER > self.segment_size && !self.advance_segment()? {
                     return Ok(None);
@@ -52,12 +52,13 @@ impl<H: RecordHeader> Reader<H> {
                 return Ok(None);
             }
             let off = self.cursor;
-            // SAFETY: the committed frame holds `H` at `off + FRAME_HEADER`;
-            // `H: Pod`, so an unaligned read is valid.
-            let header = unsafe { seg.read_at::<H>(off + FRAME_HEADER) };
-            // SAFETY: the payload lies within the committed frame and the mapping
-            // outlives the borrow held through `&mut self`.
-            let payload = unsafe { seg.slice_at(off + FRAME_HEADER + hsize, body - hsize) };
+            // Raw pointer avoids holding an immutable borrow of `self.segments`
+            // across the mutable `self.cursor` update and potential `advance_segment`.
+            // SAFETY: the committed frame is within the mapping which outlives `&mut self`.
+            let data = self.segments[self.seg_idx].data();
+            let header = unsafe { self.segments[self.seg_idx].read_at::<H>(off + FRAME_HEADER) };
+            let payload =
+                unsafe { std::slice::from_raw_parts(data.add(off + FRAME_HEADER + hsize), body - hsize) };
             self.cursor = off + footprint(body);
             return Ok(Some(ReadRecord { header, payload }));
         }
