@@ -1,5 +1,6 @@
 use std::num::NonZeroUsize;
 use std::path::Path;
+use std::sync::atomic::AtomicU32;
 
 use nexus_platform::{Liveness, MapOptions, MappedFile, ProcessLease};
 
@@ -79,16 +80,81 @@ impl Segment {
         ProcessLease::probe(self.mapping.as_fd())
     }
 
-    /// Pointer to the payload region, valid for [`Segment::data_len`] bytes for
-    /// as long as this `Segment` lives.
-    ///
-    /// Reads and writes through it must be synchronized by the caller — the
-    /// foundation provides no ordering for the payload (the control block's
-    /// atomics cover only liveness). The primitives built on top supply their
-    /// own sequencing.
-    pub fn data(&self) -> *mut u8 {
+    pub(crate) fn data(&self) -> *mut u8 {
         // SAFETY: the mapping is HEADER + data_len bytes, so HEADER is in bounds.
         unsafe { self.mapping.as_ptr().add(HEADER.get()) }
+    }
+
+    /// `AtomicU32` at `offset` within the payload (commit-length field).
+    ///
+    /// # Safety
+    /// `offset` must be 4-byte-aligned and within `data_len()`.
+    #[inline]
+    pub(crate) unsafe fn commit_len_at(&self, offset: usize) -> &AtomicU32 {
+        unsafe { AtomicU32::from_ptr(self.data().add(offset).cast()) }
+    }
+
+    /// Frame discriminant (bytes 4-5 of the frame header) at `offset`.
+    ///
+    /// # Safety
+    /// The frame header at `offset` must be published (read after an Acquire
+    /// load of `commit_len_at`) and within `data_len()`.
+    #[inline]
+    pub(crate) unsafe fn frame_kind_at(&self, offset: usize) -> u16 {
+        unsafe { std::ptr::read_unaligned(self.data().add(offset + 4).cast()) }
+    }
+
+    /// Write the frame discriminant at `offset` (bytes 4-5) and zero bytes 6-7.
+    ///
+    /// # Safety
+    /// The 8-byte frame header at `offset` must be within `data_len()` and
+    /// reserved for this record.
+    #[inline]
+    pub(crate) unsafe fn write_frame_kind_at(&self, offset: usize, kind: u16) {
+        unsafe {
+            std::ptr::write_unaligned(self.data().add(offset + 4).cast::<u16>(), kind);
+            std::ptr::write_unaligned(self.data().add(offset + 6).cast::<u16>(), 0);
+        }
+    }
+
+    /// Write `val` at `offset` (unaligned).
+    ///
+    /// # Safety
+    /// `[offset, offset + size_of::<T>())` must be within `data_len()` and
+    /// reserved for this write.
+    #[inline]
+    pub(crate) unsafe fn write_at<T: Copy>(&self, offset: usize, val: T) {
+        unsafe { std::ptr::write_unaligned(self.data().add(offset).cast(), val) }
+    }
+
+    /// Read a `T` at `offset` (unaligned).
+    ///
+    /// # Safety
+    /// `[offset, offset + size_of::<T>())` must be within `data_len()` and
+    /// the data must be published before this call.
+    #[inline]
+    pub(crate) unsafe fn read_at<T: Copy>(&self, offset: usize) -> T {
+        unsafe { std::ptr::read_unaligned(self.data().add(offset).cast()) }
+    }
+
+    /// Immutable byte slice `[offset, offset + len)`.
+    ///
+    /// # Safety
+    /// The range must be within `data_len()` and the bytes must be published.
+    /// The returned slice borrows `self` so the segment must outlive the slice.
+    #[inline]
+    pub(crate) unsafe fn slice_at(&self, offset: usize, len: usize) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.data().add(offset), len) }
+    }
+
+    /// Mutable byte slice `[offset, offset + len)`.
+    ///
+    /// # Safety
+    /// The range must be within `data_len()`, exclusively reserved for this
+    /// write, and the segment must outlive the slice.
+    #[inline]
+    pub(crate) unsafe fn slice_mut_at(&self, offset: usize, len: usize) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.data().add(offset), len) }
     }
 
     pub fn data_len(&self) -> usize {
@@ -138,12 +204,12 @@ mod tests {
         assert_eq!(seg.data_len(), 4096);
         assert_eq!(seg.status(), Status::Alive);
 
-        unsafe { seg.data().write(0xAB) };
+        unsafe { seg.slice_mut_at(0, 1)[0] = 0xAB };
 
         let peer = Segment::attach(&path, MapOptions::default()).unwrap();
         assert_eq!(peer.data_len(), 4096);
         assert_eq!(peer.status(), Status::Alive);
-        assert_eq!(unsafe { peer.data().read() }, 0xAB);
+        assert_eq!(unsafe { peer.slice_at(0, 1)[0] }, 0xAB);
 
         std::fs::remove_file(&path).unwrap();
     }

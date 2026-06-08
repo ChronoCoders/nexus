@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use crate::segment::Segment;
 
 use super::error::JournalError;
-use super::frame::{FRAME_HEADER, TYPE_DATA, TYPE_PAD, commit_len, footprint, write_kind};
+use super::frame::{FRAME_HEADER, TYPE_DATA, TYPE_PAD, footprint};
 use super::header::RecordHeader;
 
 /// Append half of a journal: claims and commits records to the active segment.
@@ -53,11 +53,12 @@ impl<H: RecordHeader> Writer<H> {
     fn roll(&mut self) -> Result<(), JournalError> {
         let remaining = self.segment_size - self.tail;
         if remaining >= FRAME_HEADER {
-            let data = self.active.data();
             // SAFETY: tail is an 8-aligned offset within the mapped data region.
             unsafe {
-                write_kind(data.add(self.tail), TYPE_PAD);
-                commit_len(data.add(self.tail)).store(remaining as u32, Ordering::Release);
+                self.active.write_frame_kind_at(self.tail, TYPE_PAD);
+                self.active
+                    .commit_len_at(self.tail)
+                    .store(remaining as u32, Ordering::Release);
             }
         }
         self.index += 1;
@@ -84,31 +85,41 @@ impl<H: RecordHeader> WriteClaim<'_, H> {
     /// The payload region to fill before committing.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         let start = self.off + FRAME_HEADER + size_of::<H>();
-        let data = self.writer.active.data();
         // SAFETY: the region is reserved for this claim, lies within the mapped
         // data, and is exclusively borrowed through `&mut self`.
-        unsafe { std::slice::from_raw_parts_mut(data.add(start), self.payload_len) }
+        unsafe { self.writer.active.slice_mut_at(start, self.payload_len) }
     }
 
     /// Publish the record: write the header and frame kind, then release the
     /// commit length so readers observe a fully-written record.
     pub fn commit(self) {
-        let data = self.writer.active.data();
         // SAFETY: the header slot is reserved for this claim and within the
         // mapped data; `H: Pod`, so an unaligned byte write is valid.
         unsafe {
-            std::ptr::write_unaligned(data.add(self.off + FRAME_HEADER).cast::<H>(), self.header);
-            write_kind(data.add(self.off), TYPE_DATA);
+            self.writer
+                .active
+                .write_at(self.off + FRAME_HEADER, self.header);
+            self.writer.active.write_frame_kind_at(self.off, TYPE_DATA);
         }
 
         let next = self.off + self.foot;
         if next + FRAME_HEADER <= self.writer.segment_size {
             // SAFETY: `next` is an 8-aligned offset within the mapped data.
-            unsafe { commit_len(data.add(next)).store(0, Ordering::Relaxed) }
+            unsafe {
+                self.writer
+                    .active
+                    .commit_len_at(next)
+                    .store(0, Ordering::Relaxed);
+            }
         }
 
         // SAFETY: the commit-length slot is 8-aligned and within the mapped data.
-        unsafe { commit_len(data.add(self.off)).store(self.body as u32, Ordering::Release) }
+        unsafe {
+            self.writer
+                .active
+                .commit_len_at(self.off)
+                .store(self.body as u32, Ordering::Release);
+        }
         self.writer.tail = next;
     }
 }

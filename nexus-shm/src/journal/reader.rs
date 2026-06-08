@@ -6,7 +6,7 @@ use crate::error::ShmError;
 use crate::segment::Segment;
 
 use super::error::JournalError;
-use super::frame::{FRAME_HEADER, TYPE_PAD, align_up, commit_len, footprint, read_kind};
+use super::frame::{FRAME_HEADER, TYPE_PAD, align_up, footprint};
 use super::header::{RecordHeader, SeqHeader};
 
 /// Read half of a journal: walks committed records across segments in order.
@@ -32,14 +32,14 @@ impl<H: RecordHeader> Reader<H> {
                 }
                 return Ok(None);
             }
-            let data = self.segments[self.seg_idx].data();
+            let seg = &self.segments[self.seg_idx];
             // SAFETY: cursor is an 8-aligned offset within the mapped data.
-            let cl = unsafe { commit_len(data.add(self.cursor)) }.load(Ordering::Acquire);
+            let cl = unsafe { seg.commit_len_at(self.cursor) }.load(Ordering::Acquire);
             if cl == 0 {
                 return Ok(None);
             }
             // SAFETY: cl > 0 was Acquire-loaded, so the frame header is published.
-            if unsafe { read_kind(data.add(self.cursor)) } == TYPE_PAD {
+            if unsafe { seg.frame_kind_at(self.cursor) } == TYPE_PAD {
                 self.cursor += align_up(cl as usize);
                 if self.cursor + FRAME_HEADER > self.segment_size && !self.advance_segment()? {
                     return Ok(None);
@@ -54,13 +54,10 @@ impl<H: RecordHeader> Reader<H> {
             let off = self.cursor;
             // SAFETY: the committed frame holds `H` at `off + FRAME_HEADER`;
             // `H: Pod`, so an unaligned read is valid.
-            let header =
-                unsafe { std::ptr::read_unaligned(data.add(off + FRAME_HEADER).cast::<H>()) };
+            let header = unsafe { seg.read_at::<H>(off + FRAME_HEADER) };
             // SAFETY: the payload lies within the committed frame and the mapping
             // outlives the borrow held through `&mut self`.
-            let payload = unsafe {
-                std::slice::from_raw_parts(data.add(off + FRAME_HEADER + hsize), body - hsize)
-            };
+            let payload = unsafe { seg.slice_at(off + FRAME_HEADER + hsize, body - hsize) };
             self.cursor = off + footprint(body);
             return Ok(Some(ReadRecord { header, payload }));
         }
@@ -157,14 +154,14 @@ impl<'a, H: SeqHeader> Iterator for ReadRange<'a, H> {
                 self.cursor = 0;
                 continue;
             }
-            let data = self.segments[self.seg_idx].data();
+            let seg = &self.segments[self.seg_idx];
             // SAFETY: cursor is an 8-aligned offset within the mapped data.
-            let cl = unsafe { commit_len(data.add(self.cursor)) }.load(Ordering::Acquire);
+            let cl = unsafe { seg.commit_len_at(self.cursor) }.load(Ordering::Acquire);
             if cl == 0 {
                 return None;
             }
             // SAFETY: cl > 0 was Acquire-loaded, so the frame header is published.
-            if unsafe { read_kind(data.add(self.cursor)) } == TYPE_PAD {
+            if unsafe { seg.frame_kind_at(self.cursor) } == TYPE_PAD {
                 self.cursor += align_up(cl as usize);
                 continue;
             }
@@ -176,16 +173,13 @@ impl<'a, H: SeqHeader> Iterator for ReadRange<'a, H> {
             let off = self.cursor;
             self.cursor = off + footprint(body);
             // SAFETY: the committed frame holds `H` at `off + FRAME_HEADER`; `H: Pod`.
-            let header =
-                unsafe { std::ptr::read_unaligned(data.add(off + FRAME_HEADER).cast::<H>()) };
+            let header = unsafe { seg.read_at::<H>(off + FRAME_HEADER) };
             if header.seq() < self.lo || header.seq() > self.hi {
                 continue;
             }
             // SAFETY: the payload lies within the committed frame and `segments`
             // outlives `'a`.
-            let payload = unsafe {
-                std::slice::from_raw_parts(data.add(off + FRAME_HEADER + hsize), body - hsize)
-            };
+            let payload = unsafe { seg.slice_at(off + FRAME_HEADER + hsize, body - hsize) };
             return Some(ReadRecord { header, payload });
         }
     }
