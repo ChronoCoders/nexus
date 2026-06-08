@@ -52,7 +52,7 @@ assert_eq!(status, Liveness::Alive);
 
 | Platform | `FileLock` | `ProcessLease` |
 |----------|-----------|----------------|
-| Linux    | OFD locks (`F_OFD_SETLK`) | OFD locks (`F_OFD_GETLK`) |
+| Linux    | OFD locks (`F_OFD_SETLK`) | OFD locks (`F_OFD_SETLK` / `F_OFD_GETLK`) |
 | macOS    | Planned   | Planned        |
 | Windows  | Planned   | Planned        |
 
