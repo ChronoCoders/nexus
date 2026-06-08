@@ -23,6 +23,7 @@ pub use frame::{Frame, LogOffset};
 
 const MANIFEST_FILE: &str = "journal.manifest";
 const SESSION_LOCK_FILE: &str = "session.lock";
+const EPOCH_MASK: u32 = 0x3FFF_FFFF;
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -205,6 +206,13 @@ impl<'a> SegmentedLogBuilder<'a> {
 /// At any point, only the current (`epoch`) and previous (`epoch - 1`)
 /// segments are readable. Older segments have been handed to the conductor
 /// for cleaning.
+///
+/// # Durability
+///
+/// Epoch advances are written to the mmap'd manifest but not fsynced.
+/// After a crash, the on-disk epoch may lag by one rotation, causing
+/// recovery to discard the most recent segment's data. This matches
+/// the Aeron journal model: replay from the last durable point.
 pub struct SegmentedLog {
     slots: [Slot; 3],
     manifest: Manifest,
@@ -242,6 +250,10 @@ impl SegmentedLog {
     ///
     /// Returns a [`LogOffset`] valid for reads until the slot is rotated out
     /// (two rotations after this write).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the conductor cleanup thread has exited (indicates a bug).
     pub fn append(&mut self, payload: &[u8]) -> Result<LogOffset, LogError> {
         let body = payload.len();
         let foot = footprint(body);
@@ -488,6 +500,7 @@ impl SegmentedLog {
             _ => {
                 let c = (epoch % 3) as usize;
                 let p = ((epoch - 1) % 3) as usize;
+                // {c, p, s} is always a permutation of {0, 1, 2}
                 let s = 3 - c - p;
                 (c, p, s)
             }
@@ -523,9 +536,9 @@ impl SegmentedLog {
         }
 
         let mut slot_gen = [u32::MAX; 3];
-        slot_gen[current] = epoch as u32;
+        slot_gen[current] = (epoch as u32) & EPOCH_MASK;
         if epoch > 0 {
-            slot_gen[prev] = (epoch - 1) as u32;
+            slot_gen[prev] = ((epoch - 1) as u32) & EPOCH_MASK;
         }
 
         Ok(Self {
@@ -549,24 +562,34 @@ impl SegmentedLog {
         if !self.ready.load(Ordering::Acquire) {
             return Err(LogError::StandbyNotReady);
         }
+
         let old_prev = self.prev;
+        let request = CleanRequest {
+            data: self.slots[old_prev].data,
+            segment_size: self.segment_size,
+            ready: Arc::clone(&self.ready),
+        };
+
+        self.ready.store(false, Ordering::Release);
+        match self.tx.try_send(request) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                self.ready.store(true, Ordering::Release);
+                return Err(LogError::StandbyNotReady);
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                panic!("conductor cleanup thread has exited unexpectedly");
+            }
+        }
+
         self.prev = self.current;
         self.current = self.standby;
         self.standby = old_prev;
         self.cursor = 0;
         self.epoch += 1;
-        self.slot_gen[self.current] = self.epoch as u32;
-
+        self.slot_gen[self.current] = (self.epoch as u32) & EPOCH_MASK;
         self.manifest.set_epoch(self.epoch);
 
-        self.tx
-            .send(CleanRequest {
-                data: self.slots[old_prev].data,
-                segment_size: self.segment_size,
-                ready: Arc::clone(&self.ready),
-            })
-            .map_err(|_| LogError::ConductorGone)?;
-        self.ready.store(false, Ordering::Release);
         Ok(())
     }
 }

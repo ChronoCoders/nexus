@@ -89,6 +89,13 @@ impl ConductorBuilder {
 /// [`SegmentedLog`](super::SegmentedLog) instances are opened through
 /// the conductor via [`session()`](Self::session).
 ///
+/// # Lifetime
+///
+/// The conductor **must** outlive all [`SegmentedLog`] instances opened
+/// through it. `Conductor::drop` joins the cleanup thread, which blocks
+/// until every session's sender is dropped. Dropping a conductor while
+/// sessions are still alive will block indefinitely.
+///
 /// # Directory layout
 ///
 /// ```text
@@ -187,7 +194,11 @@ fn conductor_main(rx: std::sync::mpsc::Receiver<CleanRequest>) {
     for req in rx {
         // TODO: archive the evicted segment to disk before cleaning
         //       (read segment data via req.data/req.segment_size, write
-        //       to archive dir, then zero).
+        //       to archive dir, then zero). Archival I/O errors must not
+        //       panic — a panic here leaves in-flight `ready` flags false,
+        //       causing SegmentedLog::drop to spin forever. Handle errors
+        //       gracefully (log + skip) and always proceed to the zero +
+        //       ready store below.
 
         // SAFETY: `req.data` points to the start of a live mmap'd segment.
         // See `CleanRequest` Send impl for lifetime reasoning.

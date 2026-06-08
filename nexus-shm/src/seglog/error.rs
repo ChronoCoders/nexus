@@ -90,7 +90,6 @@ impl From<std::io::Error> for OpenError {
 pub enum LogError {
     RecordTooLarge { max: usize },
     StandbyNotReady,
-    ConductorGone,
 }
 
 impl fmt::Display for LogError {
@@ -101,9 +100,6 @@ impl fmt::Display for LogError {
             }
             Self::StandbyNotReady => {
                 write!(f, "conductor has not finished cleaning the standby segment")
-            }
-            Self::ConductorGone => {
-                write!(f, "conductor cleanup thread has shut down")
             }
         }
     }
