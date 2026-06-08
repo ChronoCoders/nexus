@@ -26,11 +26,7 @@ impl MappedFile {
     ///
     /// This is the common case for IPC segments. The file is created if it
     /// does not exist, and is **not** truncated if it does.
-    pub fn create(
-        path: &Path,
-        len: NonZeroUsize,
-        opts: MapOptions,
-    ) -> Result<Self, MapError> {
+    pub fn create(path: &Path, len: NonZeroUsize, opts: MapOptions) -> Result<Self, MapError> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -45,16 +41,14 @@ impl MappedFile {
     /// [`Protection::ReadWrite`] at its current length.
     pub fn open(path: &Path, opts: MapOptions) -> Result<Self, MapError> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
-        let len = NonZeroUsize::new(file.metadata()?.len() as usize)
-            .ok_or(MapError::EmptyFile)?;
+        let len = NonZeroUsize::new(file.metadata()?.len() as usize).ok_or(MapError::EmptyFile)?;
         Self::from_file(file, len, 0, Protection::ReadWrite, Sharing::Shared, opts)
     }
 
     /// Open an existing file read-only and map it as [`Sharing::Private`].
     pub fn open_readonly(path: &Path, opts: MapOptions) -> Result<Self, MapError> {
         let file = OpenOptions::new().read(true).open(path)?;
-        let len = NonZeroUsize::new(file.metadata()?.len() as usize)
-            .ok_or(MapError::EmptyFile)?;
+        let len = NonZeroUsize::new(file.metadata()?.len() as usize).ok_or(MapError::EmptyFile)?;
         Self::from_file(file, len, 0, Protection::ReadOnly, Sharing::Private, opts)
     }
 
@@ -103,8 +97,12 @@ mod tests {
         let path = temp_path("rw");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(4096).unwrap(), MapOptions::default())
-            .unwrap();
+        let m = MappedFile::create(
+            &path,
+            NonZeroUsize::new(4096).unwrap(),
+            MapOptions::default(),
+        )
+        .unwrap();
         assert_eq!(m.len(), 4096);
         assert!(m.is_writable());
 
@@ -121,8 +119,12 @@ mod tests {
         let path = temp_path("open");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(256).unwrap(), MapOptions::default())
-            .unwrap();
+        let m = MappedFile::create(
+            &path,
+            NonZeroUsize::new(256).unwrap(),
+            MapOptions::default(),
+        )
+        .unwrap();
         m.write_at(10, b"hello");
         drop(m);
 
@@ -139,8 +141,12 @@ mod tests {
         let path = temp_path("readonly");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(128).unwrap(), MapOptions::default())
-            .unwrap();
+        let m = MappedFile::create(
+            &path,
+            NonZeroUsize::new(128).unwrap(),
+            MapOptions::default(),
+        )
+        .unwrap();
         m.write_at(0, b"data");
         drop(m);
 
@@ -222,8 +228,12 @@ mod tests {
         let path = temp_path("sync");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(4096).unwrap(), MapOptions::default())
-            .unwrap();
+        let m = MappedFile::create(
+            &path,
+            NonZeroUsize::new(4096).unwrap(),
+            MapOptions::default(),
+        )
+        .unwrap();
         m.write_at(0, b"durable");
         m.sync().unwrap();
 
@@ -235,8 +245,12 @@ mod tests {
         let path = temp_path("advise");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(4096).unwrap(), MapOptions::default())
-            .unwrap();
+        let m = MappedFile::create(
+            &path,
+            NonZeroUsize::new(4096).unwrap(),
+            MapOptions::default(),
+        )
+        .unwrap();
         m.advise(crate::Advice::Sequential).unwrap();
         m.advise(crate::Advice::Random).unwrap();
         m.advise(crate::Advice::WillNeed).unwrap();
@@ -271,7 +285,11 @@ mod tests {
         full.write_at(4096, b"offset-test");
         drop(full);
 
-        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
         let window = MappedFile::from_file(
             file,
             NonZeroUsize::new(4096).unwrap(),

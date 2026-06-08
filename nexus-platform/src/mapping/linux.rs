@@ -3,7 +3,7 @@ use std::os::fd::BorrowedFd;
 use std::ptr::NonNull;
 
 use nix::errno::Errno;
-use nix::sys::mman::{self, MsFlags, MapFlags, ProtFlags};
+use nix::sys::mman::{self, MapFlags, MsFlags, ProtFlags};
 
 use super::{Advice, MapError, MapOptions, Protection, Sharing};
 
@@ -65,14 +65,12 @@ pub(super) fn unmap(ptr: NonNull<u8>, len: NonZeroUsize) {
 
 pub(super) fn msync(ptr: NonNull<u8>, len: NonZeroUsize) -> Result<(), std::io::Error> {
     // SAFETY: ptr..ptr+len is a valid mapping from mmap.
-    unsafe { mman::msync(ptr.cast(), len.get(), MsFlags::MS_SYNC) }
-        .map_err(std::io::Error::from)
+    unsafe { mman::msync(ptr.cast(), len.get(), MsFlags::MS_SYNC) }.map_err(std::io::Error::from)
 }
 
 pub(super) fn msync_async(ptr: NonNull<u8>, len: NonZeroUsize) -> Result<(), std::io::Error> {
     // SAFETY: ptr..ptr+len is a valid mapping from mmap.
-    unsafe { mman::msync(ptr.cast(), len.get(), MsFlags::MS_ASYNC) }
-        .map_err(std::io::Error::from)
+    unsafe { mman::msync(ptr.cast(), len.get(), MsFlags::MS_ASYNC) }.map_err(std::io::Error::from)
 }
 
 pub(super) fn madvise(

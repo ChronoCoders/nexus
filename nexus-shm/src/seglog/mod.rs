@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nexus_platform::{FileLock, MapOptions};
 use crate::segment::Segment;
+use nexus_platform::{FileLock, MapOptions};
 
 use conductor::CleanRequest;
 use frame::{ALIGN, FRAME_HDR, align_up, commit_len_ptr, footprint, session_id_ptr};

@@ -195,11 +195,7 @@ impl Mapping {
             // from offset are within the mapping. The source and dest do
             // not overlap (mapping vs caller's buffer).
             unsafe {
-                std::ptr::copy_nonoverlapping(
-                    self.ptr.as_ptr().add(offset),
-                    buf.as_mut_ptr(),
-                    n,
-                );
+                std::ptr::copy_nonoverlapping(self.ptr.as_ptr().add(offset), buf.as_mut_ptr(), n);
             }
         }
         n
@@ -220,11 +216,7 @@ impl Mapping {
             // from offset are within the mapping. The source and dest do
             // not overlap (caller's buffer vs mapping).
             unsafe {
-                std::ptr::copy_nonoverlapping(
-                    data.as_ptr(),
-                    self.ptr.as_ptr().add(offset),
-                    n,
-                );
+                std::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.as_ptr().add(offset), n);
             }
         }
         n
