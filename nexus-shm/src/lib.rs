@@ -8,7 +8,6 @@ pub(crate) mod control;
 mod error;
 mod journal;
 mod pod;
-mod region;
 mod seglog;
 mod segment;
 
@@ -17,9 +16,8 @@ pub use journal::{
     FixHeader, Journal, JournalConfig, JournalError, ReadRange, ReadRecord, Reader, RecordHeader,
     SeqHeader, WriteClaim, Writer,
 };
-pub use nexus_platform::Liveness;
+pub use nexus_platform::{Liveness, MapOptions};
 pub use pod::Pod;
-pub use region::MapOptions;
 pub use seglog::{
     Conductor, ConductorBuilder, Frame, LogError, LogOffset, OpenError, SegmentedLog,
     SegmentedLogBuilder,
