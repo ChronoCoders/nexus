@@ -2,8 +2,9 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use nexus_platform::{MapOptions, MappedFile};
+
 use crate::error::ShmError;
-use crate::region::{MapOptions, Mapping};
 
 const MAGIC: u32 = u32::from_le_bytes(*b"NXLG");
 const VERSION: u16 = 1;
@@ -68,7 +69,7 @@ const MANIFEST_FILE_SIZE: usize = 4096;
 ///    `standby`. Recovery then scans the current slot's frames to find
 ///    the write tail.
 pub(crate) struct Manifest {
-    mapping: Mapping,
+    mapping: MappedFile,
 }
 
 impl Manifest {
@@ -79,7 +80,7 @@ impl Manifest {
         name: &[u8],
     ) -> Result<Self, ShmError> {
         let len = NonZeroUsize::new(MANIFEST_FILE_SIZE).unwrap();
-        let mapping = Mapping::create(path, len, MapOptions::default())?;
+        let mapping = MappedFile::create(path, len, MapOptions::default())?;
 
         // SAFETY: the mapping covers at least MANIFEST_FILE_SIZE bytes and is
         // page-aligned. We hold exclusive access (just created the file).
@@ -99,7 +100,7 @@ impl Manifest {
     }
 
     pub(crate) fn open(path: &Path) -> Result<Self, ShmError> {
-        let mapping = Mapping::open(path, MapOptions::default())?;
+        let mapping = MappedFile::open(path, MapOptions::default())?;
         let hdr = Self::header_of(&mapping);
 
         if hdr.magic != MAGIC {
@@ -141,7 +142,7 @@ impl Manifest {
         Self::header_of(&self.mapping)
     }
 
-    fn header_of(mapping: &Mapping) -> &ManifestHeader {
+    fn header_of(mapping: &MappedFile) -> &ManifestHeader {
         // SAFETY: the mapping is at least MANIFEST_FILE_SIZE bytes and
         // page-aligned. ManifestHeader is 96 bytes with 8-byte alignment.
         unsafe { &*mapping.as_ptr().cast::<ManifestHeader>() }

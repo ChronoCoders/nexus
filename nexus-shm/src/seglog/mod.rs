@@ -9,9 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nexus_platform::FileLock;
-
-use crate::region::MapOptions;
+use nexus_platform::{FileLock, MapOptions};
 use crate::segment::Segment;
 
 use conductor::CleanRequest;

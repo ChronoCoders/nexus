@@ -10,7 +10,7 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
-use crate::region::MapOptions;
+use nexus_platform::MapOptions;
 use crate::segment::Segment;
 
 pub use error::JournalError;

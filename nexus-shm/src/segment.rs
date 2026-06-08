@@ -1,11 +1,10 @@
 use std::num::NonZeroUsize;
 use std::path::Path;
 
-use nexus_platform::{Liveness, ProcessLease};
+use nexus_platform::{Liveness, MapOptions, MappedFile, ProcessLease};
 
 use crate::control::{ControlBlock, status};
 use crate::error::ShmError;
-use crate::region::{MapOptions, Mapping};
 
 const HEADER: NonZeroUsize = match NonZeroUsize::new(size_of::<ControlBlock>()) {
     Some(n) => n,
@@ -25,7 +24,7 @@ pub enum Status {
 /// backing file persists after drop so a restarting peer can run crash
 /// recovery; segment owns only the mapping and its liveness signals.
 pub struct Segment {
-    mapping: Mapping,
+    mapping: MappedFile,
     creator: bool,
 }
 
@@ -35,7 +34,7 @@ impl Segment {
             return Err(ShmError::EmptySegment);
         }
         let total = HEADER.checked_add(data_len).ok_or(ShmError::SizeOverflow)?;
-        let mapping = Mapping::create(path, total, opts)?;
+        let mapping = MappedFile::create(path, total, opts)?;
 
         if !ProcessLease::claim(mapping.as_fd())? {
             return Err(ShmError::OwnerActive);
@@ -55,7 +54,7 @@ impl Segment {
     }
 
     pub fn attach(path: &Path, opts: MapOptions) -> Result<Self, ShmError> {
-        let mapping = Mapping::open(path, opts)?;
+        let mapping = MappedFile::open(path, opts)?;
         Self::control_of(&mapping).validate()?;
         Ok(Self {
             mapping,
@@ -100,7 +99,7 @@ impl Segment {
         Self::control_of(&self.mapping)
     }
 
-    fn control_of(mapping: &Mapping) -> &ControlBlock {
+    fn control_of(mapping: &MappedFile) -> &ControlBlock {
         // SAFETY: mmap maps whole pages, so the control block (<= one page) is
         // mapped and page-aligned. All control-block fields are atomic or
         // written once before sharing, so shared `&` access is sound.
@@ -124,7 +123,7 @@ fn flags(opts: MapOptions) -> u16 {
 mod tests {
     use super::{Liveness, Segment, Status};
     use crate::error::ShmError;
-    use crate::region::MapOptions;
+    use nexus_platform::MapOptions;
 
     fn temp_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("nexus-shm-{}-{}", std::process::id(), name))

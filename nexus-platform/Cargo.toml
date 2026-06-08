@@ -14,4 +14,4 @@ categories = ["os::unix-apis"]
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.30", features = ["fs"] }
+nix = { version = "0.30", features = ["fs", "mman"] }

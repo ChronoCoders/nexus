@@ -42,3 +42,14 @@ impl From<std::io::Error> for ShmError {
         Self::Os(e)
     }
 }
+
+impl From<nexus_platform::MapError> for ShmError {
+    fn from(e: nexus_platform::MapError) -> Self {
+        match e {
+            nexus_platform::MapError::Io(e) => Self::Os(e),
+            nexus_platform::MapError::EmptyFile => Self::EmptySegment,
+            nexus_platform::MapError::OutOfBounds => Self::SizeOverflow,
+            nexus_platform::MapError::HugePagesUnavailable(e) => Self::HugePagesUnavailable(e),
+        }
+    }
+}
