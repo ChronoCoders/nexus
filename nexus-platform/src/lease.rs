@@ -8,16 +8,16 @@ use linux as imp;
 
 #[cfg(not(target_os = "linux"))]
 compile_error!(
-    "nexus-platform lease locking requires OFD locks (Linux). \
+    "nexus-platform process lease requires OFD locks (Linux). \
      macOS/Windows support is not yet implemented."
 );
 
-/// Result of probing a [`LeaseLock`].
+/// Result of probing a [`ProcessLease`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Liveness {
-    /// The owning process is alive (lock still held).
+    /// The owning process is alive (lease still held).
     Alive,
-    /// The owning process has exited (lock released by kernel).
+    /// The owning process has exited (lease released by kernel).
     Dead,
     /// The probe failed (e.g. invalid fd). Treat as indeterminate.
     Unknown,
@@ -31,18 +31,18 @@ pub enum Liveness {
 /// the fd to check whether the owner is still alive.
 ///
 /// This is **not** mutual exclusion — it is a liveness oracle backed by
-/// the kernel's lock table. The lock is tied to the fd's file description
+/// the kernel's lock table. The lease is tied to the fd's file description
 /// and lives as long as that file description remains open.
 ///
 /// On Linux this uses OFD locks (`F_OFD_SETLK` / `F_OFD_GETLK`) on a
 /// single-byte range at offset 0.
-pub struct LeaseLock;
+pub struct ProcessLease;
 
-impl LeaseLock {
-    /// Claim ownership on the given fd.
+impl ProcessLease {
+    /// Claim a lease on the given fd.
     ///
     /// Acquires an exclusive advisory lock on a single-byte range of the
-    /// file. The lock is held as long as the fd's file description remains
+    /// file. The lease is held as long as the fd's file description remains
     /// open (i.e., until the owner closes all fds sharing that description
     /// or exits).
     ///
@@ -52,7 +52,7 @@ impl LeaseLock {
         imp::try_acquire(fd)
     }
 
-    /// Probe whether an owner is alive on the given fd.
+    /// Probe whether a lease is held on the given fd.
     ///
     /// This does not acquire any lock — it queries the kernel's lock table
     /// to determine if a write lock is held at the lease byte range.

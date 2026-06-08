@@ -37,7 +37,7 @@ fn open_lock_file(path: impl AsRef<Path>) -> Result<File, io::Error> {
 ///
 /// ```no_run
 /// # use nexus_platform::FileLock;
-/// let mut lock = FileLock::blocking("/tmp/my.lock").unwrap();
+/// let mut lock = FileLock::lock("/tmp/my.lock").unwrap();
 /// // lock is held until `lock` is dropped
 /// ```
 pub struct FileLock {
@@ -46,7 +46,7 @@ pub struct FileLock {
 
 impl FileLock {
     /// Acquire an exclusive lock, blocking until available.
-    pub fn blocking(path: impl AsRef<Path>) -> Result<Self, io::Error> {
+    pub fn lock(path: impl AsRef<Path>) -> Result<Self, io::Error> {
         let file = open_lock_file(path)?;
         imp::lock_exclusive_blocking(&file)?;
         Ok(Self { file })

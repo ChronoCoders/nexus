@@ -19,7 +19,7 @@ fn lease_flock(l_type: libc::c_short) -> libc::flock {
     lk
 }
 
-/// Try to acquire the lease lock (non-blocking).
+/// Try to acquire the lease (non-blocking).
 ///
 /// Returns `Ok(true)` if acquired, `Ok(false)` if another description holds it.
 pub(super) fn try_acquire(fd: BorrowedFd<'_>) -> Result<bool, std::io::Error> {
@@ -31,7 +31,7 @@ pub(super) fn try_acquire(fd: BorrowedFd<'_>) -> Result<bool, std::io::Error> {
     }
 }
 
-/// Probe whether a lease lock is held on `fd`.
+/// Probe whether a lease is held on `fd`.
 pub(super) fn probe_liveness(fd: BorrowedFd<'_>) -> Liveness {
     let mut lk = lease_flock(libc::F_WRLCK as libc::c_short);
     match fcntl(fd, FcntlArg::F_OFD_GETLK(&mut lk)) {

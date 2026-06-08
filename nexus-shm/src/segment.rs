@@ -1,7 +1,7 @@
 use std::num::NonZeroUsize;
 use std::path::Path;
 
-use nexus_platform::{LeaseLock, Liveness};
+use nexus_platform::{Liveness, ProcessLease};
 
 use crate::control::{ControlBlock, status};
 use crate::error::ShmError;
@@ -37,7 +37,7 @@ impl Segment {
         let total = HEADER.checked_add(data_len).ok_or(ShmError::SizeOverflow)?;
         let mapping = Mapping::create(path, total, opts)?;
 
-        if !LeaseLock::claim(mapping.as_fd())? {
+        if !ProcessLease::claim(mapping.as_fd())? {
             return Err(ShmError::OwnerActive);
         }
 
@@ -77,7 +77,7 @@ impl Segment {
     }
 
     pub fn peer_liveness(&self) -> Liveness {
-        LeaseLock::probe(self.mapping.as_fd())
+        ProcessLease::probe(self.mapping.as_fd())
     }
 
     /// Pointer to the payload region, valid for [`Segment::data_len`] bytes for
@@ -122,9 +122,7 @@ fn flags(opts: MapOptions) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use nexus_platform::Liveness;
-
-    use super::{Segment, Status};
+    use super::{Liveness, Segment, Status};
     use crate::error::ShmError;
     use crate::region::MapOptions;
 

@@ -1,11 +1,13 @@
 //! Platform-specific OS primitives behind a portable Rust API.
 //!
-//! # Lock primitives
+//! # Primitives
 //!
 //! - [`FileLock`] — RAII exclusive file lock for mutual exclusion
-//! - [`LeaseLock`] — kernel-mediated process liveness detection
-//! - [`Liveness`] — result of probing a lease lock
+//! - [`ProcessLease`] — kernel-mediated process liveness detection
+//! - [`Liveness`] — result of probing a process lease
 
-pub mod lock;
+pub mod file_lock;
+pub mod lease;
 
-pub use lock::{FileLock, LeaseLock, Liveness};
+pub use file_lock::FileLock;
+pub use lease::{Liveness, ProcessLease};

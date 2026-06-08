@@ -218,7 +218,7 @@ fn conductor_main(rx: std::sync::mpsc::Receiver<CleanRequest>) {
 /// when the `FileLock` drops. The counter file is a plain ASCII integer
 /// for easy inspection.
 fn claim_next_session_id(dir: &Path) -> Result<u32, super::OpenError> {
-    let mut lock = FileLock::blocking(dir.join(LOCK_FILE))?;
+    let mut lock = FileLock::lock(dir.join(LOCK_FILE))?;
     let current = read_counter(lock.file())?;
     let next = current + 1;
     write_counter(lock.file(), next)?;
@@ -228,7 +228,7 @@ fn claim_next_session_id(dir: &Path) -> Result<u32, super::OpenError> {
 /// Ensure the counter is at least `id` so future auto-assignments won't
 /// collide with explicitly chosen IDs.
 fn ensure_counter_at_least(dir: &Path, id: u32) -> Result<(), super::OpenError> {
-    let mut lock = FileLock::blocking(dir.join(LOCK_FILE))?;
+    let mut lock = FileLock::lock(dir.join(LOCK_FILE))?;
     let current = read_counter(lock.file())?;
     if id > current {
         write_counter(lock.file(), id)?;

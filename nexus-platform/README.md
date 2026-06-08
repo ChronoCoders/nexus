@@ -8,7 +8,7 @@ Platform-specific OS primitives behind a portable Rust API.
 on. Each primitive has a portable Rust API with platform-specific backends
 selected at compile time.
 
-## Lock Primitives
+## Primitives
 
 ### `FileLock`
 
@@ -20,13 +20,13 @@ struct drops.
 use nexus_platform::FileLock;
 
 // Blocking — waits until the lock is available
-let mut lock = FileLock::blocking("/tmp/my.lock").unwrap();
+let mut lock = FileLock::lock("/tmp/my.lock").unwrap();
 
 // Non-blocking — returns None if already held
 let lock = FileLock::try_lock("/tmp/my.lock").unwrap();
 ```
 
-### `LeaseLock`
+### `ProcessLease`
 
 Kernel-mediated process liveness detection. Uses an advisory byte-range lock
 on a file descriptor to signal that a process is alive. When the owning
@@ -37,29 +37,29 @@ kernel's lock table.
 
 ```rust,no_run
 use std::os::fd::AsFd;
-use nexus_platform::{LeaseLock, Liveness};
+use nexus_platform::{ProcessLease, Liveness};
 
 // Owner claims a lease on a shared file's fd
 let file = std::fs::File::open("/dev/shm/my-segment").unwrap();
-let claimed = LeaseLock::claim(file.as_fd()).unwrap();
+let claimed = ProcessLease::claim(file.as_fd()).unwrap();
 
 // Peer probes whether the owner is still alive
-let status = LeaseLock::probe(file.as_fd());
+let status = ProcessLease::probe(file.as_fd());
 assert_eq!(status, Liveness::Alive);
 ```
 
 ## Platform Support
 
-| Platform | `FileLock` | `LeaseLock` |
-|----------|-----------|-------------|
+| Platform | `FileLock` | `ProcessLease` |
+|----------|-----------|----------------|
 | Linux    | OFD locks (`F_OFD_SETLK`) | OFD locks (`F_OFD_GETLK`) |
-| macOS    | Planned   | Planned     |
-| Windows  | Planned   | Planned     |
+| macOS    | Planned   | Planned        |
+| Windows  | Planned   | Planned        |
 
 ## Dependency Chain
 
 ```text
-nexus-platform    (FileLock, LeaseLock, OS primitives)
+nexus-platform    (FileLock, ProcessLease, OS primitives)
        ↑
    nexus-shm      (segments, regions, liveness)
        ↑
