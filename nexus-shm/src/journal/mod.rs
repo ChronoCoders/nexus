@@ -18,7 +18,7 @@ pub use header::{FixHeader, RecordHeader, SeqHeader};
 pub use reader::{ReadRange, ReadRecord, Reader};
 pub use writer::{WriteClaim, Writer};
 
-use frame::{FRAME_HEADER, TYPE_PAD, align_up, commit_len, footprint, read_kind};
+use frame::{FRAME_HEADER, TYPE_PAD, align_up, footprint};
 
 const MIN_SEGMENT: usize = 64;
 
@@ -87,17 +87,16 @@ impl<H: RecordHeader> Journal<H> {
 }
 
 fn recover_tail<H: RecordHeader>(seg: &Segment, segment_size: usize) -> usize {
-    let data = seg.data();
     let hsize = size_of::<H>();
     let mut cur = 0;
     while cur + FRAME_HEADER <= segment_size {
         // SAFETY: `cur` is an 8-aligned offset within the mapped data region.
-        let cl = unsafe { commit_len(data.add(cur)) }.load(Ordering::Acquire);
+        let cl = unsafe { seg.commit_len_at(cur) }.load(Ordering::Acquire);
         if cl == 0 {
             break;
         }
         // SAFETY: cl > 0 was Acquire-loaded, so the frame header is published.
-        if unsafe { read_kind(data.add(cur)) } == TYPE_PAD {
+        if unsafe { seg.frame_kind_at(cur) } == TYPE_PAD {
             cur += align_up(cl as usize);
             continue;
         }
