@@ -117,9 +117,9 @@ mod tests {
         assert_eq!(m.len(), 4096);
         assert!(m.is_writable());
 
-        m.write_at(0, &[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
+        m.write_at(&[0xDE, 0xAD, 0xBE, 0xEF], 0).unwrap();
         let mut buf = [0u8; 4];
-        assert_eq!(m.read_at(0, &mut buf), 4);
+        assert_eq!(m.read_at(&mut buf, 0), 4);
         assert_eq!(buf, [0xDE, 0xAD, 0xBE, 0xEF]);
 
         std::fs::remove_file(&path).unwrap();
@@ -136,12 +136,12 @@ mod tests {
             MapOptions::default(),
         )
         .unwrap();
-        m.write_at(10, b"hello").unwrap();
+        m.write_at(b"hello", 10).unwrap();
         drop(m);
 
         let m2 = MappedFile::open(&path, MapOptions::default()).unwrap();
         let mut buf = [0u8; 5];
-        m2.read_at(10, &mut buf);
+        m2.read_at(&mut buf, 10);
         assert_eq!(&buf, b"hello");
 
         std::fs::remove_file(&path).unwrap();
@@ -158,7 +158,7 @@ mod tests {
             MapOptions::default(),
         )
         .unwrap();
-        m.write_at(0, b"data").unwrap();
+        m.write_at(b"data", 0).unwrap();
         drop(m);
 
         let m2 = MappedFile::open_readonly(&path, MapOptions::default()).unwrap();
@@ -175,7 +175,7 @@ mod tests {
 
         let m = MappedFile::create(&path, NonZeroUsize::new(64).unwrap(), MapOptions::default())
             .unwrap();
-        m.write_at(0, &[1, 2, 3, 4]).unwrap();
+        m.write_at(&[1, 2, 3, 4], 0).unwrap();
         assert_eq!(&m.as_slice()[..4], &[1, 2, 3, 4]);
 
         std::fs::remove_file(&path).unwrap();
@@ -189,7 +189,7 @@ mod tests {
         let m = MappedFile::create(&path, NonZeroUsize::new(8).unwrap(), MapOptions::default())
             .unwrap();
         let mut buf = [0u8; 16];
-        let n = m.read_at(4, &mut buf);
+        let n = m.read_at(&mut buf, 4);
         assert_eq!(n, 4);
 
         std::fs::remove_file(&path).unwrap();
@@ -202,7 +202,7 @@ mod tests {
 
         let m = MappedFile::create(&path, NonZeroUsize::new(8).unwrap(), MapOptions::default())
             .unwrap();
-        let n = m.write_at(6, &[1, 2, 3, 4]).unwrap();
+        let n = m.write_at(&[1, 2, 3, 4], 6).unwrap();
         assert_eq!(n, 2);
         assert_eq!(&m.as_slice()[6..8], &[1, 2]);
 
@@ -217,7 +217,7 @@ mod tests {
         let m = MappedFile::create(&path, NonZeroUsize::new(8).unwrap(), MapOptions::default())
             .unwrap();
         let mut buf = [0u8; 4];
-        let n = m.read_at(100, &mut buf);
+        let n = m.read_at(&mut buf, 100);
         assert_eq!(n, 0);
 
         std::fs::remove_file(&path).unwrap();
@@ -245,7 +245,7 @@ mod tests {
             MapOptions::default(),
         )
         .unwrap();
-        m.write_at(0, b"durable").unwrap();
+        m.write_at(b"durable", 0).unwrap();
         m.sync().unwrap();
 
         std::fs::remove_file(&path).unwrap();
@@ -293,7 +293,7 @@ mod tests {
             MapOptions::default(),
         )
         .unwrap();
-        full.write_at(4096, b"offset-test").unwrap();
+        full.write_at(b"offset-test", 4096).unwrap();
         drop(full);
 
         let file = OpenOptions::new()
@@ -326,11 +326,11 @@ mod tests {
             MapOptions::default(),
         )
         .unwrap();
-        m.write_at(0, b"setup").unwrap();
+        m.write_at(b"setup", 0).unwrap();
         drop(m);
 
         let m2 = MappedFile::open_readonly(&path, MapOptions::default()).unwrap();
-        let err = m2.write_at(0, b"nope").unwrap_err();
+        let err = m2.write_at(b"nope", 0).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
 
         std::fs::remove_file(&path).unwrap();
@@ -391,9 +391,9 @@ mod tests {
         .unwrap();
         let m2 = MappedFile::open(&path, MapOptions::default()).unwrap();
 
-        m1.write_at(0, b"visible").unwrap();
+        m1.write_at(b"visible", 0).unwrap();
         let mut buf = [0u8; 7];
-        m2.read_at(0, &mut buf);
+        m2.read_at(&mut buf, 0);
         assert_eq!(&buf, b"visible");
 
         std::fs::remove_file(&path).unwrap();

@@ -187,7 +187,7 @@ impl Mapping {
     ///
     /// Returns the number of bytes read (may be less than `buf.len()` if
     /// `offset + buf.len()` exceeds the mapping length).
-    pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> usize {
+    pub fn read_at(&self, buf: &mut [u8], offset: usize) -> usize {
         let avail = self.len.get().saturating_sub(offset);
         let n = buf.len().min(avail);
         if n > 0 {
@@ -211,7 +211,7 @@ impl Mapping {
     ///
     /// For shared mappings, concurrent writers are not coordinated by this
     /// method — the caller must synchronize.
-    pub fn write_at(&self, offset: usize, data: &[u8]) -> Result<usize, std::io::Error> {
+    pub fn write_at(&self, data: &[u8], offset: usize) -> Result<usize, std::io::Error> {
         if !self.writable {
             return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
         }
