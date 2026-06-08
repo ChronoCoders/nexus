@@ -46,6 +46,13 @@ pub enum Advice {
     WillNeed,
     /// Pages will not be needed soon — may be reclaimed.
     DontNeed,
+    /// Back this range with huge pages (transparent huge pages).
+    /// Linux 2.6.38+. No-op if THP is disabled system-wide.
+    #[cfg(target_os = "linux")]
+    HugePage,
+    /// Do not back this range with huge pages.
+    #[cfg(target_os = "linux")]
+    NoHugePage,
 }
 
 /// Platform-aware hints for mapping creation. Fields are best-effort:

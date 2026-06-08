@@ -81,6 +81,8 @@ pub(super) fn madvise(
         Advice::Random => nix::libc::MADV_RANDOM,
         Advice::WillNeed => nix::libc::MADV_WILLNEED,
         Advice::DontNeed => nix::libc::MADV_DONTNEED,
+        Advice::HugePage => nix::libc::MADV_HUGEPAGE,
+        Advice::NoHugePage => nix::libc::MADV_NOHUGEPAGE,
     };
     // SAFETY: ptr..ptr+len is a valid mapping from mmap.
     unsafe {
