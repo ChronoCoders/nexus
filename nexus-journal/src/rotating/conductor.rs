@@ -8,22 +8,19 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use nexus_platform::{FileLock, MappedFile};
+use nexus_platform::{FileLock, MappedFile, Mapping};
 
-use crate::MapHints;
-use crate::segment::Segment;
-
-use super::frame::commit_len_ptr;
+use nexus_platform::MapHints;
 
 const LOCK_FILE: &str = "conductor.lock";
 const DEFAULT_CLEAN_QUEUE_DEPTH: usize = 4;
 
 // ---------------------------------------------------------------------------
-// SegmentSwap — three-state handoff between SegmentedLog and conductor
+// SegmentSwap — three-state handoff between RotatingJournal and conductor
 // ---------------------------------------------------------------------------
 
-pub(crate) const SWAP_CLEAN: u8 = 0; // conductor wrote a fresh segment; SegmentedLog can rotate
-pub(crate) const SWAP_DIRTY: u8 = 1; // SegmentedLog wrote an evicted segment; conductor must process
+pub(crate) const SWAP_CLEAN: u8 = 0; // conductor wrote a fresh segment; RotatingJournal can rotate
+pub(crate) const SWAP_DIRTY: u8 = 1; // RotatingJournal wrote an evicted segment; conductor must process
 pub(crate) const SWAP_PENDING: u8 = 2; // sent to conductor channel; inner is uninit
 
 /// Lock-free three-state handoff cell.
@@ -37,11 +34,11 @@ pub(crate) const SWAP_PENDING: u8 = 2; // sent to conductor channel; inner is un
 ///
 /// The `state` atomic provides the Acquire/Release barriers:
 /// - `Clean` Acquire: safe to read `inner` (conductor wrote it)
-/// - `Dirty` Acquire: safe to read `inner` (SegmentedLog wrote it)
+/// - `Dirty` Acquire: safe to read `inner` (RotatingJournal wrote it)
 /// - `Pending`: `inner` is uninit — nobody touches it
 pub(crate) struct SegmentSwap {
     state: AtomicU8,
-    inner: UnsafeCell<MaybeUninit<Segment>>,
+    inner: UnsafeCell<MaybeUninit<Mapping>>,
 }
 
 // SAFETY: access is serialized by `state` — at most one side holds the payload
@@ -49,10 +46,10 @@ pub(crate) struct SegmentSwap {
 unsafe impl Sync for SegmentSwap {}
 
 impl SegmentSwap {
-    pub(crate) fn new_clean(segment: Segment) -> Self {
+    pub(crate) fn new_clean(mapping: Mapping) -> Self {
         Self {
             state: AtomicU8::new(SWAP_CLEAN),
-            inner: UnsafeCell::new(MaybeUninit::new(segment)),
+            inner: UnsafeCell::new(MaybeUninit::new(mapping)),
         }
     }
 
@@ -60,20 +57,20 @@ impl SegmentSwap {
         self.state.load(Ordering::Acquire)
     }
 
-    /// Take the segment out, leaving `inner` uninit.
+    /// Take the mapping out, leaving `inner` uninit.
     ///
     /// # Safety
     /// `state` must be `SWAP_CLEAN` or `SWAP_DIRTY` (payload initialized).
-    pub(crate) unsafe fn take(&self) -> Segment {
+    pub(crate) unsafe fn take(&self) -> Mapping {
         unsafe { (*self.inner.get()).assume_init_read() }
     }
 
-    /// Write the evicted segment into `inner` and transition to `Dirty`.
+    /// Write the evicted mapping into `inner` and transition to `Dirty`.
     ///
     /// # Safety
     /// `inner` must be uninit (caller just called `take()`).
-    pub(crate) unsafe fn store_dirty(&self, segment: Segment) {
-        unsafe { (*self.inner.get()).write(segment) };
+    pub(crate) unsafe fn store_dirty(&self, mapping: Mapping) {
+        unsafe { (*self.inner.get()).write(mapping) };
         self.state.store(SWAP_DIRTY, Ordering::Release);
     }
 
@@ -81,12 +78,12 @@ impl SegmentSwap {
         self.state.store(SWAP_PENDING, Ordering::Release);
     }
 
-    /// Write a fresh replacement segment and transition to `Clean`.
+    /// Write a fresh replacement mapping and transition to `Clean`.
     ///
     /// # Safety
     /// Called only from the conductor thread after `inner` was uninit.
-    pub(crate) unsafe fn publish_clean(&self, segment: Segment) {
-        unsafe { (*self.inner.get()).write(segment) };
+    pub(crate) unsafe fn publish_clean(&self, mapping: Mapping) {
+        unsafe { (*self.inner.get()).write(mapping) };
         self.state.store(SWAP_CLEAN, Ordering::Release);
     }
 }
@@ -106,13 +103,13 @@ impl Drop for SegmentSwap {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct CleanRequest {
-    /// The evicted segment to archive (rename) then drop. `None` for
-    /// retry-only requests where the segment was already dropped.
-    pub(crate) segment: Option<Segment>,
+    /// The evicted mapping to archive (rename) then drop. `None` for
+    /// retry-only requests where the mapping was already dropped.
+    pub(crate) mapping: Option<Mapping>,
     pub(crate) segment_size: usize,
     pub(crate) epoch: u64,
     pub(crate) swap: Arc<SegmentSwap>,
-    /// Path of the slot file to create fresh for the replacement segment.
+    /// Path of the slot file to create fresh for the replacement mapping.
     pub(crate) seg_path: PathBuf,
     pub(crate) hints: MapHints,
     pub(crate) archive_dir: Option<PathBuf>,
@@ -193,8 +190,8 @@ impl Conductor {
     }
 
     /// Open a new or existing session log under this conductor.
-    pub fn session(&mut self) -> super::SegmentedLogBuilder<'_> {
-        super::SegmentedLogBuilder::new(self)
+    pub fn session(&mut self) -> super::RotatingJournalBuilder<'_> {
+        super::RotatingJournalBuilder::new(self)
     }
 
     /// List session IDs that have a manifest on disk, sorted ascending.
@@ -261,21 +258,19 @@ fn conductor_main(rx: &std::sync::mpsc::Receiver<CleanRequest>) {
     let mut pending: Vec<PendingCreate> = Vec::new();
 
     loop {
-        // Retry any previously failed segment creates (e.g. ENOSPC).
+        // Retry any previously failed mapping creates (e.g. ENOSPC).
         pending.retain(|p| {
-            let Ok(total) = Segment::total_size(p.segment_size) else {
+            let Some(total) = NonZeroUsize::new(p.segment_size) else {
                 return true;
             };
             let Some(mf) = file_create(&p.seg_path, total, p.hints).ok() else {
                 return true;
             };
-            let Some(seg) = Segment::create(mf, p.segment_size, p.hints).ok() else {
-                return true;
-            };
-            // SAFETY: conductor is sole owner; state is Pending (inner uninit).
+            let mapping: Mapping = mf.into();
+            // SAFETY: conductor sole owner; state is Pending (inner uninit).
             unsafe {
-                (*commit_len_ptr(seg.data())).store(0, std::sync::atomic::Ordering::Relaxed);
-                p.swap.publish_clean(seg);
+                prefault(&mapping);
+                p.swap.publish_clean(mapping);
             }
             false
         });
@@ -313,31 +308,61 @@ fn conductor_main(rx: &std::sync::mpsc::Receiver<CleanRequest>) {
     }
 }
 
-fn process_request(req: CleanRequest, pending: &mut Vec<PendingCreate>) {
-    if let Some(segment) = req.segment {
-        // fsync before rename so the archive file is durable. If sync fails,
-        // skip the rename — the data is not guaranteed durable, but we still
-        // proceed to create the replacement segment.
-        // TODO: surface archival I/O failures to callers via a counter/flag.
-        let synced = segment.sync().is_ok();
+/// Prefault a freshly provisioned or reused segment before publishing it.
+///
+/// Write-touches (zeroes) every page so the `page_mkwrite` faults land here on
+/// the conductor — off the writer's append hot path — when the writer next
+/// refills the segment. Without this the writer eats the faults itself: a reused
+/// segment that sat idle long enough for the kernel to write its pages back and
+/// re-protect them re-faults on first touch. Zeroing also clears stale frames
+/// from the previous epoch.
+///
+/// # Safety
+/// `mapping` must be a live, writable mapping the conductor solely owns (swap is
+/// `Pending`, so no other thread touches it).
+unsafe fn prefault(mapping: &Mapping) {
+    // SAFETY: caller guarantees `mapping` covers `len()` writable bytes owned by
+    // this thread for the duration of the write.
+    unsafe { std::ptr::write_bytes(mapping.as_ptr(), 0, mapping.len()) };
+}
 
-        if synced
-            && let Some(ref archive_dir) = req.archive_dir
+fn process_request(req: CleanRequest, pending: &mut Vec<PendingCreate>) {
+    // Non-archiving fast path: reuse the evicted mapping in place. The slot's
+    // replacement file *is* the evicted segment's own file, and `create()`
+    // never truncates (only grows) — so recreating it would munmap, reopen, and
+    // re-mmap the same file for nothing. We keep the mapping and just prefault
+    // it. No munmap, no open, no ftruncate, no mmap: zero syscalls, so the
+    // fs-metadata stall that delays provisioning simply cannot occur.
+    if req.archive_dir.is_none() {
+        if let Some(mapping) = req.mapping {
+            // SAFETY: swap is Pending (inner uninit) until publish_clean; the
+            // conductor solely owns the mapping here.
+            unsafe {
+                prefault(&mapping);
+                req.swap.publish_clean(mapping);
+            }
+        }
+        return;
+    }
+
+    // Archiving path: the evicted file is renamed out of the slot, so a fresh
+    // replacement file must be created.
+    if let Some(mapping) = req.mapping {
+        // Durability before rename: the archive file must be on disk before it
+        // is moved into place. msync(MS_SYNC) blocks, but only the archiving
+        // path pays it.
+        if let Some(ref archive_dir) = req.archive_dir
+            && mapping.sync().is_ok()
             && std::fs::create_dir_all(archive_dir).is_ok()
         {
             let dst = archive_dir.join(format!("seg_{}.dat", req.epoch));
-            // Rename is atomic on the same filesystem; the mmap follows
-            // the inode so existing readers are unaffected.
             let _ = std::fs::rename(&req.seg_path, dst);
         }
 
-        // Drop the Segment (munmap + mark dead + release OFD lock). The file
-        // is either renamed (archive path) or still at seg_path — either way
-        // we're done with the mapping and can create a fresh file at seg_path.
-        drop(segment);
+        drop(mapping);
     }
 
-    let Ok(total) = Segment::total_size(req.segment_size) else {
+    let Some(total) = NonZeroUsize::new(req.segment_size) else {
         pending.push(PendingCreate {
             swap: req.swap,
             seg_path: req.seg_path,
@@ -349,13 +374,13 @@ fn process_request(req: CleanRequest, pending: &mut Vec<PendingCreate>) {
 
     match file_create(&req.seg_path, total, req.hints)
         .ok()
-        .and_then(|mf| Segment::create(mf, req.segment_size, req.hints).ok())
+        .map(Mapping::from)
     {
-        Some(seg) => {
-            // SAFETY: state is Pending (inner uninit after SegmentedLog took it).
+        Some(mapping) => {
+            // SAFETY: state is Pending (inner uninit); conductor solely owns it.
             unsafe {
-                (*commit_len_ptr(seg.data())).store(0, std::sync::atomic::Ordering::Relaxed);
-                req.swap.publish_clean(seg);
+                prefault(&mapping);
+                req.swap.publish_clean(mapping);
             }
         }
         None => {
