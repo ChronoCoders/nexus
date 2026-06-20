@@ -112,11 +112,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
     where
         H: FnMut(&[u8]),
     {
-        let deadline = self
-            .state
-            .next_timeout()
-            .map(tokio::time::Instant::from_std)
-            .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(60));
+        let deadline = self.state.next_timeout().map_or_else(
+            || tokio::time::Instant::now() + Duration::from_secs(60),
+            tokio::time::Instant::from_std,
+        );
 
         let mut tmp = [0u8; 8192];
         let n = match timeout_at(deadline, self.stream.read(&mut tmp)).await {
