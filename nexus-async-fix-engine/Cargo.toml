@@ -1,0 +1,21 @@
+[package]
+name = "nexus-async-fix-engine"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Tokio async adapter for the sans-IO FIX session layer"
+repository.workspace = true
+keywords = ["fix", "protocol", "session", "async", "tokio"]
+categories = ["network-programming", "finance", "asynchronous"]
+
+[lints]
+workspace = true
+
+[dependencies]
+nexus-fix-engine = { path = "../nexus-fix-engine" }
+nexus-fix-codec = { path = "../nexus-fix-codec" }
+tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

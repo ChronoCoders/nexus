@@ -116,6 +116,17 @@ jobs:
     - name: FIX conformance tests (Python peer + Rust engine)
       run: cargo test -p nexus-fix-engine --test fix_conformance
 
+  verify-async-fix:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@1.94.0
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Async FIX conformance tests (Python peer + tokio adapter)
+      run: cargo test -p nexus-async-fix-engine --test async_conformance
+
   loom:
     runs-on: ubuntu-latest
     steps:
