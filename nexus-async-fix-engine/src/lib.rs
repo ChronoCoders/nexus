@@ -186,19 +186,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
     where
         H: FnMut(&[u8]),
     {
-        let sender_ok = find_tag(frame, 0, 49)
-            .is_some_and(|s| s.slice(frame) == self.config.target.as_bytes());
-        let target_ok = find_tag(frame, 0, 56)
-            .is_some_and(|s| s.slice(frame) == self.config.sender.as_bytes());
+        let sender_ok =
+            find_tag(frame, 0, 49).is_some_and(|s| s.slice(frame) == self.config.target.as_bytes());
+        let target_ok =
+            find_tag(frame, 0, 56).is_some_and(|s| s.slice(frame) == self.config.sender.as_bytes());
         if !sender_ok || !target_ok {
             let out = self.state.on_comp_id_mismatch(now);
             self.flush_out(out).await?;
             return Ok(Some(DisconnectReason::CompIdMismatch));
         }
 
-        let seq = match find_tag(frame, 0, 34)
-            .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
-        {
+        let seq = match find_tag(frame, 0, 34).and_then(|s| parse_fix_seqnum(s.slice(frame)).ok()) {
             Some(s) => s as u32,
             None => return Ok(None),
         };
@@ -460,7 +458,13 @@ impl AsyncFixConnection<tokio::net::TcpStream> {
     ) -> io::Result<Self> {
         let stream = tokio::net::TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
-        Ok(Self::from_parts(stream, state, config, journal, begin_string))
+        Ok(Self::from_parts(
+            stream,
+            state,
+            config,
+            journal,
+            begin_string,
+        ))
     }
 }
 

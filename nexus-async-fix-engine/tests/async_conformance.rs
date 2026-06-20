@@ -5,11 +5,9 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use nexus_fix_codec::{FrameFormatter, encode_fix_uint};
-use nexus_fix_engine::{
-    CompId, DisconnectReason, FixJournal, SessionConfig, SessionState, State,
-};
 use nexus_async_fix_engine::AsyncFixConnection;
+use nexus_fix_codec::{FrameFormatter, encode_fix_uint};
+use nexus_fix_engine::{CompId, DisconnectReason, FixJournal, SessionConfig, SessionState, State};
 use tokio::net::TcpStream;
 
 const BEGIN: &[u8] = b"FIX.4.4";
