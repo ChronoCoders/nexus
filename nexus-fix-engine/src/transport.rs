@@ -210,6 +210,17 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
         Ok(())
     }
 
+    pub fn connect_reset(&mut self, now: Instant) -> Result<(), Error> {
+        let out = self.state.connect_reset(now);
+        for admin in out.admin_messages() {
+            store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
+        }
+        if !self.writer.is_empty() {
+            self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
+        }
+        Ok(())
+    }
+
     pub fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), Error> {
         self.journal
             .store(seq, frame)

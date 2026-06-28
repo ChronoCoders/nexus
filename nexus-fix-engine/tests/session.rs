@@ -31,7 +31,8 @@ fn initiator_handshake() {
         admins[0],
         AdminMsg::Logon {
             seq: 1,
-            heart_bt_int_s: 30
+            heart_bt_int_s: 30,
+            ..
         }
     ));
 
@@ -57,7 +58,8 @@ fn acceptor_handshake() {
         admins[0],
         AdminMsg::Logon {
             seq: 1,
-            heart_bt_int_s: 15
+            heart_bt_int_s: 15,
+            ..
         }
     ));
 }

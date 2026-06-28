@@ -5,6 +5,7 @@ use nexus_fix_codec::FixDictionary;
 use nexus_net::wire::ParserSink;
 
 use crate::frame::{FrameReader, FrameWriter};
+#[cfg(unix)]
 use crate::session::AdminMsg;
 
 const COMP_ID_CAP: usize = 20;
@@ -57,6 +58,8 @@ pub enum SessionError {
     MalformedMessage,
     /// Outbound sequence number reached i32::MAX; caller must force a sequence reset.
     SeqNumExhausted,
+    /// An in-session reset is already in progress; outbound allocation is blocked.
+    ResetInProgress,
 }
 
 impl core::fmt::Display for SessionError {
@@ -68,6 +71,7 @@ impl core::fmt::Display for SessionError {
             Self::MalformedField { tag } => write!(f, "tag {tag} malformed"),
             Self::MalformedMessage => write!(f, "admin message malformed"),
             Self::SeqNumExhausted => write!(f, "outbound sequence number exhausted (i32::MAX)"),
+            Self::ResetInProgress => write!(f, "in-session reset in progress"),
         }
     }
 }
@@ -236,10 +240,13 @@ impl<D: FixDictionary> MessageWriter<D> {
             fmt.field(52, &ts);
 
             match admin {
-                AdminMsg::Logon { heart_bt_int_s, .. } => {
+                AdminMsg::Logon { heart_bt_int_s, reset, .. } => {
                     let mut buf = [0u8; 10];
                     let n = encode_fix_uint(heart_bt_int_s, &mut buf);
                     fmt.field(108, &buf[..n]);
+                    if reset {
+                        fmt.field(141, b"Y");
+                    }
                 }
                 AdminMsg::Logout { .. } | AdminMsg::Heartbeat { echo: None, .. } => {}
                 AdminMsg::Heartbeat {
@@ -313,6 +320,7 @@ fn make_ts() -> [u8; crate::timestamp::UTC_TIMESTAMP_LEN] {
     ts
 }
 
+#[cfg(unix)]
 pub(crate) fn encode_u64(v: u64, out: &mut [u8; 20]) -> usize {
     if v == 0 {
         out[0] = b'0';
