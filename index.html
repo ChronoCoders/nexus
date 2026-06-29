@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nexus · Low-latency Rust primitives</title>
+<meta name="description" content="Specialized Rust crates for systems where tail latency, jitter, and predictability matter more than generality.">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0a0a09;
+  --surface-0: #0e0e0d;
+  --surface-1: #141413;
+  --surface-2: #1c1c1a;
+  --surface-3: #242422;
+  --border: rgba(255,255,255,0.06);
+  --border-strong: rgba(255,255,255,0.11);
+  --text-primary: #edece5;
+  --text-secondary: #9b9a92;
+  --text-muted: #5a5955;
+  --accent: #2a78d6;
+  --accent-bright: #5ba3f5;
+  --green: #1baf7a;
+  --amber: #c98500;
+  --red: #d03b3b;
+  --mono: 'JetBrains Mono','Fira Code','SF Mono','Cascadia Code',ui-monospace,monospace;
+  --sans: -apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+}
+
+html { scroll-behavior: smooth; }
+body { background: var(--bg); color: var(--text-primary); font-family: var(--mono); line-height: 1.5; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+
+a { color: inherit; text-decoration: none; }
+
+.wrap { max-width: 1140px; margin: 0 auto; padding: 0 1.5rem; }
+
+/* NAV */
+.nav { position: sticky; top: 0; z-index: 50; background: rgba(10,10,9,0.82); backdrop-filter: blur(12px); border-bottom: 0.5px solid var(--border); }
+.nav-inner { display: flex; align-items: center; height: 56px; gap: 1.5rem; }
+.brand { font-size: 14px; font-weight: 600; letter-spacing: 0.02em; }
+.brand .dot { color: var(--accent-bright); }
+.nav-links { margin-left: auto; display: flex; gap: 1.5rem; align-items: center; }
+.nav-links a { font-size: 12px; color: var(--text-secondary); transition: color 0.15s; font-family: var(--sans); }
+.nav-links a:hover { color: var(--text-primary); }
+.nav-gh { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 0.5px solid var(--border-strong); border-radius: 5px; font-size: 12px; color: var(--text-primary) !important; transition: all 0.15s; }
+.nav-gh:hover { background: var(--surface-2); border-color: var(--accent); }
+.nav-status { font-size: 10px; color: var(--text-muted); font-family: var(--sans); display: flex; align-items: center; gap: 6px; }
+.status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px rgba(27,175,122,0.6); animation: pulse 2.4s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+@media (max-width: 720px) { .nav-links a:not(.nav-gh) { display: none; } .nav-status { display: none; } }
+
+/* HERO */
+.hero { padding: 5rem 0 3rem; position: relative; }
+.hero-grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 3rem; align-items: center; }
+@media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; gap: 2rem; } }
+
+.eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-muted); font-family: var(--sans); text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 1.5rem; }
+
+.hero h1 { font-size: clamp(2.1rem, 5vw, 3.4rem); line-height: 1.04; letter-spacing: -0.02em; font-weight: 600; margin-bottom: 1.25rem; }
+.hero h1 .em { color: var(--accent-bright); }
+.hero p.lede { font-size: 15px; color: var(--text-secondary); font-family: var(--sans); line-height: 1.6; max-width: 30rem; margin-bottom: 2rem; }
+
+.cta-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 9px 18px; border-radius: 6px; font-size: 13px; font-family: var(--sans); font-weight: 500; cursor: pointer; transition: all 0.15s; border: 0.5px solid transparent; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #3585e8; transform: translateY(-1px); }
+.btn-ghost { background: var(--surface-1); color: var(--text-primary); border-color: var(--border-strong); }
+.btn-ghost:hover { background: var(--surface-2); border-color: var(--accent); }
+
+/* HERO VISUAL - latency panel */
+.lat-panel { background: var(--surface-0); border: 0.5px solid var(--border-strong); border-radius: 10px; padding: 1.1rem 1.2rem 1.2rem; box-shadow: 0 24px 60px rgba(0,0,0,0.5); }
+.lat-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+.lat-title { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em; font-family: var(--sans); }
+.lat-live { font-size: 9px; color: var(--green); font-family: var(--sans); display: flex; align-items: center; gap: 5px; }
+.lat-live .d { width: 5px; height: 5px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+
+.pct-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-bottom: 1rem; }
+.pct { background: var(--surface-2); border-radius: 6px; padding: 9px 10px; }
+.pct-k { font-size: 9px; color: var(--text-muted); font-family: var(--sans); margin-bottom: 4px; letter-spacing: 0.05em; }
+.pct-v { font-size: 18px; font-variant-numeric: tabular-nums; font-weight: 500; transition: color 0.4s; }
+.pct-v .u { font-size: 10px; color: var(--text-muted); margin-left: 2px; }
+.pct.p50 .pct-v { color: var(--green); }
+.pct.p99 .pct-v { color: var(--accent-bright); }
+.pct.p999 .pct-v { color: var(--amber); }
+
+.hist { display: flex; align-items: flex-end; gap: 2px; height: 96px; padding-top: 6px; }
+.hist-bar { flex: 1; border-radius: 2px 2px 0 0; min-height: 2px; transition: height 0.3s cubic-bezier(0.4,0,0.2,1); }
+.hist-axis { display: flex; justify-content: space-between; margin-top: 7px; font-size: 8px; color: var(--text-muted); font-family: var(--sans); }
+
+/* MARQUEE STRIP */
+.strip { border-top: 0.5px solid var(--border); border-bottom: 0.5px solid var(--border); background: var(--surface-0); padding: 1rem 0; }
+.strip-inner { display: flex; gap: 2.5rem; flex-wrap: wrap; justify-content: center; align-items: center; }
+.strip-item { font-size: 11px; color: var(--text-secondary); font-family: var(--sans); display: flex; align-items: center; gap: 8px; }
+.strip-item b { color: var(--text-primary); font-family: var(--mono); font-weight: 500; }
+.strip-sep { color: var(--text-muted); }
+
+/* SECTION SHELL */
+.section { padding: 4.5rem 0; }
+.sec-eyebrow { font-size: 11px; color: var(--accent-bright); text-transform: uppercase; letter-spacing: 0.14em; font-family: var(--sans); margin-bottom: 0.85rem; }
+.sec-title { font-size: clamp(1.5rem, 3vw, 2.1rem); letter-spacing: -0.01em; font-weight: 600; line-height: 1.12; margin-bottom: 1rem; max-width: 24rem; }
+.sec-lede { font-size: 14px; color: var(--text-secondary); font-family: var(--sans); max-width: 34rem; line-height: 1.6; }
+
+/* PHILOSOPHY */
+.phil-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; background: var(--border); border: 0.5px solid var(--border); border-radius: 8px; overflow: hidden; margin-top: 2.5rem; }
+@media (max-width: 760px) { .phil-grid { grid-template-columns: 1fr; } }
+.phil { background: var(--surface-0); padding: 1.5rem 1.4rem; }
+.phil-n { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; margin-bottom: 0.85rem; letter-spacing: 0.1em; }
+.phil h3 { font-size: 14px; font-weight: 600; margin-bottom: 0.5rem; color: var(--accent-bright); }
+.phil p { font-size: 12.5px; color: var(--text-secondary); font-family: var(--sans); line-height: 1.55; }
+
+/* CRATES */
+.crate-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 10px; margin-top: 2.5rem; }
+@media (max-width: 760px) { .crate-grid { grid-template-columns: 1fr; } }
+.crate { background: var(--surface-1); border: 0.5px solid var(--border); border-radius: 8px; padding: 1.3rem 1.4rem; transition: border-color 0.2s, transform 0.2s; }
+.crate:hover { border-color: var(--border-strong); transform: translateY(-2px); }
+.crate-cat { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em; font-family: var(--sans); margin-bottom: 0.5rem; }
+.crate h3 { font-size: 15px; font-weight: 600; margin-bottom: 0.75rem; }
+.crate-tag { font-size: 10px; color: var(--green); font-family: var(--sans); }
+.crate-list { list-style: none; display: flex; flex-direction: column; gap: 6px; margin-top: 0.5rem; }
+.crate-list li { font-size: 12px; color: var(--text-secondary); display: flex; gap: 8px; align-items: baseline; }
+.crate-list .nm { color: var(--accent-bright); font-weight: 500; flex-shrink: 0; }
+.crate-list .ds { color: var(--text-secondary); font-family: var(--sans); }
+.crate-note { font-size: 12px; color: var(--text-secondary); font-family: var(--sans); line-height: 1.55; }
+
+/* BENEFITS */
+.ben-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1.25rem; margin-top: 2.5rem; }
+@media (max-width: 760px) { .ben-grid { grid-template-columns: 1fr; } }
+.ben { padding: 0; }
+.ben-icon { width: 28px; height: 28px; border-radius: 6px; background: var(--surface-2); border: 0.5px solid var(--border-strong); display: flex; align-items: center; justify-content: center; margin-bottom: 0.9rem; }
+.ben-icon svg { width: 15px; height: 15px; stroke: var(--accent-bright); }
+.ben h3 { font-size: 14px; font-weight: 600; margin-bottom: 0.45rem; }
+.ben p { font-size: 12.5px; color: var(--text-secondary); font-family: var(--sans); line-height: 1.55; }
+
+/* GET STARTED */
+.gs { background: var(--surface-0); border: 0.5px solid var(--border-strong); border-radius: 12px; padding: 2.25rem; display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; align-items: center; margin-top: 2.5rem; }
+@media (max-width: 760px) { .gs { grid-template-columns: 1fr; gap: 1.75rem; padding: 1.6rem; } }
+.gs h2 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 0.75rem; }
+.gs p { font-size: 13px; color: var(--text-secondary); font-family: var(--sans); margin-bottom: 1.5rem; line-height: 1.55; }
+.gs-links { display: flex; gap: 10px; flex-wrap: wrap; }
+.gs-link { font-size: 12px; color: var(--text-secondary); font-family: var(--sans); padding: 6px 12px; border: 0.5px solid var(--border); border-radius: 5px; transition: all 0.15s; }
+.gs-link:hover { color: var(--text-primary); border-color: var(--accent); }
+
+.code-block { background: #08080740; border: 0.5px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
+.code-head { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 0.5px solid var(--border); background: var(--surface-1); }
+.code-head .fn { font-size: 10px; color: var(--text-muted); font-family: var(--sans); margin-left: 4px; }
+.cd { width: 9px; height: 9px; border-radius: 50%; }
+.cd.r { background: #e0584f; } .cd.y { background: #e0a93f; } .cd.g { background: #4faf6f; }
+.code-body { padding: 14px 16px; font-size: 12px; line-height: 1.75; overflow-x: auto; }
+.code-body .k { color: var(--accent-bright); }
+.code-body .s { color: var(--green); }
+.code-body .c { color: var(--text-muted); }
+.copy-btn { margin-left: auto; font-size: 10px; color: var(--text-muted); font-family: var(--sans); cursor: pointer; background: none; border: none; transition: color 0.15s; }
+.copy-btn:hover { color: var(--text-primary); }
+
+/* FOOTER */
+.footer { border-top: 0.5px solid var(--border); padding: 2.5rem 0; margin-top: 2rem; }
+.footer-inner { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; flex-wrap: wrap; }
+.footer-credit { font-size: 12px; color: var(--text-secondary); font-family: var(--sans); }
+.footer-credit a { color: var(--accent-bright); }
+.footer-credit .sep { color: var(--text-muted); margin: 0 8px; }
+.footer-links { display: flex; gap: 1.25rem; }
+.footer-links a { font-size: 12px; color: var(--text-muted); font-family: var(--sans); transition: color 0.15s; }
+.footer-links a:hover { color: var(--text-primary); }
+.footer-license { font-size: 11px; color: var(--text-muted); font-family: var(--sans); margin-top: 0.75rem; }
+
+/* reveal on scroll */
+.reveal { opacity: 0; transform: translateY(14px); transition: opacity 0.6s ease, transform 0.6s ease; }
+.reveal.in { opacity: 1; transform: none; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <span class="brand">nexus<span class="dot">.</span></span>
+    <div class="nav-links">
+      <a href="#philosophy">Philosophy</a>
+      <a href="#crates">Crates</a>
+      <a href="#why">Why Nexus</a>
+      <a href="#start">Get started</a>
+      <a class="nav-gh" href="https://github.com/Abso1ut3Zer0/nexus" target="_blank" rel="noopener">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <div class="eyebrow">Low-latency Rust primitives</div>
+      <h1>Predictable primitives for systems where <span class="em">microseconds</span> matter.</h1>
+      <p class="lede">Specialized Rust crates built for speed you can count on. Tight tail latency, low jitter, and no surprises at runtime. Bounded, pre-allocated, and purpose-built.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#start">Get started</a>
+        <a class="btn btn-ghost" href="https://github.com/Abso1ut3Zer0/nexus" target="_blank" rel="noopener">Star on GitHub</a>
+      </div>
+    </div>
+    <div>
+      <div class="lat-panel" aria-hidden="true">
+        <div class="lat-head">
+          <span class="lat-title">ping-pong latency · live</span>
+          <span class="lat-live"><span class="d"></span>streaming</span>
+        </div>
+        <div class="pct-row">
+          <div class="pct p50"><div class="pct-k">p50</div><div class="pct-v" id="p50">1.1<span class="u">µs</span></div></div>
+          <div class="pct p99"><div class="pct-k">p99</div><div class="pct-v" id="p99">4.0<span class="u">µs</span></div></div>
+          <div class="pct p999"><div class="pct-k">p999</div><div class="pct-v" id="p999">9.1<span class="u">µs</span></div></div>
+        </div>
+        <div class="hist" id="hist"></div>
+        <div class="hist-axis"><span>0µs</span><span>latency distribution</span><span>25µs</span></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="strip">
+  <div class="wrap strip-inner">
+    <span class="strip-item"><b>3.5×</b> faster than tokio-tungstenite</span>
+    <span class="strip-sep">·</span>
+    <span class="strip-item"><b>517/517</b> Autobahn conformance</span>
+    <span class="strip-sep">·</span>
+    <span class="strip-item"><b>O(1)</b> per-update streaming stats</span>
+    <span class="strip-sep">·</span>
+    <span class="strip-item"><b>0</b> alloc on the hot path</span>
+  </div>
+</div>
+
+<section class="section" id="philosophy">
+  <div class="wrap">
+    <div class="sec-eyebrow reveal">Philosophy</div>
+    <h2 class="sec-title reveal">Predictability over generality.</h2>
+    <p class="sec-lede reveal">Most systems don't need unbounded queues, dynamic allocation, or multi-producer flexibility. They need bounded, specialized primitives that do one thing well and never surprise you at runtime.</p>
+    <div class="phil-grid reveal">
+      <div class="phil">
+        <div class="phil-n">01</div>
+        <h3>SPSC over MPMC</h3>
+        <p>One producer, one consumer? Don't pay for synchronization you don't need. The constraint is the performance.</p>
+      </div>
+      <div class="phil">
+        <div class="phil-n">02</div>
+        <h3>Pre-allocation</h3>
+        <p>Allocate at startup, never on the hot path. You pay the cost once, not when processing the millionth message.</p>
+      </div>
+      <div class="phil">
+        <div class="phil-n">03</div>
+        <h3>Specialization</h3>
+        <p>A conflation slot isn't a queue of size 1. It's a different thing entirely. Different problems deserve different solutions.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="crates">
+  <div class="wrap">
+    <div class="sec-eyebrow reveal">Modular by design</div>
+    <h2 class="sec-title reveal">Specialized crates for real workloads.</h2>
+    <p class="sec-lede reveal">Small, focused crates with honest constraints. Pick only the primitives your workload needs.</p>
+    <div class="crate-grid">
+      <div class="crate reveal">
+        <div class="crate-cat">Types & Encoding</div>
+        <h3>Zero-cost abstractions</h3>
+        <ul class="crate-list">
+          <li><span class="nm">nexus-bits</span><span class="ds">bit-packed integer newtypes, tagged enums</span></li>
+          <li><span class="nm">nexus-decimal</span><span class="ds">fixed-point financial arithmetic, const fn</span></li>
+          <li><span class="nm">nexus-id</span><span class="ds">Snowflake, UUID, ULID, SIMD hex</span></li>
+        </ul>
+      </div>
+      <div class="crate reveal">
+        <div class="crate-cat">Concurrency & Communication</div>
+        <h3>Lock-free & predictable</h3>
+        <ul class="crate-list">
+          <li><span class="nm">nexus-queue</span><span class="ds">lock-free SPSC / MPSC / SPMC ring buffers</span></li>
+          <li><span class="nm">nexus-slot</span><span class="ds">latest-value conflation slot</span></li>
+          <li><span class="nm">nexus-notify</span><span class="ds">cross-thread event queue with conflation</span></li>
+        </ul>
+      </div>
+      <div class="crate reveal">
+        <div class="crate-cat">Streaming Statistics</div>
+        <h3>Zero-allocation analytics</h3>
+        <p class="crate-note">Welford moments, EMA, CUSUM, ADWIN, online regression, Kalman filters, change detection and control primitives. Every type is O(1) per update with fixed memory.</p>
+      </div>
+      <div class="crate reveal">
+        <div class="crate-cat">Real-time Inference</div>
+        <h3>Sub-microsecond CPU inference</h3>
+        <p class="crate-note">Twelve model types: GBDT, MLP, LUT, BNN, QuantizedMLP, LSTM, GRU, stacked variants, S4/S4D, causal conv, TCN. SafeTensors and LightGBM loaders, AVX2 / SSE2 accelerated.</p>
+      </div>
+      <div class="crate reveal">
+        <div class="crate-cat">Low-Latency Networking</div>
+        <h3>Zero-copy & sans-IO</h3>
+        <ul class="crate-list">
+          <li><span class="nm">nexus-net</span><span class="ds">sans-IO WebSocket (RFC 6455), HTTP/1.1</span></li>
+          <li><span class="nm">nexus-async-net</span><span class="ds">Tokio adapters, self-healing ClientPool</span></li>
+        </ul>
+        <p class="crate-tag" style="margin-top:0.6rem;">3.5× faster than tokio-tungstenite · 517/517 Autobahn</p>
+      </div>
+      <div class="crate reveal">
+        <div class="crate-cat">Runtime & Timer</div>
+        <h3>Deterministic execution</h3>
+        <ul class="crate-list">
+          <li><span class="nm">nexus-rt</span><span class="ds">event-driven runtime, explicit poll loops</span></li>
+          <li><span class="nm">nexus-timer</span><span class="ds">O(1) hierarchical timer wheel, no cascade</span></li>
+        </ul>
+        <p class="crate-tag" style="margin-top:0.6rem;">No async/await overhead · monomorphized dispatch</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="why">
+  <div class="wrap">
+    <div class="sec-eyebrow reveal">Why Nexus</div>
+    <h2 class="sec-title reveal">Built for systems where microseconds matter.</h2>
+    <div class="ben-grid">
+      <div class="ben reveal">
+        <div class="ben-icon"><svg viewBox="0 0 16 16" fill="none" stroke-width="1.3"><path d="M2 8h3l2-5 2 10 2-5h3"/></svg></div>
+        <h3>No surprises on the hot path</h3>
+        <p>Every crate documents its constraints. No hidden allocations, no unbounded growth, no syscalls where you don't expect them.</p>
+      </div>
+      <div class="ben reveal">
+        <div class="ben-icon"><svg viewBox="0 0 16 16" fill="none" stroke-width="1.3"><rect x="2" y="2" width="12" height="12" rx="1.5"/><path d="M5 10l2-3 2 2 2-4"/></svg></div>
+        <h3>Consistent tail latency</h3>
+        <p>Optimized for p99 / p999 and jitter under real load, measured in cycles with cores pinned, not gamed in synthetic microbenchmarks.</p>
+      </div>
+      <div class="ben reveal">
+        <div class="ben-icon"><svg viewBox="0 0 16 16" fill="none" stroke-width="1.3"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg></div>
+        <h3>Compose what you need</h3>
+        <p>Small, focused crates with minimal dependency trees. Take the conflation slot without the whole runtime. Honest constraints, no kitchen sinks.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="start">
+  <div class="wrap">
+    <div class="sec-eyebrow reveal">Get started</div>
+    <h2 class="sec-title reveal">Start building with Nexus.</h2>
+    <p class="sec-lede reveal">Open source under MIT and Apache-2.0, available on crates.io.</p>
+    <div class="gs reveal">
+      <div>
+        <h2>Add to your project</h2>
+        <p>Pull in only the crates your workload needs. Each one stands alone with a small, intentional dependency tree.</p>
+        <div class="gs-links">
+          <a class="gs-link" href="https://github.com/Abso1ut3Zer0/nexus" target="_blank" rel="noopener">View on GitHub</a>
+          <a class="gs-link" href="https://docs.rs/nexus-queue" target="_blank" rel="noopener">docs.rs</a>
+          <a class="gs-link" href="https://crates.io/search?q=nexus" target="_blank" rel="noopener">crates.io</a>
+        </div>
+      </div>
+      <div class="code-block">
+        <div class="code-head">
+          <span class="cd r"></span><span class="cd y"></span><span class="cd g"></span>
+          <span class="fn">Cargo.toml</span>
+          <button class="copy-btn" id="copyBtn" onclick="copyDeps()">copy</button>
+        </div>
+        <div class="code-body" id="deps"><span class="c"># pick what your workload needs</span>
+<span class="k">nexus-queue</span> = <span class="s">"0.2"</span>
+<span class="k">nexus-slot</span>  = <span class="s">"0.2"</span>
+<span class="k">nexus-stats</span> = <span class="s">"0.4"</span>
+<span class="k">nexus-net</span>   = <span class="s">"0.5"</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <div class="footer-credit">
+        Maintained by <a href="https://www.linkedin.com/in/michael-hart-5a2122127/" target="_blank" rel="noopener">Michael Hart</a>
+        <span class="sep">·</span>
+        Core contributor <a href="https://www.linkedin.com/in/ACoAACgt8_wB4cit0Gn1Xf7c7Kyvl4XlZ35eC14" target="_blank" rel="noopener">Altug Tatlisu</a>
+      </div>
+      <div class="footer-license">Open source under MIT and Apache-2.0. Fast where it counts, predictable where it matters.</div>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/Abso1ut3Zer0/nexus" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://crates.io/search?q=nexus" target="_blank" rel="noopener">crates.io</a>
+      <a href="https://docs.rs/nexus-queue" target="_blank" rel="noopener">docs.rs</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+const BUCKETS = 26;
+const COLORS = { green: '#1baf7a', blue: '#2a78d6', amber: '#c98500', red: '#d03b3b' };
+
+function colorFor(i) {
+  if (i <= 5) return COLORS.green;
+  if (i <= 11) return COLORS.blue;
+  if (i <= 18) return COLORS.amber;
+  return COLORS.red;
+}
+
+const hist = document.getElementById('hist');
+const bars = [];
+for (let i = 0; i < BUCKETS; i++) {
+  const b = document.createElement('div');
+  b.className = 'hist-bar';
+  b.style.background = colorFor(i);
+  hist.appendChild(b);
+  bars.push(b);
+}
+
+function lognormalShape() {
+  const out = [];
+  for (let i = 0; i < BUCKETS; i++) {
+    const x = (i + 1) / 3.0;
+    const mu = 0.55, sigma = 0.72;
+    const v = (1 / (x * sigma)) * Math.exp(-((Math.log(x) - mu) ** 2) / (2 * sigma * sigma));
+    out.push(v);
+  }
+  return out;
+}
+
+function render(shape) {
+  const max = Math.max(...shape);
+  shape.forEach((v, i) => {
+    const jitter = 0.88 + Math.random() * 0.24;
+    const h = Math.max(2, (v / max) * 92 * jitter);
+    bars[i].style.height = h + 'px';
+  });
+}
+
+const p50El = document.getElementById('p50');
+const p99El = document.getElementById('p99');
+const p999El = document.getElementById('p999');
+let s = { p50: 1.1, p99: 4.0, p999: 9.1 };
+
+function tick() {
+  render(lognormalShape());
+  const d = (Math.random() - 0.5);
+  s.p50  = Math.max(0.8, Math.min(1.6, +(s.p50  + d * 0.12).toFixed(1)));
+  s.p99  = Math.max(3.2, Math.min(5.4, +(s.p99  + d * 0.4).toFixed(1)));
+  s.p999 = Math.max(7.0, Math.min(13.0, +(s.p999 + d * 0.9).toFixed(1)));
+  p50El.innerHTML  = `${s.p50}<span class="u">µs</span>`;
+  p99El.innerHTML  = `${s.p99}<span class="u">µs</span>`;
+  p999El.innerHTML = `${s.p999}<span class="u">µs</span>`;
+}
+
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+render(lognormalShape());
+if (!reduceMotion) setInterval(tick, 1100);
+
+function copyDeps() {
+  const text = `nexus-queue = "0.2"\nnexus-slot  = "0.2"\nnexus-stats = "0.4"\nnexus-net   = "0.5"`;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById('copyBtn');
+    btn.textContent = 'copied';
+    setTimeout(() => { btn.textContent = 'copy'; }, 1600);
+  });
+}
+
+const io = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+}, { threshold: 0.12 });
+document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+</script>
+</body>
+</html>
