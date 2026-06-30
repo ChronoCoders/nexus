@@ -243,9 +243,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
             }
             b"5" => (self.state.on_logout(seq, poss_dup, now), false),
             b"0" => {
-                let echo_id = find_tag(frame, 0, 112)
-                    .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
-                    .map(|v| v as u64);
+                let echo_id =
+                    find_tag(frame, 0, 112).and_then(|s| parse_fix_seqnum(s.slice(frame)).ok());
                 (self.state.on_heartbeat(seq, poss_dup, echo_id, now), false)
             }
             b"1" => {

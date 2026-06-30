@@ -406,9 +406,8 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 }))
             }
             b"0" => {
-                let echo_id = find_tag(frame, 0, 112)
-                    .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
-                    .map(|v| v as u64);
+                let echo_id =
+                    find_tag(frame, 0, 112).and_then(|s| parse_fix_seqnum(s.slice(frame)).ok());
                 let out = self.state.on_heartbeat(seq, poss_dup, echo_id, now);
                 for admin in out.admin_messages() {
                     store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
