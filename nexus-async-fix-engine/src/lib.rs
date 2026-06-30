@@ -111,7 +111,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
         let out = self
             .state
             .connect_reset(Instant::now())
-            .map_err(|()| Error::Io(io::Error::other("connect_reset: session not disconnected")))?;
+            .map_err(|e| Error::Io(io::Error::other(e.to_string())))?;
         self.flush_out(out).await
     }
 
@@ -120,7 +120,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
         let out = self
             .state
             .reset_sequence(Instant::now())
-            .map_err(|()| Error::Io(io::Error::other("reset_sequence: session not active")))?;
+            .map_err(|e| Error::Io(io::Error::other(e.to_string())))?;
         self.flush_out(out).await
     }
 

@@ -211,10 +211,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
     }
 
     pub fn connect_reset(&mut self, now: Instant) -> Result<(), Error> {
-        let out = self
-            .state
-            .connect_reset(now)
-            .map_err(|()| Error::Protocol(SessionError::InvalidState))?;
+        let out = self.state.connect_reset(now).map_err(Error::Protocol)?;
         for admin in out.admin_messages() {
             store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
         }
@@ -225,10 +222,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
     }
 
     pub fn reset_sequence(&mut self, now: Instant) -> Result<(), Error> {
-        let out = self
-            .state
-            .reset_sequence(now)
-            .map_err(|()| Error::Protocol(SessionError::InvalidState))?;
+        let out = self.state.reset_sequence(now).map_err(Error::Protocol)?;
         for admin in out.admin_messages() {
             store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
         }

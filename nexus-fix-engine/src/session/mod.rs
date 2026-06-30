@@ -234,10 +234,10 @@ impl SessionState {
     }
 
     /// Initiates a session with `ResetSeqNumFlag(141)=Y`: resets both sequence
-    /// counters to 1 and sends a Logon. Returns `Err(())` if not disconnected.
-    pub fn connect_reset(&mut self, now: Instant) -> Result<Out, ()> {
+    /// counters to 1 and sends a Logon. Returns `Err(InvalidState)` if not disconnected.
+    pub fn connect_reset(&mut self, now: Instant) -> Result<Out, SessionError> {
         if self.state != State::Disconnected {
-            return Err(());
+            return Err(SessionError::InvalidState);
         }
         self.next_outbound = 1;
         self.next_inbound = 1;
@@ -261,10 +261,10 @@ impl SessionState {
     /// the engine sends `Logon(141=Y, seqNum=1)` and enters `AwaitingResetAck`.
     /// The reset completes when the counterparty's `Logon(141=Y)` arrives.
     /// `allocate_seq` returns `ResetInProgress` until the handshake completes.
-    /// Returns `Err(())` if not Active.
-    pub fn reset_sequence(&mut self, now: Instant) -> Result<Out, ()> {
+    /// Returns `Err(InvalidState)` if not Active.
+    pub fn reset_sequence(&mut self, now: Instant) -> Result<Out, SessionError> {
         if self.state != State::Active {
-            return Err(());
+            return Err(SessionError::InvalidState);
         }
         let mut out = Out::EMPTY;
         self.test_req_counter += 1;
