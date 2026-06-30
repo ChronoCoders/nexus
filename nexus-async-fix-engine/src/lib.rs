@@ -10,8 +10,8 @@ use std::io;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nexus_fix_codec::{
-    FieldReader, FrameFormatter, encode_fix_uint, find_tag, parse_fix_bool, parse_fix_seqnum,
-    parse_fix_uint,
+    encode_fix_uint, find_tag, parse_fix_bool, parse_fix_seqnum, parse_fix_uint, FieldReader,
+    FrameFormatter,
 };
 use nexus_fix_engine::{
     AdminMsg, CompId, DisconnectReason, Event, FixJournal, FrameError, FrameReader, FrameWriter,
@@ -329,7 +329,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
             fmt.field(52, &ts);
 
             match admin {
-                AdminMsg::Logon { heart_bt_int_s, reset, .. } => {
+                AdminMsg::Logon {
+                    heart_bt_int_s,
+                    reset,
+                    ..
+                } => {
                     let mut buf = [0u8; 10];
                     let n = encode_fix_uint(heart_bt_int_s, &mut buf);
                     fmt.field(108, &buf[..n]);

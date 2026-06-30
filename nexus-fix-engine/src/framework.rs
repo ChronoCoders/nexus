@@ -200,7 +200,7 @@ impl<D: FixDictionary> MessageWriter<D> {
 
     #[cfg(unix)]
     pub fn encode_admin(&mut self, admin: AdminMsg, config: &SessionConfig) {
-        use nexus_fix_codec::{FrameFormatter, encode_fix_uint};
+        use nexus_fix_codec::{encode_fix_uint, FrameFormatter};
 
         let ts = make_ts();
 
@@ -240,7 +240,11 @@ impl<D: FixDictionary> MessageWriter<D> {
             fmt.field(52, &ts);
 
             match admin {
-                AdminMsg::Logon { heart_bt_int_s, reset, .. } => {
+                AdminMsg::Logon {
+                    heart_bt_int_s,
+                    reset,
+                    ..
+                } => {
                     let mut buf = [0u8; 10];
                     let n = encode_fix_uint(heart_bt_int_s, &mut buf);
                     fmt.field(108, &buf[..n]);
