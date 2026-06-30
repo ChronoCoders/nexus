@@ -101,10 +101,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
     }
 
     /// Initiates a session: encodes and sends the opening Logon.
-    ///
-    /// Set `reset = true` to send `ResetSeqNumFlag(141)=Y`.
-    pub async fn connect(&mut self, reset: bool) -> Result<(), Error> {
-        let out = self.state.connect(reset, Instant::now());
+    pub async fn connect(&mut self) -> Result<(), Error> {
+        let out = self.state.connect(Instant::now());
+        self.flush_out(out).await
+    }
+
+    /// Initiates a session with `ResetSeqNumFlag(141)=Y`.
+    pub async fn connect_reset(&mut self) -> Result<(), Error> {
+        let out = self.state.connect_reset(Instant::now());
         self.flush_out(out).await
     }
 
