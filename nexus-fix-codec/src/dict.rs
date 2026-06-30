@@ -79,6 +79,22 @@ pub trait FixDictionary {
         fmt.finish().ok()
     }
 
+    fn encode_logon_reset(
+        buf: &mut [u8],
+        hdr: AdminHeader<'_>,
+        heart_bt_int_s: u32,
+    ) -> Option<(usize, usize)> {
+        use crate::types::encode_fix_uint;
+        use crate::writer::FrameFormatter;
+        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"A");
+        write_admin_header(&mut fmt, &hdr);
+        let mut tmp = [0u8; 10];
+        let n = encode_fix_uint(heart_bt_int_s, &mut tmp);
+        fmt.field(108, &tmp[..n]);
+        fmt.field(141, b"Y");
+        fmt.finish().ok()
+    }
+
     fn encode_logout(buf: &mut [u8], hdr: AdminHeader<'_>) -> Option<(usize, usize)> {
         use crate::writer::FrameFormatter;
         let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"5");
