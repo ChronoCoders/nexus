@@ -10,8 +10,8 @@ use std::io;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nexus_fix_codec::{
-    encode_fix_uint, find_tag, parse_fix_bool, parse_fix_seqnum, parse_fix_uint, FieldReader,
-    FrameFormatter,
+    FieldReader, FrameFormatter, encode_fix_uint, find_tag, parse_fix_bool, parse_fix_seqnum,
+    parse_fix_uint,
 };
 use nexus_fix_engine::{
     AdminMsg, CompId, DisconnectReason, Event, FixJournal, FrameError, FrameReader, FrameWriter,
