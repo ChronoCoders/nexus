@@ -211,7 +211,24 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
     }
 
     pub fn connect_reset(&mut self, now: Instant) -> Result<(), Error> {
-        let out = self.state.connect_reset(now);
+        let out = self
+            .state
+            .connect_reset(now)
+            .map_err(|()| Error::Protocol(SessionError::InvalidState))?;
+        for admin in out.admin_messages() {
+            store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
+        }
+        if !self.writer.is_empty() {
+            self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
+        }
+        Ok(())
+    }
+
+    pub fn reset_sequence(&mut self, now: Instant) -> Result<(), Error> {
+        let out = self
+            .state
+            .reset_sequence(now)
+            .map_err(|()| Error::Protocol(SessionError::InvalidState))?;
         for admin in out.admin_messages() {
             store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
         }
@@ -395,7 +412,10 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 }))
             }
             b"0" => {
-                let out = self.state.on_heartbeat(seq, poss_dup, now);
+                let echo_id = find_tag(frame, 0, 112)
+                    .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
+                    .map(|v| v as u64);
+                let out = self.state.on_heartbeat(seq, poss_dup, echo_id, now);
                 for admin in out.admin_messages() {
                     store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
                 }
@@ -579,6 +599,7 @@ fn store_admin<D: FixDictionary>(
 ) -> Result<(), Error> {
     let seq = match admin {
         AdminMsg::Logon { seq, .. }
+        | AdminMsg::LogonReset { seq, .. }
         | AdminMsg::Logout { seq }
         | AdminMsg::Heartbeat { seq, .. }
         | AdminMsg::TestRequest { seq, .. }

@@ -108,7 +108,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
 
     /// Initiates a session with `ResetSeqNumFlag(141)=Y`.
     pub async fn connect_reset(&mut self) -> Result<(), Error> {
-        let out = self.state.connect_reset(Instant::now());
+        let out = self
+            .state
+            .connect_reset(Instant::now())
+            .map_err(|()| Error::Io(io::Error::other("connect_reset: session not disconnected")))?;
+        self.flush_out(out).await
+    }
+
+    /// Initiates an in-session sequence reset.
+    pub async fn reset_sequence(&mut self) -> Result<(), Error> {
+        let out = self
+            .state
+            .reset_sequence(Instant::now())
+            .map_err(|()| Error::Io(io::Error::other("reset_sequence: session not active")))?;
         self.flush_out(out).await
     }
 
@@ -230,7 +242,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
                 )
             }
             b"5" => (self.state.on_logout(seq, poss_dup, now), false),
-            b"0" => (self.state.on_heartbeat(seq, poss_dup, now), false),
+            b"0" => {
+                let echo_id = find_tag(frame, 0, 112)
+                    .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
+                    .map(|v| v as u64);
+                (self.state.on_heartbeat(seq, poss_dup, echo_id, now), false)
+            }
             b"1" => {
                 let id = find_tag(frame, 0, 112).map_or(&b""[..], |s| s.slice(frame));
                 (self.state.on_test_request(seq, poss_dup, id, now), false)
@@ -294,7 +311,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
         let ts = make_ts();
 
         let msg_type: &[u8] = match admin {
-            AdminMsg::Logon { .. } => b"A",
+            AdminMsg::Logon { .. } | AdminMsg::LogonReset { .. } => b"A",
             AdminMsg::Logout { .. } => b"5",
             AdminMsg::Heartbeat { .. } => b"0",
             AdminMsg::TestRequest { .. } => b"1",
@@ -305,6 +322,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
 
         let seq = match admin {
             AdminMsg::Logon { seq, .. }
+            | AdminMsg::LogonReset { seq, .. }
             | AdminMsg::Logout { seq }
             | AdminMsg::Heartbeat { seq, .. }
             | AdminMsg::TestRequest { seq, .. }
@@ -329,17 +347,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
             fmt.field(52, &ts);
 
             match admin {
-                AdminMsg::Logon {
-                    heart_bt_int_s,
-                    reset,
-                    ..
-                } => {
+                AdminMsg::Logon { heart_bt_int_s, .. } => {
                     let mut buf = [0u8; 10];
                     let n = encode_fix_uint(heart_bt_int_s, &mut buf);
                     fmt.field(108, &buf[..n]);
-                    if reset {
-                        fmt.field(141, b"Y");
-                    }
+                }
+                AdminMsg::LogonReset { heart_bt_int_s, .. } => {
+                    let mut buf = [0u8; 10];
+                    let n = encode_fix_uint(heart_bt_int_s, &mut buf);
+                    fmt.field(108, &buf[..n]);
+                    fmt.field(141, b"Y");
                 }
                 AdminMsg::Logout { .. } | AdminMsg::Heartbeat { echo: None, .. } => {}
                 AdminMsg::Heartbeat {

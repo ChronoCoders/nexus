@@ -20,8 +20,11 @@ pub enum AdminMsg {
     Logon {
         seq: u32,
         heart_bt_int_s: u32,
-        /// `ResetSeqNumFlag(141)=Y` — both sides reset to seqnum 1.
-        reset: bool,
+    },
+    /// Logon with `ResetSeqNumFlag(141)=Y` — both sides reset to seqnum 1.
+    LogonReset {
+        seq: u32,
+        heart_bt_int_s: u32,
     },
     Logout {
         seq: u32,
@@ -222,7 +225,6 @@ impl SessionState {
         };
         out.push_admin(AdminMsg::Logon {
             seq,
-            reset: false,
             heart_bt_int_s: self.hb.as_secs() as u32,
         });
         self.state = State::LogonSent;
@@ -232,26 +234,25 @@ impl SessionState {
     }
 
     /// Initiates a session with `ResetSeqNumFlag(141)=Y`: resets both sequence
-    /// counters to 1 and sends a Logon. No-op if not disconnected.
-    pub fn connect_reset(&mut self, now: Instant) -> Out {
+    /// counters to 1 and sends a Logon. Returns `Err(())` if not disconnected.
+    pub fn connect_reset(&mut self, now: Instant) -> Result<Out, ()> {
         if self.state != State::Disconnected {
-            return Out::EMPTY;
+            return Err(());
         }
         self.next_outbound = 1;
         self.next_inbound = 1;
         let mut out = Out::EMPTY;
         let Some(seq) = self.bump_outbound(now, &mut out) else {
-            return out;
+            return Ok(out);
         };
-        out.push_admin(AdminMsg::Logon {
+        out.push_admin(AdminMsg::LogonReset {
             seq,
-            reset: true,
             heart_bt_int_s: self.hb.as_secs() as u32,
         });
         self.state = State::LogonSent;
         self.state_entered = Some(now);
         self.last_received = Some(now);
-        out
+        Ok(out)
     }
 
     /// Initiates an in-session sequence reset. Only valid while `Active`.
@@ -260,14 +261,15 @@ impl SessionState {
     /// the engine sends `Logon(141=Y, seqNum=1)` and enters `AwaitingResetAck`.
     /// The reset completes when the counterparty's `Logon(141=Y)` arrives.
     /// `allocate_seq` returns `ResetInProgress` until the handshake completes.
-    pub fn reset_sequence(&mut self, now: Instant) -> Out {
+    /// Returns `Err(())` if not Active.
+    pub fn reset_sequence(&mut self, now: Instant) -> Result<Out, ()> {
         if self.state != State::Active {
-            return Out::EMPTY;
+            return Err(());
         }
         let mut out = Out::EMPTY;
         self.test_req_counter += 1;
         let Some(seq) = self.bump_outbound(now, &mut out) else {
-            return out;
+            return Ok(out);
         };
         out.push_admin(AdminMsg::TestRequest {
             seq,
@@ -276,7 +278,7 @@ impl SessionState {
         self.test_request_sent = Some(now);
         self.state = State::AwaitingResetDrain;
         self.state_entered = Some(now);
-        out
+        Ok(out)
     }
 
     /// Initiates a clean logout. No-op unless in an active state.
@@ -398,9 +400,8 @@ impl SessionState {
             let Some(reply_seq) = self.bump_outbound(now, &mut out) else {
                 return out;
             };
-            out.push_admin(AdminMsg::Logon {
+            out.push_admin(AdminMsg::LogonReset {
                 seq: reply_seq,
-                reset: true,
                 heart_bt_int_s: self.hb.as_secs() as u32,
             });
             self.next_inbound = 2;
@@ -431,11 +432,17 @@ impl SessionState {
             let Some(reply_seq) = self.bump_outbound(now, &mut out) else {
                 return out;
             };
-            out.push_admin(AdminMsg::Logon {
-                seq: reply_seq,
-                reset: reset_seq_num,
-                heart_bt_int_s,
-            });
+            if reset_seq_num {
+                out.push_admin(AdminMsg::LogonReset {
+                    seq: reply_seq,
+                    heart_bt_int_s,
+                });
+            } else {
+                out.push_admin(AdminMsg::Logon {
+                    seq: reply_seq,
+                    heart_bt_int_s,
+                });
+            }
         }
 
         if seq < self.next_inbound {
@@ -489,31 +496,45 @@ impl SessionState {
         out
     }
 
-    /// Handles a received Heartbeat.
-    pub fn on_heartbeat(&mut self, seq: u32, poss_dup: bool, now: Instant) -> Out {
+    /// Handles a received Heartbeat. `echo_id` is `TestReqID(112)` parsed as `u64`, if present.
+    pub fn on_heartbeat(
+        &mut self,
+        seq: u32,
+        poss_dup: bool,
+        echo_id: Option<u64>,
+        now: Instant,
+    ) -> Out {
         self.last_received = Some(now);
         self.test_request_sent = None;
         let mut out = Out::EMPTY;
 
         if self.state == State::AwaitingResetDrain {
-            // Any heartbeat confirms the link is alive — proceed with the reset Logon.
-            self.next_outbound = 1;
-            let Some(logon_seq) = self.bump_outbound(now, &mut out) else {
+            let echo_matches = echo_id == Some(self.test_req_counter);
+            if echo_matches && seq == self.next_inbound {
+                // Drain confirmed: all in-flight messages received, send LogonReset.
+                self.next_inbound += 1;
+                self.next_outbound = 1;
+                let Some(logon_seq) = self.bump_outbound(now, &mut out) else {
+                    return out;
+                };
+                out.push_admin(AdminMsg::LogonReset {
+                    seq: logon_seq,
+                    heart_bt_int_s: self.hb.as_secs() as u32,
+                });
+                self.state = State::AwaitingResetAck;
+                self.state_entered = Some(now);
                 return out;
-            };
-            out.push_admin(AdminMsg::Logon {
-                seq: logon_seq,
-                reset: true,
-                heart_bt_int_s: self.hb.as_secs() as u32,
-            });
-            self.state = State::AwaitingResetAck;
-            self.state_entered = Some(now);
+            }
+            // Not the drain confirm: validate sequence normally.
+            if self.validate_seq(seq, poss_dup, now, &mut out) {
+                self.check_resend_done();
+            }
             return out;
         }
 
         if !matches!(
             self.state,
-            State::Active | State::Resending | State::LogoutPending
+            State::Active | State::Resending | State::LogoutPending | State::AwaitingResetAck
         ) {
             return Out::EMPTY;
         }
@@ -533,7 +554,11 @@ impl SessionState {
     ) -> Out {
         if !matches!(
             self.state,
-            State::Active | State::Resending | State::LogoutPending
+            State::Active
+                | State::Resending
+                | State::LogoutPending
+                | State::AwaitingResetDrain
+                | State::AwaitingResetAck
         ) {
             return Out::EMPTY;
         }
@@ -650,7 +675,11 @@ impl SessionState {
     pub fn on_app(&mut self, seq: u32, poss_dup: bool, now: Instant) -> Out {
         if !matches!(
             self.state,
-            State::Active | State::Resending | State::LogoutPending
+            State::Active
+                | State::Resending
+                | State::LogoutPending
+                | State::AwaitingResetDrain
+                | State::AwaitingResetAck
         ) {
             return Out::EMPTY;
         }
@@ -809,19 +838,29 @@ mod tests {
         s.allocate_seq(now).unwrap();
         s.on_logout(2, false, now);
         assert_eq!(s.state(), State::Disconnected);
-        let out = s.connect_reset(now);
+        let out = s.connect_reset(now).unwrap();
         let admins: Vec<_> = out.admin_messages().collect();
         assert_eq!(admins.len(), 1);
-        assert!(matches!(
-            admins[0],
-            AdminMsg::Logon {
-                seq: 1,
-                reset: true,
-                ..
-            }
-        ));
+        assert!(matches!(admins[0], AdminMsg::LogonReset { seq: 1, .. }));
         assert_eq!(s.next_outbound_seq(), 2);
         assert_eq!(s.next_inbound_seq(), 1);
+    }
+
+    #[test]
+    fn connect_reset_wrong_state_returns_err() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now);
+        assert!(s.connect_reset(now).is_err());
+    }
+
+    #[test]
+    fn reset_sequence_wrong_state_returns_err() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        assert!(s.reset_sequence(now).is_err()); // Disconnected
+        s.connect(now);
+        assert!(s.reset_sequence(now).is_err()); // LogonSent
     }
 
     #[test]
@@ -833,35 +872,56 @@ mod tests {
         s.allocate_seq(now).unwrap(); // seq 3
 
         // Initiate reset: sends TestRequest, enters AwaitingResetDrain.
-        let out = s.reset_sequence(now);
+        let out = s.reset_sequence(now).unwrap();
         assert_eq!(s.state(), State::AwaitingResetDrain);
         let admins: Vec<_> = out.admin_messages().collect();
         assert_eq!(admins.len(), 1);
-        assert!(matches!(admins[0], AdminMsg::TestRequest { .. }));
+        assert!(matches!(admins[0], AdminMsg::TestRequest { id: 1, .. }));
 
         // allocate_seq blocked.
         assert_eq!(s.allocate_seq(now), Err(SessionError::ResetInProgress));
 
-        // Drain heartbeat arrives: sends Logon(141=Y, seq=1), enters AwaitingResetAck.
-        let out = s.on_heartbeat(2, false, now);
+        // Non-drain heartbeat: wrong echo — drain NOT triggered.
+        let out = s.on_heartbeat(2, false, None, now);
+        assert_eq!(s.state(), State::AwaitingResetDrain);
+        assert_eq!(out.admin_messages().count(), 0);
+
+        // Drain heartbeat: correct echo + seq in order → sends LogonReset(seq=1), → AwaitingResetAck.
+        let out = s.on_heartbeat(3, false, Some(1), now);
         assert_eq!(s.state(), State::AwaitingResetAck);
-        assert_eq!(s.next_outbound_seq(), 2); // Logon consumed seq 1
+        assert_eq!(s.next_outbound_seq(), 2); // LogonReset consumed seq 1
         let admins: Vec<_> = out.admin_messages().collect();
         assert_eq!(admins.len(), 1);
-        assert!(matches!(
-            admins[0],
-            AdminMsg::Logon {
-                seq: 1,
-                reset: true,
-                ..
-            }
-        ));
+        assert!(matches!(admins[0], AdminMsg::LogonReset { seq: 1, .. }));
 
         // Peer acks with Logon(141=Y, seq=1): reset complete, → Active.
-        let out = s.on_logon(1, 30, true, true, now);
+        let out = s.on_logon(1, 30, true, false, now);
         assert_eq!(s.state(), State::Active);
         assert_eq!(s.next_inbound_seq(), 2);
         assert_eq!(out.event(), Some(Event::Established { heart_bt_int_s: 30 }));
+    }
+
+    #[test]
+    fn in_flight_app_delivered_during_drain() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now);
+        s.allocate_seq(now).unwrap(); // seq 2
+
+        s.reset_sequence(now).unwrap(); // → AwaitingResetDrain
+        assert_eq!(s.state(), State::AwaitingResetDrain);
+
+        // App message arrives with old inbound seq while draining.
+        let out = s.on_app(2, false, now);
+        assert_eq!(
+            out.event(),
+            Some(Event::App {
+                seq_num: 2,
+                poss_dup: false
+            })
+        );
+        assert_eq!(s.next_inbound_seq(), 3);
+        assert_eq!(s.state(), State::AwaitingResetDrain);
     }
 
     #[test]
@@ -879,14 +939,7 @@ mod tests {
         assert_eq!(s.next_inbound_seq(), 2);
         let admins: Vec<_> = out.admin_messages().collect();
         assert_eq!(admins.len(), 1);
-        assert!(matches!(
-            admins[0],
-            AdminMsg::Logon {
-                seq: 1,
-                reset: true,
-                ..
-            }
-        ));
+        assert!(matches!(admins[0], AdminMsg::LogonReset { seq: 1, .. }));
         assert_eq!(out.event(), Some(Event::Established { heart_bt_int_s: 30 }));
     }
 
@@ -895,8 +948,8 @@ mod tests {
         let mut s = SessionState::new(Duration::from_secs(30));
         let now = Instant::now();
         establish(&mut s, now);
-        s.reset_sequence(now);
-        s.on_heartbeat(2, false, now); // → AwaitingResetAck
+        s.reset_sequence(now).unwrap();
+        s.on_heartbeat(2, false, Some(1), now); // → AwaitingResetAck
 
         // Peer replies without 141=Y.
         let out = s.on_logon(1, 30, false, false, now);
@@ -913,8 +966,8 @@ mod tests {
         let mut s = SessionState::new(Duration::from_secs(30));
         let now = Instant::now();
         establish(&mut s, now);
-        s.reset_sequence(now);
-        s.on_heartbeat(2, false, now); // → AwaitingResetAck
+        s.reset_sequence(now).unwrap();
+        s.on_heartbeat(2, false, Some(1), now); // → AwaitingResetAck
         let out = s.on_timeout(now + Duration::from_secs(31));
         assert_eq!(
             out.event(),

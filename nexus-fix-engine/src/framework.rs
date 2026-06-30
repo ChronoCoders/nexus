@@ -60,6 +60,8 @@ pub enum SessionError {
     SeqNumExhausted,
     /// An in-session reset is already in progress; outbound allocation is blocked.
     ResetInProgress,
+    /// Operation not valid in the current session state.
+    InvalidState,
 }
 
 impl core::fmt::Display for SessionError {
@@ -72,6 +74,7 @@ impl core::fmt::Display for SessionError {
             Self::MalformedMessage => write!(f, "admin message malformed"),
             Self::SeqNumExhausted => write!(f, "outbound sequence number exhausted (i32::MAX)"),
             Self::ResetInProgress => write!(f, "in-session reset in progress"),
+            Self::InvalidState => write!(f, "operation not valid in current session state"),
         }
     }
 }
@@ -205,7 +208,7 @@ impl<D: FixDictionary> MessageWriter<D> {
         let ts = make_ts();
 
         let msg_type: &[u8] = match admin {
-            AdminMsg::Logon { .. } => b"A",
+            AdminMsg::Logon { .. } | AdminMsg::LogonReset { .. } => b"A",
             AdminMsg::Logout { .. } => b"5",
             AdminMsg::Heartbeat { .. } => b"0",
             AdminMsg::TestRequest { .. } => b"1",
@@ -216,6 +219,7 @@ impl<D: FixDictionary> MessageWriter<D> {
 
         let seq = match admin {
             AdminMsg::Logon { seq, .. }
+            | AdminMsg::LogonReset { seq, .. }
             | AdminMsg::Logout { seq }
             | AdminMsg::Heartbeat { seq, .. }
             | AdminMsg::TestRequest { seq, .. }
@@ -240,17 +244,16 @@ impl<D: FixDictionary> MessageWriter<D> {
             fmt.field(52, &ts);
 
             match admin {
-                AdminMsg::Logon {
-                    heart_bt_int_s,
-                    reset,
-                    ..
-                } => {
+                AdminMsg::Logon { heart_bt_int_s, .. } => {
                     let mut buf = [0u8; 10];
                     let n = encode_fix_uint(heart_bt_int_s, &mut buf);
                     fmt.field(108, &buf[..n]);
-                    if reset {
-                        fmt.field(141, b"Y");
-                    }
+                }
+                AdminMsg::LogonReset { heart_bt_int_s, .. } => {
+                    let mut buf = [0u8; 10];
+                    let n = encode_fix_uint(heart_bt_int_s, &mut buf);
+                    fmt.field(108, &buf[..n]);
+                    fmt.field(141, b"Y");
                 }
                 AdminMsg::Logout { .. } | AdminMsg::Heartbeat { echo: None, .. } => {}
                 AdminMsg::Heartbeat {
