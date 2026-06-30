@@ -152,6 +152,7 @@ mod unix_tests {
             AdminMsg::Logon {
                 seq: 1,
                 heart_bt_int_s: 30,
+                reset: false,
             },
             &config,
         );
