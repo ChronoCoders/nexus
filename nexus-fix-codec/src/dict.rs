@@ -13,6 +13,23 @@ pub trait FixAdminMsg<'buf>: Sized {
     fn decode(buf: &'buf [u8]) -> Result<Self, crate::DecodeError>;
 }
 
+pub struct AdminHeader<'a> {
+    pub seq: u32,
+    pub sender: &'a [u8],
+    pub target: &'a [u8],
+    pub ts: &'a [u8],
+}
+
+fn write_admin_header(fmt: &mut crate::writer::FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
+    use crate::types::encode_fix_uint;
+    let mut buf = [0u8; 10];
+    let n = encode_fix_uint(hdr.seq, &mut buf);
+    fmt.field(34, &buf[..n]);
+    fmt.field(49, hdr.sender);
+    fmt.field(56, hdr.target);
+    fmt.field(52, hdr.ts);
+}
+
 /// Dictionary-level knowledge for a specific FIX version.
 ///
 /// Generated per dictionary (FIX 4.2, FIX 4.4, etc.) by `nexus-fix-codegen`.
@@ -46,6 +63,113 @@ pub trait FixDictionary {
 
     /// Whether the given message type is an admin (session-level) message.
     fn is_admin(msg_type: Self::MsgType) -> bool;
+
+    fn encode_logon(
+        buf: &mut [u8],
+        hdr: AdminHeader<'_>,
+        heart_bt_int_s: u32,
+    ) -> Option<(usize, usize)> {
+        use crate::types::encode_fix_uint;
+        use crate::writer::FrameFormatter;
+        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"A");
+        write_admin_header(&mut fmt, &hdr);
+        let mut tmp = [0u8; 10];
+        let n = encode_fix_uint(heart_bt_int_s, &mut tmp);
+        fmt.field(108, &tmp[..n]);
+        fmt.finish().ok()
+    }
+
+    fn encode_logout(buf: &mut [u8], hdr: AdminHeader<'_>) -> Option<(usize, usize)> {
+        use crate::writer::FrameFormatter;
+        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"5");
+        write_admin_header(&mut fmt, &hdr);
+        fmt.finish().ok()
+    }
+
+    fn encode_heartbeat(
+        buf: &mut [u8],
+        hdr: AdminHeader<'_>,
+        echo: Option<&[u8]>,
+    ) -> Option<(usize, usize)> {
+        use crate::writer::FrameFormatter;
+        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"0");
+        write_admin_header(&mut fmt, &hdr);
+        if let Some(id) = echo {
+            fmt.field(112, id);
+        }
+        fmt.finish().ok()
+    }
+
+    fn encode_test_request(
+        buf: &mut [u8],
+        hdr: AdminHeader<'_>,
+        id: u64,
+    ) -> Option<(usize, usize)> {
+        use crate::types::encode_fix_seqnum;
+        use crate::writer::FrameFormatter;
+        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"1");
+        write_admin_header(&mut fmt, &hdr);
+        let mut tmp = [0u8; 20];
+        let n = encode_fix_seqnum(id, &mut tmp);
+        fmt.field(112, &tmp[..n]);
+        fmt.finish().ok()
+    }
+
+    fn encode_resend_request(
+        buf: &mut [u8],
+        hdr: AdminHeader<'_>,
+        begin_seq: u32,
+    ) -> Option<(usize, usize)> {
+        use crate::types::encode_fix_uint;
+        use crate::writer::FrameFormatter;
+        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"2");
+        write_admin_header(&mut fmt, &hdr);
+        let mut tmp = [0u8; 10];
+        let n = encode_fix_uint(begin_seq, &mut tmp);
+        fmt.field(7, &tmp[..n]);
+        fmt.field(16, b"0");
+        fmt.finish().ok()
+    }
+
+    fn encode_sequence_reset(
+        buf: &mut [u8],
+        hdr: AdminHeader<'_>,
+        new_seq: u32,
+    ) -> Option<(usize, usize)> {
+        use crate::types::encode_fix_uint;
+        use crate::writer::FrameFormatter;
+        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"4");
+        write_admin_header(&mut fmt, &hdr);
+        fmt.field(43, b"Y");
+        fmt.field(123, b"Y");
+        let mut tmp = [0u8; 10];
+        let n = encode_fix_uint(new_seq, &mut tmp);
+        fmt.field(36, &tmp[..n]);
+        fmt.finish().ok()
+    }
+
+    fn encode_reject(
+        buf: &mut [u8],
+        hdr: AdminHeader<'_>,
+        ref_seq_num: u32,
+        ref_tag_id: Option<u32>,
+        session_reject_reason: u8,
+    ) -> Option<(usize, usize)> {
+        use crate::types::encode_fix_uint;
+        use crate::writer::FrameFormatter;
+        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"3");
+        write_admin_header(&mut fmt, &hdr);
+        let mut tmp = [0u8; 10];
+        let n = encode_fix_uint(ref_seq_num, &mut tmp);
+        fmt.field(45, &tmp[..n]);
+        if let Some(tag) = ref_tag_id {
+            let n = encode_fix_uint(tag, &mut tmp);
+            fmt.field(371, &tmp[..n]);
+        }
+        let n = encode_fix_uint(session_reject_reason as u32, &mut tmp);
+        fmt.field(373, &tmp[..n]);
+        fmt.finish().ok()
+    }
 }
 
 /// Session-level header field access.
