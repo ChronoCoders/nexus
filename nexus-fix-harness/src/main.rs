@@ -5,7 +5,9 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use nexus_fix_codec::{AsciiTextStr, FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag};
+use nexus_fix_codec::{
+    AsciiTextStr, FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag,
+};
 use nexus_fix_engine::{CompId, FixConnection, FixJournal, Message, SessionConfig, SessionState};
 
 struct Fix44;
