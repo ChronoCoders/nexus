@@ -1,30 +1,42 @@
-#![cfg(unix)]
+#[cfg(not(unix))]
+fn main() {}
 
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::net::TcpListener;
+#[cfg(unix)]
 use std::path::Path;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 use nexus_fix_codec::{
     AsciiTextStr, FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag,
 };
+#[cfg(unix)]
 use nexus_fix_engine::{CompId, FixConnection, FixJournal, Message, SessionConfig, SessionState};
 
+#[cfg(unix)]
 struct Fix44;
 
+#[cfg(unix)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Fix44MsgType {}
 
+#[cfg(unix)]
 struct Decoder<'buf> {
     _buf: &'buf [u8],
 }
 
+#[cfg(unix)]
 impl<'buf> FixAdminMsg<'buf> for Decoder<'buf> {
     fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {
         Ok(Self { _buf: buf })
     }
 }
 
+#[cfg(unix)]
 impl FixDictionary for Fix44 {
     type MsgType = Fix44MsgType;
     type Header<'buf> = Fix44Header<'buf>;
@@ -41,10 +53,12 @@ impl FixDictionary for Fix44 {
     }
 }
 
+#[cfg(unix)]
 struct Fix44Header<'buf> {
     buf: &'buf [u8],
 }
 
+#[cfg(unix)]
 impl<'buf> FixHeader<'buf> for Fix44Header<'buf> {
     fn decode(buf: &'buf [u8]) -> Self {
         Self { buf }
@@ -75,11 +89,13 @@ impl<'buf> FixHeader<'buf> for Fix44Header<'buf> {
     }
 }
 
+#[cfg(unix)]
 fn reset_journal(dir: &Path) {
     fs::remove_dir_all(dir).ok();
     fs::create_dir_all(dir).expect("failed to create journal dir");
 }
 
+#[cfg(unix)]
 fn main() {
     let port: u16 = std::env::var("FIX_PORT")
         .ok()
