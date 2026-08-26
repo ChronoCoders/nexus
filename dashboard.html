@@ -1,0 +1,2672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nexus / operator</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Ccircle cx='20' cy='20' r='14' fill='none' stroke='%23e4e4e7' stroke-width='4' stroke-dasharray='72 16' transform='rotate(-58 20 20)'/%3E%3Ccircle cx='32' cy='12' r='4.5' fill='%2360a5fa'/%3E%3C/svg%3E">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js" integrity="sha512-ZwR1/gSZM3ai6vCdI+LVF1zSq/5HznD3ZSTk7kajkaj4D292NLuduDCO1c/NT8Id+jE58KYLKT7hXnbtryGmMg==" crossorigin="anonymous"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #09090b;
+  --surface-0: #0c0c0e;
+  --surface-1: #121214;
+  --surface-2: #18181b;
+  --surface-3: #222226;
+  --surface-4: #2a2a2f;
+  --border: rgba(255,255,255,0.06);
+  --border-strong: rgba(255,255,255,0.10);
+  --border-hover: rgba(255,255,255,0.16);
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-dim: rgba(59,130,246,0.12);
+  --accent-glow: rgba(59,130,246,0.25);
+  --green: #22c55e;
+  --green-dim: rgba(34,197,94,0.12);
+  --amber: #f59e0b;
+  --amber-dim: rgba(245,158,11,0.12);
+  --red: #ef4444;
+  --red-dim: rgba(239,68,68,0.12);
+  --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace, monospace;
+  --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-xs: 4px;
+  --shadow: 0 1px 3px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.2);
+  --shadow-lg: 0 4px 24px rgba(0,0,0,0.5);
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--sans);
+  height: 100%;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  grid-template-rows: 52px 1fr;
+  height: 100vh;
+}
+
+/* TOPBAR */
+.topbar {
+  grid-column: 1 / -1;
+  background: var(--surface-0);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 1.5rem;
+  gap: 1.25rem;
+  z-index: 100;
+}
+
+.topbar-logo {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.topbar-logo { text-decoration: none; cursor: pointer; }
+.topbar-logo:hover .dot-mark { color: var(--accent); }
+.topbar-logo .mark { flex: none; }
+.topbar-logo .dot-mark { color: var(--accent-hover); }
+
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.sample-badge { font-size: 10px; letter-spacing: 0.04em; color: var(--amber); background: var(--amber-dim); border: 0.5px solid var(--amber); border-radius: 3px; padding: 2px 7px; font-family: var(--sans); }
+.time-range {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+}
+.tr-btn {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-family: var(--sans);
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+.tr-btn:hover { color: var(--text-primary); background: var(--surface-3); }
+.tr-btn.active {
+  color: var(--text-primary);
+  background: var(--surface-4);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+
+.live-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.live-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 6px rgba(34,197,94,0.5);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+
+.topbar-time {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+}
+
+.alert-badge {
+  background: var(--red-dim);
+  color: var(--red);
+  border: 1px solid rgba(239,68,68,0.25);
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.alert-badge:hover {
+  background: rgba(239,68,68,0.2);
+  border-color: rgba(239,68,68,0.4);
+}
+
+.last-sync {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 0 10px;
+  border-left: 1px solid var(--border);
+}
+
+.btn-sm {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 5px 12px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  font-family: var(--sans);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  transition: all 0.15s ease;
+}
+.btn-sm:hover {
+  color: var(--text-primary);
+  background: var(--surface-3);
+  border-color: var(--border-hover);
+}
+
+/* SIDEBAR */
+.sidebar {
+  background: var(--surface-0);
+  border-right: 1px solid var(--border);
+  padding: 1.25rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.nav-section {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 1rem 0.75rem 0.4rem;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.nav-item:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.nav-item.active {
+  background: var(--accent-dim);
+  color: var(--accent-hover);
+}
+.nav-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.nav-icon {
+  width: 16px; height: 16px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.nav-item.active .nav-icon { opacity: 1; }
+.nav-badge {
+  margin-left: auto;
+  background: var(--red-dim);
+  color: var(--red);
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  font-family: var(--mono);
+}
+
+/* MAIN */
+.main {
+  overflow-y: auto;
+  background: var(--bg);
+  padding: 1.5rem 1.75rem;
+}
+.page { display: none; }
+.page.active { display: block; animation: fadeIn 0.2s ease; }
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* CARDS */
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.15rem 1.25rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.card:hover {
+  border-color: var(--border-strong);
+}
+.card-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.85rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* KPI */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 1.15rem;
+}
+.kpi {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.15rem;
+  transition: border-color 0.2s ease, transform 0.15s ease;
+}
+.kpi:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+.kpi-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.kpi-value {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+.kpi-unit {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-left: 3px;
+  font-weight: 500;
+}
+.kpi-delta {
+  font-size: 11px;
+  margin-top: 6px;
+  font-weight: 500;
+}
+.kpi-delta.up { color: var(--green); }
+.kpi-delta.down { color: var(--red); }
+.kpi-delta.neutral { color: var(--text-muted); }
+
+/* CHART GRIDS */
+.chart-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 1.15rem;
+}
+.chart-grid-3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 1.15rem;
+}
+.chart-wrap {
+  position: relative;
+  width: 100%;
+}
+
+/* ALERT FEED */
+.alert-feed { display: flex; flex-direction: column; gap: 6px; }
+.alert-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.alert-item:hover { transform: translateY(-1px); }
+.alert-item.critical {
+  background: var(--red-dim);
+  border-color: rgba(239,68,68,0.2);
+}
+.alert-item.warning {
+  background: var(--amber-dim);
+  border-color: rgba(245,158,11,0.2);
+}
+.alert-item.info {
+  background: var(--accent-dim);
+  border-color: rgba(59,130,246,0.15);
+}
+.alert-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+.alert-item.critical .alert-dot { background: var(--red); box-shadow: 0 0 6px rgba(239,68,68,0.4); }
+.alert-item.warning .alert-dot { background: var(--amber); }
+.alert-item.info .alert-dot { background: var(--accent); }
+.alert-msg { color: var(--text-primary); line-height: 1.45; font-weight: 500; }
+.alert-time {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  padding-left: 8px;
+  font-family: var(--mono);
+}
+
+/* QUEUE TABLE */
+.queue-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.queue-table th {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-align: left;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--border-strong);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.queue-table th:not(:first-child) { text-align: right; }
+.queue-table td {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  vertical-align: middle;
+  transition: background 0.1s ease;
+}
+.queue-table tr:last-child td { border-bottom: none; }
+.queue-table td:not(:first-child) { text-align: right; }
+.queue-table tbody tr:hover td {
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.q-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: #60a5fa;
+  display: block;
+  font-family: var(--mono);
+}
+.q-type {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.fill-bar { display: inline-flex; align-items: center; gap: 7px; }
+.fill-track {
+  width: 56px; height: 4px;
+  background: var(--surface-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.fill-seg {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+}
+.status-pill {
+  display: inline-block;
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.status-pill.ok { background: var(--green-dim); color: var(--green); }
+.status-pill.warn { background: var(--amber-dim); color: var(--amber); }
+.status-pill.crit { background: var(--red-dim); color: var(--red); }
+
+/* PAGE HEADER */
+.page-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 1.25rem;
+}
+.page-title {
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--text-primary);
+  letter-spacing: -0.03em;
+}
+.page-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.page-actions { margin-left: auto; display: flex; gap: 6px; }
+
+/* SPARKLINES */
+.sparkline-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.sparkline-row:last-child { border-bottom: none; }
+.sparkline-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  width: 140px;
+  flex-shrink: 0;
+  font-weight: 500;
+}
+.sparkline-model {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  width: 90px;
+  flex-shrink: 0;
+}
+.sparkline-val {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  width: 70px;
+  text-align: right;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  transition: color 0.3s ease;
+}
+canvas.spark { flex: 1; height: 28px; }
+
+/* SECTION DIVIDER */
+.sec-div {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 1.25rem 0 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sec-div::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* PERCENTILE */
+.pct-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+.pct-cell {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 10px;
+  text-align: center;
+  transition: transform 0.15s ease, border-color 0.15s;
+}
+.pct-cell:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-strong);
+}
+.pct-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pct-val {
+  font-size: 18px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+}
+
+/* CONNECTION LIST */
+.conn-list { display: flex; flex-direction: column; gap: 4px; }
+.conn-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  transition: background 0.12s ease;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.conn-row:hover {
+  background: var(--surface-3);
+  border-color: var(--border);
+}
+.conn-row.expanded {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.conn-expand {
+  background: var(--surface-3);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  padding: 10px 10px 10px 30px;
+  font-size: 11px;
+  display: none;
+  flex-direction: column;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-top: none;
+}
+.conn-expand.open { display: flex; }
+.conn-stat {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-muted);
+}
+.conn-stat span:last-child {
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-weight: 500;
+}
+.conn-addr { color: #60a5fa; flex: 1; font-family: var(--mono); font-weight: 500; }
+.conn-type { color: var(--text-muted); font-size: 11px; width: 80px; }
+.conn-latency {
+  color: var(--text-secondary);
+  width: 60px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+}
+.conn-rejects {
+  color: var(--amber);
+  width: 60px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.conn-status { width: 52px; text-align: right; }
+.conn-chevron {
+  color: var(--text-muted);
+  font-size: 9px;
+  transition: transform 0.2s;
+}
+.conn-row.expanded .conn-chevron { transform: rotate(90deg); }
+
+/* TOAST */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: var(--shadow-lg);
+  z-index: 1000;
+  opacity: 0;
+  transition: all 0.25s ease;
+  pointer-events: none;
+}
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* MODAL */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  backdrop-filter: blur(4px);
+  z-index: 500;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.modal-backdrop.open { display: flex; }
+.modal {
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  padding: 1.75rem;
+  width: 440px;
+  max-width: 92vw;
+  box-shadow: var(--shadow-lg);
+}
+.modal-title {
+  font-size: 16px;
+  font-weight: 650;
+  margin-bottom: 1.25rem;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+.modal-field { margin-bottom: 0.9rem; }
+.modal-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 5px;
+  display: block;
+}
+.modal-row { display: flex; align-items: center; gap: 8px; }
+.modal-input {
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 7px 12px;
+  width: 110px;
+  transition: border-color 0.15s;
+}
+.modal-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.modal-unit { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 1.5rem;
+}
+.btn {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  font-family: var(--sans);
+  border: 1px solid transparent;
+  transition: all 0.15s;
+}
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-ghost {
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  border-color: var(--border-strong);
+}
+.btn-ghost:hover {
+  color: var(--text-primary);
+  background: var(--surface-3);
+}
+
+/* TOPOLOGY */
+.topology-wrap { width: 100%; overflow-x: auto; }
+.topo-canvas-wrap {
+  position: relative;
+  width: 100%;
+  height: 480px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+}
+.topo-node {
+  position: absolute;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 11px;
+  min-width: 104px;
+  height: 68px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+.topo-node:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim), 0 4px 12px rgba(0,0,0,0.4);
+  transform: translateY(-1px);
+}
+.topo-node-name {
+  color: #60a5fa;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+.topo-node-meta {
+  color: var(--text-muted);
+  font-size: 10px;
+  margin-top: 2px;
+}
+.topo-node-val {
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  margin-top: 4px;
+}
+.topo-node.warn {
+  border-color: rgba(245,158,11,0.5);
+  background: rgba(245,158,11,0.06);
+}
+.topo-node.crit {
+  border-color: rgba(239,68,68,0.5);
+  background: rgba(239,68,68,0.06);
+}
+svg.topo-svg {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  overflow: hidden;
+}
+.topo-svg .edge {
+  stroke: rgba(255,255,255,0.08);
+  stroke-width: 1.5;
+  fill: none;
+}
+.topo-svg .edge-active {
+  stroke: var(--accent);
+  stroke-width: 1.8;
+  fill: none;
+  stroke-dasharray: 8 5;
+  animation: flow 1.4s linear infinite;
+}
+.topo-svg .edge-warn {
+  stroke: var(--amber);
+  stroke-width: 1.8;
+  fill: none;
+  stroke-dasharray: 8 5;
+  animation: flow 0.8s linear infinite;
+}
+@keyframes flow {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -26; }
+}
+
+/* RATE PAGE */
+.rate-source-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 1.15rem;
+}
+.rate-source-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  transition: border-color 0.15s;
+}
+.rate-source-card:hover { border-color: var(--border-strong); }
+.rate-source-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #60a5fa;
+  margin-bottom: 8px;
+  font-family: var(--mono);
+}
+.rate-source-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 4px;
+}
+.rate-stat { text-align: center; }
+.rate-stat-val {
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  color: var(--text-primary);
+}
+.rate-stat-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+  margin-top: 2px;
+}
+.rate-bar-wrap {
+  margin-top: 8px;
+  height: 4px;
+  background: var(--surface-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.rate-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+/* SIDE PANEL */
+.side-panel {
+  position: fixed;
+  right: 0;
+  top: 52px;
+  width: 340px;
+  height: calc(100vh - 52px);
+  background: var(--surface-0);
+  border-left: 1px solid var(--border-strong);
+  z-index: 200;
+  transform: translateX(100%);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  overflow-y: auto;
+  padding: 1.25rem;
+  box-shadow: -8px 0 24px rgba(0,0,0,0.3);
+}
+.side-panel.open { transform: translateX(0); }
+.side-panel-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-primary);
+  margin-bottom: 0.75rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  letter-spacing: -0.02em;
+}
+.side-panel-close {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.12s;
+}
+.side-panel-close:hover {
+  color: var(--text-primary);
+  background: var(--surface-2);
+}
+.sp-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.sp-row:last-child { border-bottom: none; }
+.sp-key { color: var(--text-muted); font-weight: 500; }
+.sp-val {
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-weight: 500;
+}
+
+/* ANNOTATION */
+.annotation-overlay {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+}
+.annot-marker {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 1.5px;
+  background: rgba(59,130,246,0.35);
+  pointer-events: none;
+}
+.annot-label {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+  background: var(--surface-0);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+/* ACTIONS DROPDOWN */
+.actions-dropdown { position: relative; }
+.actions-menu {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  min-width: 200px;
+  z-index: 300;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  padding: 4px;
+}
+.actions-menu.open { display: block; animation: fadeIn 0.12s ease; }
+.actions-item {
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 5px;
+  transition: all 0.1s;
+}
+.actions-item:hover {
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+
+/* MODEL TAG */
+.model-tag {
+  display: inline-block;
+  font-size: 9px;
+  font-family: var(--mono);
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.model-tag.gbdt {
+  background: rgba(59,130,246,0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59,130,246,0.2);
+}
+.model-tag.lstm {
+  background: rgba(245,158,11,0.15);
+  color: var(--amber);
+  border: 1px solid rgba(245,158,11,0.2);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--surface-4);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <a class="topbar-logo" href="index.html" title="Back to nexus">
+      <svg class="mark" width="22" height="22" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="15" fill="none" stroke="currentColor" stroke-width="2.8" stroke-dasharray="75 20" transform="rotate(-58 20 20)"/><circle cx="33" cy="12" r="4" fill="var(--accent-hover)"/></svg>
+      nexus<span class="dot-mark">.</span>
+    </a>
+    <div class="topbar-right">
+      <span class="sample-badge">sample data</span>
+      <div class="time-range" id="time-range-ctrl">
+        <button class="tr-btn active" onclick="setTimeRange('live', this)">live</button>
+        <button class="tr-btn" onclick="setTimeRange('1m', this)">1m</button>
+        <button class="tr-btn" onclick="setTimeRange('5m', this)">5m</button>
+        <button class="tr-btn" onclick="setTimeRange('1h', this)">1h</button>
+        <button class="tr-btn" onclick="setTimeRange('6h', this)">6h</button>
+      </div>
+      <span class="alert-badge" onclick="acknowledgeAllAlerts()" id="top-alert-badge">2 alerts</span>
+      <div class="last-sync" id="last-sync">last sync: --:--:--</div>
+      <div class="live-indicator"><div class="live-dot"></div> live</div>
+      <div class="topbar-time" id="clock">--:--:--</div>
+      <button onclick="openThresholdModal()" class="btn-sm">thresholds</button>
+      <button onclick="exportSnapshot()" class="btn-sm">export</button>
+      <div class="actions-dropdown" id="actions-dropdown">
+        <button class="btn-sm" onclick="toggleActionsMenu(event)">actions <svg width="8" height="5" viewBox="0 0 8 5" aria-hidden="true" style="vertical-align:1px"><path d="M0 0 L4 5 L8 0 Z" fill="currentColor"/></svg></button>
+        <div class="actions-menu" id="actions-menu">
+          <div class="actions-item" onclick="simBackpressure();closeActionsMenu()">sim backpressure</div>
+          <div class="actions-item" onclick="simLatencySpike();closeActionsMenu()">sim latency spike</div>
+          <div class="actions-item" onclick="simReconnect();closeActionsMenu()">sim reconnect</div>
+          <div class="actions-item" onclick="simMemPressure();closeActionsMenu()">sim memory pressure</div>
+          <div class="actions-item" onclick="simInferenceDeg();closeActionsMenu()">sim inference degradation</div>
+          <div class="actions-item" onclick="simTimerBacklog();closeActionsMenu()">sim timer backlog</div>
+          <div class="actions-item" onclick="simNetPartition();closeActionsMenu()">sim network partition</div>
+          <div class="actions-item" onclick="simAllocSpike();closeActionsMenu()">sim hot path alloc spike</div>
+          <div class="actions-item" onclick="simRateMisconfig();closeActionsMenu()">sim rate misconfiguration</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- SIDEBAR -->
+  <nav class="sidebar">
+    <div class="nav-section">Monitor</div>
+    <div class="nav-item active" onclick="navigate('overview')" tabindex="0">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+        <rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1"/>
+        <rect x="1.5" y="9" width="5.5" height="5.5" rx="1"/><rect x="9" y="9" width="5.5" height="5.5" rx="1"/>
+      </svg>Overview
+    </div>
+    <div class="nav-item" onclick="navigate('latency')" tabindex="0">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+        <polyline points="1.5,11.5 4.5,6 7.5,8.5 10.5,3.5 14.5,7"/>
+      </svg>Latency
+    </div>
+    <div class="nav-item" onclick="navigate('queues')" tabindex="0">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+        <rect x="1.5" y="3" width="13" height="2.5" rx="0.8"/>
+        <rect x="1.5" y="7" width="10" height="2.5" rx="0.8"/>
+        <rect x="1.5" y="11" width="7" height="2.5" rx="0.8"/>
+      </svg>Queues
+    </div>
+    <div class="nav-item" onclick="navigate('topology')" tabindex="0">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+        <circle cx="8" cy="8" r="1.8"/>
+        <circle cx="2.5" cy="3.5" r="1.4"/><circle cx="13.5" cy="3.5" r="1.4"/>
+        <circle cx="2.5" cy="12.5" r="1.4"/><circle cx="13.5" cy="12.5" r="1.4"/>
+        <line x1="3.7" y1="4.5" x2="6.5" y2="6.8"/>
+        <line x1="12.3" y1="4.5" x2="9.5" y2="6.8"/>
+        <line x1="3.7" y1="11.5" x2="6.5" y2="9.2"/>
+        <line x1="12.3" y1="11.5" x2="9.5" y2="9.2"/>
+      </svg>Topology
+    </div>
+    <div class="nav-item" onclick="navigate('network')" tabindex="0">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+        <circle cx="8" cy="8" r="6"/>
+        <path d="M8 2C8 2 11 5 11 8S8 14 8 14M8 2C8 2 5 5 5 8S8 14 8 14M2 8h12"/>
+      </svg>Network
+    </div>
+    <div class="nav-section">System</div>
+    <div class="nav-item" onclick="navigate('memory')" tabindex="0">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+        <rect x="1.5" y="4.5" width="13" height="7" rx="1"/>
+        <line x1="4.5" y1="4.5" x2="4.5" y2="11.5"/><line x1="8" y1="4.5" x2="8" y2="11.5"/><line x1="11.5" y1="4.5" x2="11.5" y2="11.5"/>
+        <line x1="3" y1="2.5" x2="3" y2="4.5"/><line x1="6.5" y1="2.5" x2="6.5" y2="4.5"/>
+        <line x1="9.5" y1="2.5" x2="9.5" y2="4.5"/><line x1="13" y1="2.5" x2="13" y2="4.5"/>
+      </svg>Memory
+    </div>
+    <div class="nav-item" onclick="navigate('rate')" tabindex="0">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+        <circle cx="8" cy="8" r="6"/>
+        <line x1="8" y1="8" x2="8" y2="3.5"/><line x1="8" y1="8" x2="11.5" y2="10"/>
+      </svg>Rate
+    </div>
+    <div class="nav-item" onclick="navigate('alerts')" id="nav-alerts" tabindex="0">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+        <path d="M8 1.5L14 13H2L8 1.5z"/>
+        <line x1="8" y1="6" x2="8" y2="9"/>
+        <circle cx="8" cy="11" r="0.5" fill="currentColor"/>
+      </svg>Alerts
+      <span class="nav-badge" id="nav-alert-count">2</span>
+    </div>
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <!-- OVERVIEW -->
+    <div class="page active" id="page-overview">
+      <div class="page-header">
+        <span class="page-title">Overview</span>
+        <span class="page-sub">real-time system health</span>
+      </div>
+      <div class="kpi-grid">
+        <div class="kpi"><div class="kpi-label">p99 latency</div><div class="kpi-value" id="kpi-p99">4<span class="kpi-unit">µs</span></div><div class="kpi-delta up" id="kpi-p99-delta">+0.3µs vs 1m avg</div></div>
+        <div class="kpi"><div class="kpi-label">Throughput</div><div class="kpi-value" id="kpi-throughput">2.4<span class="kpi-unit">M msg/s</span></div><div class="kpi-delta neutral" id="kpi-throughput-delta">stable</div></div>
+        <div class="kpi"><div class="kpi-label">Queue fill (max)</div><div class="kpi-value" id="kpi-queue-max">73<span class="kpi-unit">%</span></div><div class="kpi-delta down" id="kpi-queue-max-delta">order-inbound near capacity</div></div>
+        <div class="kpi"><div class="kpi-label">Active connections</div><div class="kpi-value" id="kpi-connections">14</div><div class="kpi-delta neutral" id="kpi-connections-delta">all healthy</div></div>
+        <div class="kpi"><div class="kpi-label">Slab free slots</div><div class="kpi-value" id="kpi-slab">82<span class="kpi-unit">%</span></div><div class="kpi-delta neutral" id="kpi-slab-delta">low pressure</div></div>
+        <div class="kpi"><div class="kpi-label">Dropped messages</div><div class="kpi-value" id="kpi-dropped">0</div><div class="kpi-delta up" id="kpi-dropped-delta">clean</div></div>
+        <div class="kpi"><div class="kpi-label">Rate limiter rejects</div><div class="kpi-value" id="kpi-rejects">12<span class="kpi-unit">/s</span></div><div class="kpi-delta down" id="kpi-rejects-delta">spike 30s ago</div></div>
+        <div class="kpi"><div class="kpi-label">Pending timers</div><div class="kpi-value" id="kpi-timers">341</div><div class="kpi-delta neutral" id="kpi-timers-delta">normal</div></div>
+      </div>
+      <div class="chart-grid-2">
+        <div class="card">
+          <div class="card-title">Throughput, msg/s <span id="tr-label-tput" style="color:var(--text-muted);font-size:10px;font-weight:500;">(60s)</span></div>
+          <div class="chart-wrap" style="height:165px; position:relative;">
+            <canvas id="ov-throughput" role="img" aria-label="Throughput over time"></canvas>
+            <div class="annotation-overlay" id="annot-tput"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">p99 latency, µs <span id="tr-label-lat" style="color:var(--text-muted);font-size:10px;font-weight:500;">(60s)</span></div>
+          <div class="chart-wrap" style="height:165px; position:relative;">
+            <canvas id="ov-latency" role="img" aria-label="p99 latency over time"></canvas>
+            <div class="annotation-overlay" id="annot-lat"></div>
+          </div>
+        </div>
+      </div>
+      <div class="chart-grid-2">
+        <div class="card">
+          <div class="card-title">Queue fill %, top 4 queues</div>
+          <div style="display:flex;flex-direction:column;gap:12px;padding-top:4px;" id="queue-bars"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Active alerts</div>
+          <div class="alert-feed" id="overview-alerts"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LATENCY -->
+    <div class="page" id="page-latency">
+      <div class="page-header">
+        <span class="page-title">Latency</span>
+        <span class="page-sub">end-to-end & per-component</span>
+      </div>
+      <div class="sec-div">Percentile summary</div>
+      <div class="pct-grid" style="margin-bottom:1.15rem;">
+        <div class="pct-cell"><div class="pct-label">p50</div><div class="pct-val" style="color:var(--green);">1.2<span style="font-size:11px;color:var(--text-muted)"> µs</span></div></div>
+        <div class="pct-cell"><div class="pct-label">p90</div><div class="pct-val" style="color:var(--green);">2.8<span style="font-size:11px;color:var(--text-muted)"> µs</span></div></div>
+        <div class="pct-cell"><div class="pct-label">p99</div><div class="pct-val" style="color:var(--accent);">4.0<span style="font-size:11px;color:var(--text-muted)"> µs</span></div></div>
+        <div class="pct-cell"><div class="pct-label">p999</div><div class="pct-val" style="color:var(--amber);">9.1<span style="font-size:11px;color:var(--text-muted)"> µs</span></div></div>
+        <div class="pct-cell"><div class="pct-label">p9999</div><div class="pct-val" style="color:var(--red);">22<span style="font-size:11px;color:var(--text-muted)"> µs</span></div></div>
+      </div>
+      <div class="chart-grid-2" style="margin-bottom:1.15rem;">
+        <div class="card">
+          <div class="card-title">Latency histogram, µs buckets</div>
+          <div class="chart-wrap" style="height:185px;"><canvas id="lat-hist" role="img" aria-label="Latency histogram"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Tail latency trend, p99 / p999 (5m)</div>
+          <div class="chart-wrap" style="height:185px;"><canvas id="lat-trend" role="img" aria-label="Tail latency trend"></canvas></div>
+        </div>
+      </div>
+      <div class="sec-div">Per-component latency</div>
+      <div class="card">
+        <div style="display:flex;flex-direction:column;">
+          <div class="sparkline-row">
+            <span class="sparkline-label">nexus-queue SPSC</span><span class="sparkline-model">ring-buffer</span>
+            <canvas class="spark" id="sp1" role="img" aria-label="SPSC sparkline"></canvas>
+            <span class="sparkline-val" id="sp1-val">1.1 µs</span>
+          </div>
+          <div class="sparkline-row">
+            <span class="sparkline-label">nexus-channel</span><span class="sparkline-model">blocking SPSC</span>
+            <canvas class="spark" id="sp2" role="img" aria-label="Channel sparkline"></canvas>
+            <span class="sparkline-val" id="sp2-val">2.3 µs</span>
+          </div>
+          <div class="sparkline-row">
+            <span class="sparkline-label">nexus-net WS</span><span class="sparkline-model">sans-IO</span>
+            <canvas class="spark" id="sp3" role="img" aria-label="WebSocket sparkline"></canvas>
+            <span class="sparkline-val" id="sp3-val">3.8 µs</span>
+          </div>
+          <div class="sparkline-row">
+            <span class="sparkline-label">nexus-timer fire</span><span class="sparkline-model">timer-wheel</span>
+            <canvas class="spark" id="sp4" role="img" aria-label="Timer sparkline"></canvas>
+            <span class="sparkline-val" id="sp4-val">0.8 µs</span>
+          </div>
+          <div class="sparkline-row">
+            <span class="sparkline-label">nexus-inference</span><span class="sparkline-model"><span class="model-tag gbdt">GBDT</span></span>
+            <canvas class="spark" id="sp5" role="img" aria-label="Inference GBDT sparkline"></canvas>
+            <span class="sparkline-val" id="sp5-val">0.6 µs</span>
+          </div>
+          <div class="sparkline-row">
+            <span class="sparkline-label">nexus-inference</span><span class="sparkline-model"><span class="model-tag gbdt">MLP</span></span>
+            <canvas class="spark" id="sp7" role="img" aria-label="Inference MLP sparkline"></canvas>
+            <span class="sparkline-val" id="sp7-val">1.8 µs</span>
+          </div>
+          <div class="sparkline-row">
+            <span class="sparkline-label">nexus-inference</span><span class="sparkline-model"><span class="model-tag gbdt">LUT</span></span>
+            <canvas class="spark" id="sp8" role="img" aria-label="Inference LUT sparkline"></canvas>
+            <span class="sparkline-val" id="sp8-val">0.1 µs</span>
+          </div>
+          <div class="sparkline-row">
+            <span class="sparkline-label">nexus-inference</span><span class="sparkline-model"><span class="model-tag gbdt">BNN</span></span>
+            <canvas class="spark" id="sp9" role="img" aria-label="Inference BNN sparkline"></canvas>
+            <span class="sparkline-val" id="sp9-val">0.3 µs</span>
+          </div>
+          <div class="sparkline-row">
+            <span class="sparkline-label">nexus-inference</span><span class="sparkline-model"><span class="model-tag gbdt">QuantMLP</span></span>
+            <canvas class="spark" id="sp10" role="img" aria-label="Inference QuantizedMLP sparkline"></canvas>
+            <span class="sparkline-val" id="sp10-val">1.2 µs</span>
+          </div>
+          <div class="sparkline-row">
+            <span class="sparkline-label">nexus-inference</span><span class="sparkline-model"><span class="model-tag lstm">LSTM</span></span>
+            <canvas class="spark" id="sp6" role="img" aria-label="Inference LSTM sparkline"></canvas>
+            <span class="sparkline-val" id="sp6-val">4.2 µs</span>
+          </div>
+          <div class="sparkline-row">
+            <span class="sparkline-label">nexus-inference</span><span class="sparkline-model"><span class="model-tag lstm">GRU</span></span>
+            <canvas class="spark" id="sp11" role="img" aria-label="Inference GRU sparkline"></canvas>
+            <span class="sparkline-val" id="sp11-val">3.6 µs</span>
+          </div>
+          <div class="sparkline-row">
+            <span class="sparkline-label">nexus-inference</span><span class="sparkline-model"><span class="model-tag lstm">S4/S4D</span></span>
+            <canvas class="spark" id="sp12" role="img" aria-label="Inference S4 sparkline"></canvas>
+            <span class="sparkline-val" id="sp12-val">5.1 µs</span>
+          </div>
+          <div class="sparkline-row">
+            <span class="sparkline-label">nexus-inference</span><span class="sparkline-model"><span class="model-tag lstm">TCN</span></span>
+            <canvas class="spark" id="sp13" role="img" aria-label="Inference TCN sparkline"></canvas>
+            <span class="sparkline-val" id="sp13-val">6.8 µs</span>
+          </div>
+        </div>
+      </div>
+      <div class="sec-div">Jitter</div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(2,1fr);">
+        <div class="kpi"><div class="kpi-label">Jitter (stddev)</div><div class="kpi-value">0.4<span class="kpi-unit">µs</span></div><div class="kpi-delta up">low</div></div>
+        <div class="kpi"><div class="kpi-label">Max spike (5m)</div><div class="kpi-value">22<span class="kpi-unit">µs</span></div><div class="kpi-delta down">1 spike detected</div></div>
+      </div>
+    </div>
+
+    <!-- QUEUES -->
+    <div class="page" id="page-queues">
+      <div class="page-header">
+        <span class="page-title">Queues</span>
+        <span class="page-sub">depth, lag & backpressure</span>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:1.15rem;">
+        <div class="kpi"><div class="kpi-label">Total queues</div><div class="kpi-value">8</div><div class="kpi-delta neutral">4 SPSC / 3 MPSC / 1 SPMC</div></div>
+        <div class="kpi"><div class="kpi-label">Backpressure events</div><div class="kpi-value" id="kpi-backpressure">3<span class="kpi-unit">/min</span></div><div class="kpi-delta down" id="kpi-backpressure-delta">order-inbound</div></div>
+        <div class="kpi"><div class="kpi-label">Max consumer lag</div><div class="kpi-value" id="kpi-max-lag">140<span class="kpi-unit">µs</span></div><div class="kpi-delta neutral" id="kpi-max-lag-delta">within threshold</div></div>
+        <div class="kpi"><div class="kpi-label">Stall count (1m)</div><div class="kpi-value">0</div><div class="kpi-delta up">clean</div></div>
+      </div>
+      <div class="card" style="margin-bottom:1.15rem;">
+        <div class="card-title">Queue status <span style="font-size:10px;color:var(--text-muted);font-weight:500;">click row for detail</span></div>
+        <table class="queue-table">
+          <thead><tr><th>name</th><th>type</th><th>capacity</th><th>depth</th><th>fill</th><th>lag</th><th>status</th></tr></thead>
+          <tbody id="queue-tbody"></tbody>
+        </table>
+      </div>
+      <div class="chart-grid-2">
+        <div class="card">
+          <div class="card-title">Queue depth, order-inbound (2m)</div>
+          <div class="chart-wrap" style="height:155px;"><canvas id="q-depth" role="img" aria-label="Queue depth trend"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Throughput in/out, msg/s</div>
+          <div class="chart-wrap" style="height:155px;"><canvas id="q-tput" role="img" aria-label="Queue throughput"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TOPOLOGY -->
+    <div class="page" id="page-topology">
+      <div class="page-header">
+        <span class="page-title">Topology</span>
+        <span class="page-sub">pipeline DAG, live</span>
+      </div>
+      <div class="card" style="margin-bottom:1.15rem;">
+        <div class="card-title">Pipeline DAG <span style="color:var(--green);font-size:10px;font-weight:600;display:inline-flex;align-items:center;gap:5px;"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;"></span>live</span></div>
+        <div class="topo-canvas-wrap" id="topo-wrap">
+          <svg class="topo-svg" id="topo-svg"></svg>
+        </div>
+      </div>
+      <div class="chart-grid-3">
+        <div class="kpi"><div class="kpi-label">Pipeline stages</div><div class="kpi-value">7</div><div class="kpi-delta neutral">all reachable</div></div>
+        <div class="kpi"><div class="kpi-label">Hot path hops</div><div class="kpi-value">4</div><div class="kpi-delta neutral">inbound to rt</div></div>
+        <div class="kpi"><div class="kpi-label">Bottleneck stage</div><div class="kpi-value" style="font-size:15px;" id="topo-bottleneck">order-inbound</div><div class="kpi-delta down">73% fill</div></div>
+      </div>
+    </div>
+
+    <!-- NETWORK -->
+    <div class="page" id="page-network">
+      <div class="page-header">
+        <span class="page-title">Network</span>
+        <span class="page-sub">connections & throughput</span>
+      </div>
+      <div class="kpi-grid" style="margin-bottom:1.15rem;">
+        <div class="kpi"><div class="kpi-label">Active connections</div><div class="kpi-value" id="net-connections">14</div><div class="kpi-delta up" id="net-connections-delta">all healthy</div></div>
+        <div class="kpi"><div class="kpi-label">WS frame rate</div><div class="kpi-value" id="net-frame-rate">840<span class="kpi-unit">k/s</span></div><div class="kpi-delta neutral" id="net-frame-rate-delta">stable</div></div>
+        <div class="kpi"><div class="kpi-label">Reconnects (1h)</div><div class="kpi-value" id="net-reconnects">1</div><div class="kpi-delta down" id="net-reconnects-delta">feed-02 at 04:50</div></div>
+        <div class="kpi"><div class="kpi-label">Bytes/s</div><div class="kpi-value" id="net-bytes">38<span class="kpi-unit">MB/s</span></div><div class="kpi-delta neutral" id="net-bytes-delta">normal</div></div>
+      </div>
+      <div class="sec-div">Active connections <span style="font-weight:500;font-size:10px;margin-left:4px;">click to expand</span></div>
+      <div class="card" style="margin-bottom:1.15rem;">
+        <div style="display:flex;gap:10px;padding:0 10px 8px;font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid var(--border);">
+          <span style="flex:1;">address</span><span style="width:80px;">type</span><span style="width:60px;text-align:right;">rtt</span>
+          <span style="width:70px;text-align:right;" title="Rate limiter rejects attributed to this connection">rl rejects/s</span><span style="width:52px;text-align:right;">status</span><span style="width:16px;"></span>
+        </div>
+        <div class="conn-list" id="conn-list"></div>
+      </div>
+      <div class="chart-grid-2">
+        <div class="card">
+          <div class="card-title">WS frame rate, frames/s (60s)</div>
+          <div class="chart-wrap" style="height:165px;"><canvas id="net-frames" role="img" aria-label="WebSocket frame rate"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Bytes/s inbound + outbound</div>
+          <div class="chart-wrap" style="height:165px;"><canvas id="net-bytes-chart" role="img" aria-label="Network bytes per second"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MEMORY -->
+    <div class="page" id="page-memory">
+      <div class="page-header">
+        <span class="page-title">Memory</span>
+        <span class="page-sub">slab allocators & RSS</span>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(2,1fr);margin-bottom:1.15rem;">
+        <div class="kpi"><div class="kpi-label">RSS</div><div class="kpi-value" id="mem-rss">312<span class="kpi-unit">MB</span></div><div class="kpi-delta neutral" id="mem-rss-delta">stable</div></div>
+        <div class="kpi"><div class="kpi-label">Slab free slots</div><div class="kpi-value" id="mem-slab-free">82<span class="kpi-unit">%</span></div><div class="kpi-delta up" id="mem-slab-free-delta">low pressure</div></div>
+      </div>
+      <div class="chart-grid-2" style="margin-bottom:1.15rem;">
+        <div class="card">
+          <div class="card-title">Slab utilization, per allocator</div>
+          <div class="chart-wrap" style="height:185px;"><canvas id="mem-slab" role="img" aria-label="Slab utilization"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title">RSS trend (5m)</div>
+          <div class="chart-wrap" style="height:185px;"><canvas id="mem-rss-chart" role="img" aria-label="RSS trend"></canvas></div>
+        </div>
+      </div>
+      <div class="sec-div">Pool status</div>
+      <div class="card" style="margin-bottom:1.15rem;">
+        <table class="queue-table">
+          <thead><tr><th>pool</th><th>type</th><th>capacity</th><th>in use</th><th>fill</th><th>acquire-wait/s</th><th>status</th></tr></thead>
+          <tbody id="pool-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- RATE -->
+    <div class="page" id="page-rate">
+      <div class="page-header">
+        <span class="page-title">Rate</span>
+        <span class="page-sub">limiters & reject breakdown</span>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:1.15rem;">
+        <div class="kpi"><div class="kpi-label">Total rejects/s</div><div class="kpi-value" id="rate-total-rejects">12<span class="kpi-unit">/s</span></div><div class="kpi-delta down">elevated</div></div>
+        <div class="kpi"><div class="kpi-label">GCRA violations</div><div class="kpi-value" id="rate-gcra">8<span class="kpi-unit">/s</span></div><div class="kpi-delta down">/exec endpoint</div></div>
+        <div class="kpi"><div class="kpi-label">Token bucket rejects</div><div class="kpi-value" id="rate-tb">4<span class="kpi-unit">/s</span></div><div class="kpi-delta neutral">feed-03</div></div>
+        <div class="kpi"><div class="kpi-label">Sliding window hits</div><div class="kpi-value" id="rate-sw">0<span class="kpi-unit">/s</span></div><div class="kpi-delta up">clean</div></div>
+      </div>
+      <div class="sec-div">Per-source reject breakdown</div>
+      <div class="rate-source-grid" id="rate-source-grid"></div>
+      <div class="chart-grid-2">
+        <div class="card">
+          <div class="card-title">Reject rate trend, /s (60s)</div>
+          <div class="chart-wrap" style="height:165px;"><canvas id="rate-trend" role="img" aria-label="Reject rate trend"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Token bucket fill, per limiter</div>
+          <div class="chart-wrap" style="height:165px;"><canvas id="rate-buckets" role="img" aria-label="Token bucket levels"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ALERTS -->
+    <div class="page" id="page-alerts">
+      <div class="page-header">
+        <span class="page-title">Alerts</span>
+        <span class="page-sub">active & resolved</span>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:1.15rem;">
+        <div class="kpi"><div class="kpi-label">Critical</div><div class="kpi-value" style="color:var(--red);" id="alert-critical">1</div><div class="kpi-delta down">active now</div></div>
+        <div class="kpi"><div class="kpi-label">Warning</div><div class="kpi-value" style="color:var(--amber);" id="alert-warning">1</div><div class="kpi-delta down">active now</div></div>
+        <div class="kpi"><div class="kpi-label">Resolved (24h)</div><div class="kpi-value" id="alert-resolved">4</div><div class="kpi-delta neutral">all auto-resolved</div></div>
+      </div>
+      <div class="sec-div">Active</div>
+      <div class="card" style="margin-bottom:1.15rem;"><div class="alert-feed" id="active-alerts"></div></div>
+      <div class="sec-div">Resolved</div>
+      <div class="card"><div class="alert-feed" id="resolved-alerts"></div></div>
+    </div>
+
+  </main>
+</div>
+
+<!-- QUEUE DETAIL SIDE PANEL -->
+<div class="side-panel" id="side-panel">
+  <div class="side-panel-title">
+    <span id="sp-queue-name">queue detail</span>
+    <span class="side-panel-close" onclick="closeSidePanel()" aria-label="Close"><svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true"><path d="M1 1 L10 10 M10 1 L1 10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+  </div>
+  <div id="sp-queue-content"></div>
+</div>
+
+<!-- THRESHOLD MODAL -->
+<div class="modal-backdrop" id="threshold-modal">
+  <div class="modal">
+    <div class="modal-title">Alert thresholds</div>
+    <div class="modal-field">
+      <label class="modal-label">p99 latency, critical above</label>
+      <div class="modal-row"><input class="modal-input" id="th-p99" type="number" value="8" min="1" max="100"><span class="modal-unit">µs</span></div>
+    </div>
+    <div class="modal-field">
+      <label class="modal-label">Queue fill, warn above</label>
+      <div class="modal-row"><input class="modal-input" id="th-queue-warn" type="number" value="70" min="1" max="100"><span class="modal-unit">%</span></div>
+    </div>
+    <div class="modal-field">
+      <label class="modal-label">Queue fill, critical above</label>
+      <div class="modal-row"><input class="modal-input" id="th-queue-crit" type="number" value="85" min="1" max="100"><span class="modal-unit">%</span></div>
+    </div>
+    <div class="modal-field">
+      <label class="modal-label">Rate rejects, warn above</label>
+      <div class="modal-row"><input class="modal-input" id="th-rejects" type="number" value="5" min="1" max="1000"><span class="modal-unit">/s</span></div>
+    </div>
+    <div class="modal-field">
+      <label class="modal-label">Consumer lag, warn above</label>
+      <div class="modal-row"><input class="modal-input" id="th-lag" type="number" value="200" min="1" max="10000"><span class="modal-unit">µs</span></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeThresholdModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveThresholds()">Save thresholds</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const GRID  = 'rgba(255,255,255,0.04)';
+const TEXT  = '#71717a';
+const GREEN = '#22c55e';
+const BLUE  = '#3b82f6';
+const AMBER = '#f59e0b';
+const RED   = '#ef4444';
+
+let chartInstances = {};
+let liveInterval   = null;
+let currentRange   = 'live';
+
+let thresholds = { p99: 8, queueWarn: 70, queueCrit: 85, rejects: 5, lag: 200 };
+
+const activeAlerts = new Set();
+const alertCooldown = {};
+
+const COOLDOWNS = {
+  'p99': 60000, 'queue-crit': 15000, 'lag': 30000, 'rejects': 30000,
+  'slab': 20000, 'rss': 20000, 'inference': 45000, 'timer-backlog': 30000,
+  'reconnect': 10000, 'net-partition': 15000, 'heap-alloc': 20000, 'rate-misconfig': 20000
+};
+const DEFAULT_COOLDOWN = 30000;
+
+function cooldownOk(key) {
+  const last = alertCooldown[key] || 0;
+  return Date.now() - last > (COOLDOWNS[key] ?? DEFAULT_COOLDOWN);
+}
+
+function fireAlert(key, level, msg, detail) {
+  if (activeAlerts.has(key) || !cooldownOk(key)) return;
+  activeAlerts.add(key);
+  alertCooldown[key] = Date.now();
+  const entry = { id: Date.now(), level, msg, detail, time: 'just now', alertKey: key };
+  alertsState.items.unshift(entry);
+  if (level === 'critical') alertsState.critical++;
+  else alertsState.warning++;
+  renderAlerts();
+}
+
+let annotations = [
+  { label: 'deploy', positionFraction: 0.25 },
+  { label: 'cfg', positionFraction: 0.68 }
+];
+
+let metricsState = {
+  p99: 4.0, throughput: 2400, queueMaxFill: 73, connections: 14,
+  slabFree: 82, dropped: 0, rejects: 12, timers: 341,
+  backpressure: 3, maxLag: 140, frameRate: 840, bytes: 38, rss: 312
+};
+
+let alertsState = {
+  critical: 1, warning: 1, resolved: 4,
+  items: [
+    { id: 1, level: 'critical', msg: 'order-inbound queue at 73% capacity', detail: 'threshold: 70% | queue: SPSC | capacity: 65536 | current: 47923', time: '00:32 ago' },
+    { id: 2, level: 'warning',  msg: 'rate limiter reject spike on /exec',  detail: 'threshold: 5 req/s | observed: 12 req/s | duration: 8s', time: '01:14 ago' }
+  ],
+  resolvedItems: [
+    { id: 10, level: 'info', msg: 'nexus-async-net reconnect on ws://feed-02:9001', detail: 'recovered in 140ms | auto-healed via ClientPool', time: '04:50 ago' },
+    { id: 11, level: 'info', msg: 'p999 latency spike - 31µs peak', detail: 'duration: 2s | component: nexus-queue | auto-resolved', time: '1h 22m ago' },
+    { id: 12, level: 'info', msg: 'market-data queue fill hit 88%', detail: 'duration: 14s | consumer caught up | auto-resolved', time: '3h 5m ago' },
+    { id: 13, level: 'info', msg: 'frame-pool utilization hit 85%', detail: 'duration: 6s | drain cycle cleared backlog', time: '6h 41m ago' }
+  ]
+};
+
+let rateState = {
+  sources: [
+    { name: 'feed-01:9001',    algo: 'GCRA',         limit: 500000, current: 498200, rejects: 0,  bucketFill: 99 },
+    { name: 'feed-02:9001',    algo: 'GCRA',         limit: 500000, current: 493100, rejects: 0,  bucketFill: 98 },
+    { name: 'feed-03:9001',    algo: 'token-bucket', limit: 200000, current: 212000, rejects: 4,  bucketFill: 31 },
+    { name: 'oms-primary:4200',algo: 'token-bucket', limit: 50000,  current: 49800,  rejects: 0,  bucketFill: 96 },
+    { name: '/exec endpoint',  algo: 'sliding-window',limit: 10,    current: 18,     rejects: 8,  bucketFill: 0  },
+    { name: 'risk-server:5500',algo: 'GCRA',         limit: 100000, current: 98700,  rejects: 0,  bucketFill: 98 }
+  ]
+};
+
+function rng(n, base, spread, seed = 0) {
+  return Array.from({ length: n }, (_, i) => {
+    const t = (i + seed) * 0.7;
+    return +(base + Math.sin(t) * spread + (Math.random() - 0.5) * spread * 0.4).toFixed(1);
+  });
+}
+
+function baseOpts(yLabel, beginZero = false) {
+  return {
+    responsive: true, maintainAspectRatio: false,
+    animation: { duration: 400, easing: 'easeOutQuart' },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: '#18181b', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
+        titleColor: '#a1a1aa', bodyColor: '#f4f4f5',
+        titleFont: { family: 'monospace', size: 10 }, bodyFont: { family: 'monospace', size: 11 },
+        padding: 10, cornerRadius: 6
+      }
+    },
+    scales: {
+      x: { grid: { display: false }, ticks: { color: TEXT, font: { family: 'monospace', size: 9 }, maxTicksLimit: 6 }, border: { color: 'rgba(255,255,255,0.06)' } },
+      y: { grid: { color: GRID }, ticks: { color: TEXT, font: { family: 'monospace', size: 9 } }, border: { display: false }, beginAtZero: beginZero, title: yLabel ? { display: true, text: yLabel, color: TEXT, font: { size: 9 } } : undefined }
+    }
+  };
+}
+
+function labelsForRange(range) {
+  const configs = {
+    live: { n: 60, step: 10, suffix: 's', base: 60 },
+    '1m':  { n: 60, step: 10, suffix: 's', base: 60 },
+    '5m':  { n: 60, step: 15, suffix: 'm', base: 5, divisor: 12 },
+    '1h':  { n: 60, step: 10, suffix: 'm', base: 60, divisor: 1 },
+    '6h':  { n: 72, step: 12, suffix: 'h', base: 6, divisor: 12 }
+  };
+  const c = configs[range] || configs['live'];
+  return Array.from({ length: c.n }, (_, i) => {
+    if (i % c.step !== 0) return '';
+    if (c.divisor) return `-${+(c.base - i / c.divisor).toFixed(1)}${c.suffix}`;
+    return `-${c.base - i}${c.suffix}`;
+  });
+}
+
+function initCharts() {
+  const l60  = labelsForRange('live');
+  const l5m  = labelsForRange('5m');
+
+  chartInstances['ov-throughput'] = new Chart(document.getElementById('ov-throughput'), {
+    type: 'line',
+    data: { labels: l60, datasets: [{ data: rng(60, 2400, 180, 1), borderColor: BLUE, borderWidth: 2, fill: true, backgroundColor: 'rgba(59,130,246,0.08)', pointRadius: 0, tension: 0.35 }] },
+    options: baseOpts('k msg/s', true)
+  });
+
+  chartInstances['ov-latency'] = new Chart(document.getElementById('ov-latency'), {
+    type: 'line',
+    data: { labels: l60, datasets: [{ data: rng(60, 4.0, 1.2, 2), borderColor: AMBER, borderWidth: 2, fill: true, backgroundColor: 'rgba(245,158,11,0.08)', pointRadius: 0, tension: 0.35 }] },
+    options: baseOpts('µs')
+  });
+
+  chartInstances['lat-hist'] = new Chart(document.getElementById('lat-hist'), {
+    type: 'bar',
+    data: {
+      labels: ['<1','1-2','2-3','3-4','4-5','5-7','7-10','10-15','15-22','>22'],
+      datasets: [{ data: [14,31,24,16,8,4,2,0.8,0.4,0.2], backgroundColor: [GREEN,GREEN,GREEN,GREEN,BLUE,BLUE,AMBER,AMBER,RED,RED], borderRadius: 3, borderSkipped: false }]
+    },
+    options: { ...baseOpts('% of msgs', true), scales: { ...baseOpts().scales, y: { ...baseOpts().scales.y, max: 35 } } }
+  });
+
+  chartInstances['lat-trend'] = new Chart(document.getElementById('lat-trend'), {
+    type: 'line',
+    data: {
+      labels: l5m,
+      datasets: [
+        { label: 'p99',  data: rng(60, 4.0, 0.9, 3), borderColor: BLUE,  borderWidth: 1.8, pointRadius: 0, tension: 0.3, fill: false },
+        { label: 'p999', data: rng(60, 9.1, 2.2, 4), borderColor: AMBER, borderWidth: 1.8, pointRadius: 0, tension: 0.3, fill: false }
+      ]
+    },
+    options: { ...baseOpts('µs'), plugins: { legend: { display: true, labels: { color: TEXT, font: { family: 'monospace', size: 10 }, boxWidth: 10, padding: 14 } } } }
+  });
+
+  const sparkDefs = [
+    { id: 'sp1',  base: 1.1,  color: BLUE  }, { id: 'sp2',  base: 2.3,  color: BLUE  },
+    { id: 'sp3',  base: 3.8,  color: BLUE  }, { id: 'sp4',  base: 0.8,  color: BLUE  },
+    { id: 'sp5',  base: 0.6,  color: BLUE  }, { id: 'sp7',  base: 1.8,  color: BLUE  },
+    { id: 'sp8',  base: 0.1,  color: BLUE  }, { id: 'sp9',  base: 0.3,  color: BLUE  },
+    { id: 'sp10', base: 1.2,  color: BLUE  }, { id: 'sp6',  base: 4.2,  color: AMBER },
+    { id: 'sp11', base: 3.6,  color: AMBER }, { id: 'sp12', base: 5.1,  color: AMBER },
+    { id: 'sp13', base: 6.8,  color: AMBER }
+  ];
+  sparkDefs.forEach(({ id, base, color }, i) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    chartInstances[id] = new Chart(el, {
+      type: 'line',
+      data: { labels: Array(30).fill(''), datasets: [{ data: rng(30, base, base * 0.25, i + 10), borderColor: color, borderWidth: 1.4, pointRadius: 0, tension: 0.45, fill: false }] },
+      options: { responsive: false, animation: false, plugins: { legend: { display: false }, tooltip: { enabled: false } }, scales: { x: { display: false }, y: { display: false } } }
+    });
+  });
+
+  chartInstances['q-depth'] = new Chart(document.getElementById('q-depth'), {
+    type: 'line',
+    data: { labels: l60, datasets: [{ data: rng(60, 47000, 6500, 5), borderColor: AMBER, borderWidth: 2, fill: true, backgroundColor: 'rgba(245,158,11,0.08)', pointRadius: 0, tension: 0.3 }] },
+    options: baseOpts('slots', true)
+  });
+
+  chartInstances['q-tput'] = new Chart(document.getElementById('q-tput'), {
+    type: 'line',
+    data: {
+      labels: l60,
+      datasets: [
+        { label: 'in',  data: rng(60, 2400, 160, 6), borderColor: BLUE,  borderWidth: 1.8, pointRadius: 0, tension: 0.3, fill: false },
+        { label: 'out', data: rng(60, 2350, 140, 7), borderColor: GREEN, borderWidth: 1.8, pointRadius: 0, tension: 0.3, fill: false }
+      ]
+    },
+    options: { ...baseOpts('k msg/s', true), plugins: { legend: { display: true, labels: { color: TEXT, font: { family: 'monospace', size: 10 }, boxWidth: 10, padding: 14 } } } }
+  });
+
+  chartInstances['net-frames'] = new Chart(document.getElementById('net-frames'), {
+    type: 'line',
+    data: { labels: l60, datasets: [{ data: rng(60, 840, 35, 8), borderColor: GREEN, borderWidth: 2, fill: true, backgroundColor: 'rgba(34,197,94,0.08)', pointRadius: 0, tension: 0.3 }] },
+    options: baseOpts('k frames/s', false)
+  });
+
+  chartInstances['net-bytes-chart'] = new Chart(document.getElementById('net-bytes-chart'), {
+    type: 'line',
+    data: {
+      labels: l60,
+      datasets: [
+        { label: 'in',  data: rng(60, 28, 2.5, 9),  borderColor: BLUE,  borderWidth: 1.8, pointRadius: 0, tension: 0.3, fill: false },
+        { label: 'out', data: rng(60, 10, 1.8, 10), borderColor: GREEN, borderWidth: 1.8, pointRadius: 0, tension: 0.3, fill: false }
+      ]
+    },
+    options: { ...baseOpts('MB/s', true), plugins: { legend: { display: true, labels: { color: TEXT, font: { family: 'monospace', size: 10 }, boxWidth: 10, padding: 14 } } } }
+  });
+
+  chartInstances['mem-slab'] = new Chart(document.getElementById('mem-slab'), {
+    type: 'bar',
+    data: { labels: ['order-slab','frame-slab','msg-slab','timer-slab','rt-slab'], datasets: [{ label: 'used %', data: [15,70,6,22,11], backgroundColor: [GREEN,AMBER,GREEN,GREEN,GREEN], borderRadius: 4, borderSkipped: false }] },
+    options: { ...baseOpts('%', true), scales: { ...baseOpts().scales, y: { ...baseOpts().scales.y, max: 100 } } }
+  });
+
+  chartInstances['mem-rss-chart'] = new Chart(document.getElementById('mem-rss-chart'), {
+    type: 'line',
+    data: { labels: labelsForRange('5m'), datasets: [{ data: rng(60, 312, 3.5, 11), borderColor: BLUE, borderWidth: 2, fill: true, backgroundColor: 'rgba(59,130,246,0.08)', pointRadius: 0, tension: 0.3 }] },
+    options: baseOpts('MB', false)
+  });
+
+  chartInstances['rate-trend'] = new Chart(document.getElementById('rate-trend'), {
+    type: 'line',
+    data: { labels: l60, datasets: [{ data: rng(60, 12, 6, 20), borderColor: RED, borderWidth: 2, fill: true, backgroundColor: 'rgba(239,68,68,0.08)', pointRadius: 0, tension: 0.35 }] },
+    options: baseOpts('rejects/s', true)
+  });
+
+  chartInstances['rate-buckets'] = new Chart(document.getElementById('rate-buckets'), {
+    type: 'bar',
+    data: {
+      labels: ['feed-01','feed-02','feed-03','oms-pri','/exec','risk-srv'],
+      datasets: [{ label: 'bucket fill %', data: [99,98,31,96,0,98], backgroundColor: [GREEN,GREEN,AMBER,GREEN,RED,GREEN], borderRadius: 4, borderSkipped: false }]
+    },
+    options: { ...baseOpts('%', true), scales: { ...baseOpts().scales, y: { ...baseOpts().scales.y, max: 100 } } }
+  });
+
+  renderAnnotations();
+}
+
+function renderAnnotations() {
+  ['annot-tput','annot-lat'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = annotations.map(a => `
+      <div class="annot-marker" style="left:${(a.positionFraction * 100).toFixed(1)}%">
+        <span class="annot-label">${a.label}</span>
+      </div>
+    `).join('');
+  });
+}
+
+function setTimeRange(range, btn) {
+  currentRange = range;
+  document.querySelectorAll('.tr-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const labels = labelsForRange(range);
+  const label  = range === 'live' ? '(60s)' : `(${range})`;
+  const elTput = document.getElementById('tr-label-tput');
+  const elLat  = document.getElementById('tr-label-lat');
+  if (elTput) elTput.textContent = label;
+  if (elLat)  elLat.textContent  = label;
+  const toRebuild = ['ov-throughput', 'ov-latency', 'q-depth', 'q-tput', 'net-frames', 'net-bytes-chart', 'rate-trend'];
+  toRebuild.forEach(id => {
+    const chart = chartInstances[id];
+    if (!chart) return;
+    chart.data.labels = labels;
+    chart.update();
+  });
+  showToast(`Time range: ${range}`);
+}
+
+function fillColor(pct) {
+  if (pct >= thresholds.queueCrit) return 'var(--red)';
+  if (pct >= thresholds.queueWarn) return 'var(--amber)';
+  return 'var(--green)';
+}
+
+function updateQueueBars() {
+  const data = [
+    { name: 'order-inbound', fill: metricsState.queueMaxFill },
+    { name: 'market-data',   fill: 41 },
+    { name: 'risk-events',   fill: 18 },
+    { name: 'exec-reports',  fill: 9  }
+  ];
+  document.getElementById('queue-bars').innerHTML = data.map(q => `
+    <div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px;">
+        <span style="color:#60a5fa;font-family:var(--mono);font-weight:500;">${q.name}</span>
+        <span style="color:${fillColor(q.fill)};font-weight:600;font-family:var(--mono);">${q.fill}%</span>
+      </div>
+      <div style="height:5px;background:var(--surface-3);border-radius:3px;overflow:hidden;">
+        <div style="width:${q.fill}%;height:100%;background:${fillColor(q.fill)};border-radius:3px;transition:width 0.4s ease;"></div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function updateKPIs() {
+  const s = metricsState;
+  document.getElementById('kpi-p99').innerHTML        = `${s.p99}<span class="kpi-unit">µs</span>`;
+  document.getElementById('kpi-throughput').innerHTML = `${(s.throughput/1000).toFixed(1)}<span class="kpi-unit">M msg/s</span>`;
+  document.getElementById('kpi-queue-max').innerHTML  = `${s.queueMaxFill}<span class="kpi-unit">%</span>`;
+  document.getElementById('kpi-connections').textContent = s.connections;
+  document.getElementById('kpi-slab').innerHTML       = `${s.slabFree}<span class="kpi-unit">%</span>`;
+  document.getElementById('kpi-dropped').textContent  = s.dropped;
+  document.getElementById('kpi-rejects').innerHTML    = `${s.rejects}<span class="kpi-unit">/s</span>`;
+  document.getElementById('kpi-timers').textContent   = s.timers;
+  document.getElementById('kpi-backpressure').innerHTML = `${s.backpressure}<span class="kpi-unit">/min</span>`;
+  document.getElementById('kpi-max-lag').innerHTML    = `${s.maxLag}<span class="kpi-unit">µs</span>`;
+  document.getElementById('net-connections').textContent = s.connections;
+  document.getElementById('net-frame-rate').innerHTML = `${s.frameRate}<span class="kpi-unit">k/s</span>`;
+  document.getElementById('net-bytes').innerHTML      = `${s.bytes}<span class="kpi-unit">MB/s</span>`;
+  document.getElementById('mem-rss').innerHTML        = `${s.rss}<span class="kpi-unit">MB</span>`;
+  document.getElementById('mem-slab-free').innerHTML  = `${s.slabFree}<span class="kpi-unit">%</span>`;
+  document.getElementById('rate-total-rejects').innerHTML = `${s.rejects}<span class="kpi-unit">/s</span>`;
+}
+
+const QUEUES = [
+  { name: 'order-inbound',  type: 'SPSC', cap: 65536,  fill: () => metricsState.queueMaxFill, lag: () => metricsState.maxLag },
+  { name: 'market-data',    type: 'SPSC', cap: 131072, fill: () => 41, lag: () => 22 },
+  { name: 'exec-reports',   type: 'MPSC', cap: 32768,  fill: () => 9,  lag: () => 8  },
+  { name: 'risk-events',    type: 'MPSC', cap: 16384,  fill: () => 18, lag: () => 15 },
+  { name: 'broadcast-feed', type: 'SPMC', cap: 65536,  fill: () => 2,  lag: () => 4  },
+  { name: 'log-buffer',     type: 'MPSC', cap: 1048576,fill: () => 1,  lag: () => 2  },
+  { name: 'timer-dispatch', type: 'SPSC', cap: 8192,   fill: () => 15, lag: () => 31 },
+  { name: 'snapshot-out',   type: 'MPSC', cap: 4096,   fill: () => 22, lag: () => 47 }
+];
+
+function queueStatus(fill) {
+  if (fill >= thresholds.queueCrit) return 'crit';
+  if (fill >= thresholds.queueWarn) return 'warn';
+  return 'ok';
+}
+
+function updateQueueTable() {
+  document.getElementById('queue-tbody').innerHTML = QUEUES.map(q => {
+    const fill = q.fill(), lag = q.lag(), depth = Math.floor(q.cap * fill / 100);
+    const st = queueStatus(fill);
+    const color = st === 'crit' ? 'red' : st === 'warn' ? 'amber' : 'green';
+    return `
+      <tr onclick="openSidePanel('${q.name}')">
+        <td><span class="q-name">${q.name}</span></td>
+        <td style="text-align:right;"><span class="q-type">${q.type}</span></td>
+        <td>${q.cap.toLocaleString()}</td>
+        <td>${depth.toLocaleString()}</td>
+        <td>
+          <div class="fill-bar">
+            <div class="fill-track"><div class="fill-seg" style="width:${fill}%;background:var(--${color});"></div></div>
+            <span style="color:var(--${color});font-size:11px;font-weight:600;font-family:var(--mono);">${fill}%</span>
+          </div>
+        </td>
+        <td style="font-family:var(--mono);">${lag} µs</td>
+        <td><span class="status-pill ${st}">${st}</span></td>
+      </tr>`;
+  }).join('');
+}
+
+function openSidePanel(name) {
+  const q = QUEUES.find(q => q.name === name);
+  if (!q) return;
+  const fill = q.fill(), lag = q.lag(), depth = Math.floor(q.cap * fill / 100);
+  const st = queueStatus(fill);
+  document.getElementById('sp-queue-name').textContent = name;
+  document.getElementById('sp-queue-content').innerHTML = `
+    <div style="margin-bottom:0.85rem;">
+      <span class="status-pill ${st}" style="margin-bottom:8px;display:inline-block;">${st}</span>
+    </div>
+    <div class="sp-row"><span class="sp-key">type</span><span class="sp-val">${q.type}</span></div>
+    <div class="sp-row"><span class="sp-key">capacity</span><span class="sp-val">${q.cap.toLocaleString()} slots</span></div>
+    <div class="sp-row"><span class="sp-key">depth</span><span class="sp-val">${depth.toLocaleString()} slots</span></div>
+    <div class="sp-row"><span class="sp-key">fill</span><span class="sp-val">${fill}%</span></div>
+    <div class="sp-row"><span class="sp-key">consumer lag</span><span class="sp-val">${lag} µs</span></div>
+    <div class="sp-row"><span class="sp-key">warn threshold</span><span class="sp-val">${thresholds.queueWarn}%</span></div>
+    <div class="sp-row"><span class="sp-key">crit threshold</span><span class="sp-val">${thresholds.queueCrit}%</span></div>
+    <div class="sp-row"><span class="sp-key">backpressure events</span><span class="sp-val">${name === 'order-inbound' ? metricsState.backpressure : 0}/min</span></div>
+    <div class="sp-row"><span class="sp-key">stalls (1m)</span><span class="sp-val">0</span></div>
+  `;
+  document.getElementById('side-panel').classList.add('open');
+}
+
+function closeSidePanel() {
+  document.getElementById('side-panel').classList.remove('open');
+}
+
+const CONNECTIONS = [
+  { addr: 'feed-01:9001',     type: 'WS / TLS',  rtt: '0.8 µs', rejectsPerS: 0,  rx: '9.2 MB/s', tx: '1.1 MB/s', reconnects: 0, status: 'ok' },
+  { addr: 'feed-02:9001',     type: 'WS / TLS',  rtt: '1.1 µs', rejectsPerS: 0,  rx: '8.9 MB/s', tx: '1.0 MB/s', reconnects: 1, status: 'ok' },
+  { addr: 'feed-03:9001',     type: 'WS / TLS',  rtt: '0.9 µs', rejectsPerS: 4,  rx: '8.1 MB/s', tx: '0.9 MB/s', reconnects: 0, status: 'warn' },
+  { addr: 'oms-primary:4200', type: 'HTTP/1.1',  rtt: '2.4 µs', rejectsPerS: 0,  rx: '1.8 MB/s', tx: '3.2 MB/s', reconnects: 0, status: 'ok' },
+  { addr: 'oms-backup:4200',  type: 'HTTP/1.1',  rtt: '2.6 µs', rejectsPerS: 0,  rx: '0.1 MB/s', tx: '0.1 MB/s', reconnects: 0, status: 'ok' },
+  { addr: 'risk-server:5500', type: 'WS',        rtt: '1.8 µs', rejectsPerS: 0,  rx: '2.3 MB/s', tx: '0.8 MB/s', reconnects: 0, status: 'ok' }
+];
+
+function updateConnections() {
+  const container = document.getElementById('conn-list');
+  container.innerHTML = CONNECTIONS.map((c, i) => `
+    <div>
+      <div class="conn-row" onclick="toggleConn(${i}, this)">
+        <span class="conn-addr">${c.addr}</span>
+        <span class="conn-type">${c.type}</span>
+        <span class="conn-latency">${c.rtt}</span>
+        <span class="conn-rejects" style="color:${c.rejectsPerS > 0 ? 'var(--amber)' : 'var(--text-muted)'};">${c.rejectsPerS}/s</span>
+        <span class="conn-status"><span class="status-pill ${c.status}">${c.status}</span></span>
+        <span class="conn-chevron"><svg width="6" height="9" viewBox="0 0 6 9" aria-hidden="true" style="display:block"><path d="M1 1 L5 4.5 L1 8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </div>
+      <div class="conn-expand" id="conn-exp-${i}">
+        <div class="conn-stat"><span>rx</span><span>${c.rx}</span></div>
+        <div class="conn-stat"><span>tx</span><span>${c.tx}</span></div>
+        <div class="conn-stat"><span>reconnects (1h)</span><span>${c.reconnects}</span></div>
+        <div class="conn-stat"><span>rejects/s</span><span style="color:${c.rejectsPerS > 0 ? 'var(--amber)' : 'var(--text-primary)'};">${c.rejectsPerS}</span></div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function toggleConn(i, row) {
+  const exp = document.getElementById(`conn-exp-${i}`);
+  const open = exp.classList.toggle('open');
+  row.classList.toggle('expanded', open);
+}
+
+function updatePoolTable() {
+  const pools = [
+    { name: 'order-pool',  type: 'BoundedPool',  cap: 8192,  used: 1230, fill: 15, acquireWait: 0, status: 'ok'   },
+    { name: 'frame-pool',  type: 'sync::Pool',   cap: 4096,  used: 2867, fill: 70, acquireWait: 3, status: 'warn' },
+    { name: 'msg-pool',    type: 'BoundedPool',  cap: 16384, used: 983,  fill: 6,  acquireWait: 0, status: 'ok'   }
+  ];
+  document.getElementById('pool-tbody').innerHTML = pools.map(p => `
+    <tr>
+      <td><span class="q-name">${p.name}</span></td>
+      <td style="text-align:right;"><span class="q-type">${p.type}</span></td>
+      <td>${p.cap.toLocaleString()}</td>
+      <td>${p.used.toLocaleString()}</td>
+      <td>
+        <div class="fill-bar">
+          <div class="fill-track"><div class="fill-seg" style="width:${p.fill}%;background:var(--${p.status === 'warn' ? 'amber' : 'green'});"></div></div>
+          <span style="color:var(--${p.status === 'warn' ? 'amber' : 'green'});font-size:11px;font-weight:600;font-family:var(--mono);">${p.fill}%</span>
+        </div>
+      </td>
+      <td style="color:${p.acquireWait > 0 ? 'var(--amber)' : 'var(--text-muted)'};font-family:var(--mono);">${p.acquireWait}</td>
+      <td><span class="status-pill ${p.status}">${p.status}</span></td>
+    </tr>
+  `).join('');
+}
+
+function updateRatePage() {
+  document.getElementById('rate-source-grid').innerHTML = rateState.sources.map(s => {
+    const pct = s.limit > 0 ? Math.min(100, Math.round(s.current / s.limit * 100)) : 0;
+    const over = s.current > s.limit;
+    return `
+      <div class="rate-source-card">
+        <div class="rate-source-name">${s.name} <span style="font-size:10px;color:var(--text-muted);font-family:var(--sans);font-weight:500;">${s.algo}</span></div>
+        <div class="rate-source-stats">
+          <div class="rate-stat"><div class="rate-stat-val" style="color:${over ? 'var(--red)' : 'var(--text-primary)'};">${s.current.toLocaleString()}</div><div class="rate-stat-label">msg/s</div></div>
+          <div class="rate-stat"><div class="rate-stat-val">${s.limit.toLocaleString()}</div><div class="rate-stat-label">limit</div></div>
+          <div class="rate-stat"><div class="rate-stat-val" style="color:${s.rejects > 0 ? 'var(--amber)' : 'var(--green)'};">${s.rejects}</div><div class="rate-stat-label">rejects/s</div></div>
+        </div>
+        <div class="rate-bar-wrap">
+          <div class="rate-bar-fill" style="width:${pct}%;background:${over ? 'var(--red)' : pct > 80 ? 'var(--amber)' : 'var(--green)'};"></div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+const NODE_DETAILS = {
+  'net': {
+    title: 'nexus-net',
+    rows: () => [
+      { k: 'protocol',    v: 'WS / HTTP/1.1 (sans-IO)' },
+      { k: 'frame rate',  v: `${metricsState.frameRate}k frames/s` },
+      { k: 'bytes/s',     v: `${metricsState.bytes} MB/s` },
+      { k: 'conformance', v: '517/517 Autobahn' },
+      { k: 'note',        v: 'transport only - sessions managed by nexus-async-net' }
+    ]
+  },
+  'async-net': {
+    title: 'nexus-async-net',
+    rows: () => [
+      { k: 'protocol',         v: 'WS / HTTP/1.1 (tokio)' },
+      { k: 'ClientPool',       v: 'self-healing reconnect' },
+      { k: 'AtomicClientPool', v: 'concurrent acquire' },
+      { k: 'try_acquire',      v: 'fast path' },
+      { k: 'acquire',          v: 'backoff path' },
+      { k: 'reconnects (1h)',  v: CONNECTIONS.reduce((s, c) => s + c.reconnects, 0) },
+      { k: 'TLS',              v: 'rustls' },
+      { k: 'active conns',     v: metricsState.connections }
+    ]
+  },
+  'queue-in': {
+    title: 'order-inbound',
+    action: { label: 'Drain queue', fn: 'drainQueue' },
+    rows: () => [
+      { k: 'type',           v: 'SPSC ring buffer' },
+      { k: 'capacity',       v: '65536 slots' },
+      { k: 'fill',           v: `${metricsState.queueMaxFill}%` },
+      { k: 'consumer lag',   v: `${metricsState.maxLag} µs` },
+      { k: 'backpressure',   v: `${metricsState.backpressure}/min` },
+      { k: 'warn threshold', v: `${thresholds.queueWarn}%` },
+      { k: 'crit threshold', v: `${thresholds.queueCrit}%` }
+    ]
+  },
+  'queue-md': {
+    title: 'market-data',
+    rows: () => [
+      { k: 'type',           v: 'SPSC ring buffer' },
+      { k: 'capacity',       v: '131072 slots' },
+      { k: 'fill',           v: '41%' },
+      { k: 'consumer lag',   v: '22 µs' },
+      { k: 'backpressure',   v: '0/min' }
+    ]
+  },
+  'slot': {
+    title: 'nexus-slot',
+    rows: () => [
+      { k: 'type',      v: 'conflation slot' },
+      { k: 'semantics', v: 'writer always overwrites' },
+      { k: 'reader',    v: 'gets latest exactly once' },
+      { k: 'use case',  v: 'market data snapshots' }
+    ]
+  },
+  'rt': {
+    title: 'nexus-rt',
+    rows: () => [
+      { k: 'model',          v: 'event-driven / poll loop' },
+      { k: 'dispatch',       v: 'monomorphized, zero-cost' },
+      { k: 'pipeline',       v: 'DAG - stages wired at startup' },
+      { k: 'drivers',        v: 'driver system - IO, timer, signal' },
+      { k: 'resources',      v: 'World/ECS resource model' },
+      { k: 'clock',          v: 'monotonic, injected' },
+      { k: 'throughput',     v: `${(metricsState.throughput/1000).toFixed(1)}M msg/s` },
+      { k: 'pending timers', v: metricsState.timers },
+      { k: 'alloc on tick',  v: '0 (zero-alloc)' }
+    ]
+  },
+  'notify': {
+    title: 'nexus-notify',
+    rows: () => [
+      { k: 'type',       v: 'cross-thread event queue' },
+      { k: 'delivery',   v: 'dedup flags + FIFO' },
+      { k: 'api',        v: 'event_queue (non-blocking) / event_channel (blocking)' },
+      { k: 'complexity', v: 'O(limit) poll, ~5 cycles/token' }
+    ]
+  },
+  'inference': {
+    title: 'nexus-inference',
+    rows: () => [
+      { k: 'models active',   v: '12' },
+      { k: 'GBDT latency',    v: '0.6 µs' },
+      { k: 'MLP latency',     v: '1.8 µs' },
+      { k: 'LUT latency',     v: '0.1 µs' },
+      { k: 'BNN latency',     v: '0.3 µs' },
+      { k: 'LSTM latency',    v: '4.2 µs' },
+      { k: 'GRU latency',     v: '3.6 µs' },
+      { k: 'S4/S4D latency',  v: '5.1 µs' },
+      { k: 'TCN latency',     v: '6.8 µs' },
+      { k: 'SIMD',            v: 'AVX2 / SSE2' },
+      { k: 'alloc after init',v: '0' },
+      { k: 'format',          v: 'SafeTensors / LightGBM JSON' }
+    ]
+  },
+  'timer': {
+    title: 'nexus-timer',
+    rows: () => [
+      { k: 'algorithm',       v: 'hierarchical wheel' },
+      { k: 'insert/cancel',   v: 'O(1)' },
+      { k: 'pending',         v: metricsState.timers },
+      { k: 'alloc after init',v: '0' },
+      { k: 'design',          v: 'no-cascade (Linux kernel)' }
+    ]
+  },
+  'logbuf': {
+    title: 'nexus-logbuf',
+    rows: () => [
+      { k: 'type',    v: 'MPSC byte ring' },
+      { k: 'fill',    v: '1%' },
+      { k: 'api',     v: 'claim-based, variable-length' },
+      { k: 'syscalls',v: '0 on hot path' },
+      { k: 'purpose', v: 'structured log drain' }
+    ]
+  }
+};
+
+function openNodePanel(nodeId) {
+  const def = NODE_DETAILS[nodeId];
+  if (!def) return;
+  document.getElementById('sp-queue-name').textContent = def.title;
+  const rowsHtml = def.rows().map(r =>
+    `<div class="sp-row"><span class="sp-key">${r.k}</span><span class="sp-val">${r.v}</span></div>`
+  ).join('');
+  const actionHtml = def.action
+    ? `<div style="margin-top:1.15rem;"><button class="btn btn-primary" style="width:100%;font-size:12px;" onclick="${def.action.fn}()">${def.action.label}</button></div>`
+    : '';
+  document.getElementById('sp-queue-content').innerHTML = rowsHtml + actionHtml;
+  document.getElementById('side-panel').classList.add('open');
+}
+
+function drainQueue() {
+  const target = 8;
+  const start  = metricsState.queueMaxFill;
+  const steps  = 16;
+  let step = 0;
+  const interval = setInterval(() => {
+    step++;
+    metricsState.queueMaxFill = Math.max(target, Math.round(start - (start - target) * (step / steps)));
+    metricsState.maxLag = Math.max(12, Math.round(metricsState.maxLag * 0.85));
+    updateKPIs(); updateQueueBars(); updateQueueTable();
+    if (document.getElementById('page-topology').classList.contains('active')) renderTopology();
+    if (step >= steps) {
+      clearInterval(interval);
+      metricsState.queueMaxFill = target;
+      showToast('order-inbound drained to 8%');
+      openNodePanel('queue-in');
+    }
+  }, 250);
+  showToast('Draining order-inbound...');
+  closeSidePanel();
+}
+
+const TOPO_NODES = [
+  { id: 'net',        label: 'nexus-net',       meta: 'WS / HTTP',          x: 0.09, y: 0.38,
+    fill: () => 0, metric: () => ({ val: `${metricsState.frameRate}k`, label: 'frames/s' }) },
+  { id: 'async-net',  label: 'nexus-async-net', meta: 'tokio async adapter', x: 0.25, y: 0.38,
+    fill: () => 0, metric: () => ({ val: metricsState.connections, label: 'conns' }) },
+  { id: 'queue-in',  label: 'order-inbound',    meta: 'SPSC queue',          x: 0.41, y: 0.20,
+    fill: () => metricsState.queueMaxFill, metric: () => null },
+  { id: 'queue-md',  label: 'market-data',       meta: 'SPSC queue',          x: 0.41, y: 0.60,
+    fill: () => 41, metric: () => null },
+  { id: 'slot',      label: 'nexus-slot',        meta: 'conflation slot',     x: 0.57, y: 0.78,
+    fill: () => 0, metric: () => ({ val: 'latest wins', label: '' }) },
+  { id: 'rt',        label: 'nexus-rt',          meta: 'event-driven DAG',    x: 0.73, y: 0.38,
+    fill: () => 0, metric: () => ({ val: `${(metricsState.throughput/1000).toFixed(1)}M`, label: 'msg/s' }) },
+  { id: 'inference', label: 'nexus-inference',   meta: 'GBDT / LSTM',         x: 0.90, y: 0.10,
+    fill: () => 0, metric: () => ({ val: '0.6 / 4.2', label: 'µs' }) },
+  { id: 'timer',     label: 'nexus-timer',       meta: 'timer wheel',         x: 0.90, y: 0.34,
+    fill: () => 0, metric: () => ({ val: metricsState.timers, label: 'pending' }) },
+  { id: 'logbuf',    label: 'nexus-logbuf',      meta: 'MPSC byte ring',      x: 0.90, y: 0.58,
+    fill: () => 0, metric: () => ({ val: '1%', label: 'fill' }) },
+  { id: 'notify',    label: 'nexus-notify',      meta: 'event queue',         x: 0.90, y: 0.82,
+    fill: () => 0, metric: () => ({ val: 'dedup+FIFO', label: '' }) }
+];
+
+const TOPO_EDGES = [
+  { from: 'net',       to: 'async-net' },
+  { from: 'async-net', to: 'queue-in' },
+  { from: 'async-net', to: 'queue-md' },
+  { from: 'queue-in',  to: 'rt',     hot: true },
+  { from: 'queue-md',  to: 'slot' },
+  { from: 'slot',      to: 'rt' },
+  { from: 'rt',        to: 'inference' },
+  { from: 'rt',        to: 'timer' },
+  { from: 'rt',        to: 'logbuf' },
+  { from: 'rt',        to: 'notify' }
+];
+
+function renderTopology() {
+  const wrap = document.getElementById('topo-wrap');
+  const svg  = document.getElementById('topo-svg');
+  const W = wrap.offsetWidth || 900;
+  const H = 480;
+
+  wrap.querySelectorAll('.topo-node').forEach(el => el.remove());
+  svg.innerHTML = '';
+
+  const NODE_W = Math.max(104, Math.min(140, Math.floor(W * 0.13))), NODE_H = 68;
+  const nodeEls = {};
+
+  TOPO_NODES.forEach(n => {
+    const fill   = n.fill();
+    const metric = n.metric ? n.metric() : null;
+    let cls = 'topo-node';
+    if (fill >= thresholds.queueCrit) cls += ' crit';
+    else if (fill >= thresholds.queueWarn) cls += ' warn';
+
+    const el = document.createElement('div');
+    el.className = cls;
+    el.id = 'topo-node-' + n.id;
+    el.style.left    = (n.x * W - NODE_W / 2) + 'px';
+    el.style.top     = (n.y * H - NODE_H / 2) + 'px';
+    el.style.width   = NODE_W + 'px';
+    el.style.cursor  = 'pointer';
+    el.onclick = () => openNodePanel(n.id);
+
+    let valHtml = '';
+    if (fill > 0) {
+      valHtml = `<div class="topo-node-val">${fill}%</div>`;
+    } else if (metric) {
+      valHtml = `<div class="topo-node-val">${metric.val} <span style="font-size:9px;color:var(--text-muted);">${metric.label}</span></div>`;
+    }
+
+    el.innerHTML = `<div class="topo-node-name">${n.label}</div><div class="topo-node-meta">${n.meta}</div>${valHtml}`;
+    wrap.appendChild(el);
+    nodeEls[n.id] = { el, def: n };
+  });
+
+  setTimeout(() => {
+    const wrapRect = wrap.getBoundingClientRect();
+    const ports = {};
+    Object.entries(nodeEls).forEach(([id, { el }]) => {
+      const r = el.getBoundingClientRect();
+      ports[id] = {
+        ox: r.right  - wrapRect.left,
+        oy: r.top    - wrapRect.top + r.height / 2,
+        ix: r.left   - wrapRect.left,
+        iy: r.top    - wrapRect.top + r.height / 2
+      };
+    });
+
+    svg.innerHTML = TOPO_EDGES.map(e => {
+      const from = ports[e.from], to = ports[e.to];
+      if (!from || !to) return '';
+      const srcFill = TOPO_NODES.find(n => n.id === e.from)?.fill() || 0;
+      let cls = 'edge';
+      if (e.hot && srcFill >= thresholds.queueWarn) cls = 'edge-warn';
+      else if (e.hot) cls = 'edge-active';
+
+      const dx = to.ix - from.ox;
+      const cp = dx > 0 ? Math.max(dx * 0.45, 30) : 20;
+      const x1 = from.ox, y1 = from.oy;
+      const x2 = to.ix,   y2 = to.iy;
+      const cx1 = x1 + cp, cy1 = y1;
+      const cx2 = x2 - cp, cy2 = y2;
+
+      return `<path class="${cls}" d="M${x1},${y1} C${cx1},${cy1} ${cx2},${cy2} ${x2},${y2}"/>`;
+    }).join('');
+  }, 50);
+}
+
+function renderAlerts() {
+  const overviewContainer = document.getElementById('overview-alerts');
+  overviewContainer.innerHTML = alertsState.items.slice(0, 3).map(a => `
+    <div class="alert-item ${a.level}" onclick="acknowledgeAlert(${a.id}, this)">
+      <div class="alert-dot"></div>
+      <div class="alert-msg">${a.msg}</div>
+      <div class="alert-time">${a.time}</div>
+    </div>
+  `).join('');
+
+  document.getElementById('active-alerts').innerHTML = alertsState.items.map(a => `
+    <div class="alert-item ${a.level}" onclick="acknowledgeAlert(${a.id}, this)">
+      <div class="alert-dot"></div>
+      <div style="flex:1;"><div class="alert-msg" style="font-weight:600;margin-bottom:3px;">${a.msg}</div>
+      <div style="font-size:11px;color:var(--text-muted);font-family:var(--mono);">${a.detail}</div></div>
+      <div class="alert-time">${a.time}</div>
+    </div>
+  `).join('');
+
+  document.getElementById('resolved-alerts').innerHTML = alertsState.resolvedItems.map(a => `
+    <div class="alert-item ${a.level}">
+      <div class="alert-dot"></div>
+      <div style="flex:1;"><div class="alert-msg" style="margin-bottom:3px;">${a.msg}</div>
+      <div style="font-size:11px;color:var(--text-muted);font-family:var(--mono);">${a.detail}</div></div>
+      <div class="alert-time">${a.time}</div>
+    </div>
+  `).join('');
+
+  document.getElementById('top-alert-badge').textContent = `${alertsState.critical + alertsState.warning} alerts`;
+  document.getElementById('nav-alert-count').textContent = alertsState.critical + alertsState.warning;
+  document.getElementById('alert-critical').textContent  = alertsState.critical;
+  document.getElementById('alert-warning').textContent   = alertsState.warning;
+  document.getElementById('alert-resolved').textContent  = alertsState.resolved;
+}
+
+function acknowledgeAlert(id, element) {
+  const alert = alertsState.items.find(a => a.id === id);
+  if (!alert) return;
+  if (alert.alertKey) activeAlerts.delete(alert.alertKey);
+  alertsState.resolvedItems.unshift({ id: Date.now(), level: 'info', msg: alert.msg, detail: alert.detail + ' | acknowledged by operator', time: 'just now' });
+  alertsState.items = alertsState.items.filter(a => a.id !== id);
+  if (alert.level === 'critical') alertsState.critical = Math.max(0, alertsState.critical - 1);
+  if (alert.level === 'warning')  alertsState.warning  = Math.max(0, alertsState.warning - 1);
+  alertsState.resolved++;
+  element.style.transition = 'all 0.2s ease';
+  element.style.opacity = '0';
+  element.style.transform = 'translateX(20px)';
+  setTimeout(() => { renderAlerts(); updateQueueBars(); showToast('Alert acknowledged'); }, 220);
+}
+
+function acknowledgeAllAlerts() {
+  if (alertsState.items.length === 0) return;
+  alertsState.items.forEach(a => {
+    if (a.alertKey) activeAlerts.delete(a.alertKey);
+    alertsState.resolvedItems.unshift({ id: Date.now() + Math.random(), level: 'info', msg: a.msg, detail: a.detail + ' | acknowledged by operator', time: 'just now' });
+  });
+  alertsState.resolved += alertsState.items.length;
+  alertsState.critical = 0; alertsState.warning = 0; alertsState.items = [];
+  renderAlerts(); showToast('All alerts acknowledged');
+}
+
+function openThresholdModal()  { document.getElementById('threshold-modal').classList.add('open'); }
+function closeThresholdModal() { document.getElementById('threshold-modal').classList.remove('open'); }
+
+function saveThresholds() {
+  thresholds.p99        = +document.getElementById('th-p99').value        || 8;
+  thresholds.queueWarn  = +document.getElementById('th-queue-warn').value  || 70;
+  thresholds.queueCrit  = +document.getElementById('th-queue-crit').value  || 85;
+  thresholds.rejects    = +document.getElementById('th-rejects').value    || 5;
+  thresholds.lag        = +document.getElementById('th-lag').value        || 200;
+  Object.keys(alertCooldown).forEach(k => delete alertCooldown[k]);
+  closeThresholdModal();
+  updateQueueBars(); updateQueueTable();
+  if (document.getElementById('page-topology').classList.contains('active')) renderTopology();
+  showToast('Thresholds saved');
+}
+
+document.getElementById('threshold-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeThresholdModal();
+});
+
+function exportSnapshot() {
+  const snapshot = {
+    exported_at: new Date().toISOString(),
+    time_range: currentRange,
+    thresholds,
+    metrics: { ...metricsState },
+    alerts: { active: alertsState.items, resolved: alertsState.resolvedItems.slice(0, 10) },
+    queues: QUEUES.map(q => ({ name: q.name, type: q.type, cap: q.cap, fill: q.fill(), lag: q.lag(), status: queueStatus(q.fill()) })),
+    connections: CONNECTIONS,
+    rate_limiters: rateState.sources
+  };
+  const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `nexus-snapshot-${Date.now()}.json`; a.click();
+  URL.revokeObjectURL(url);
+  showToast('Snapshot exported');
+}
+
+function liveTick() {
+  const drift = (Math.random() - 0.5) * 0.6;
+  metricsState.p99          = Math.max(2.8, Math.min(7.5, +(metricsState.p99 + drift * 0.4).toFixed(1)));
+  metricsState.throughput   = Math.max(2100, Math.min(2750, Math.floor(metricsState.throughput + drift * 18)));
+  metricsState.queueMaxFill = Math.max(48, Math.min(89, Math.floor(metricsState.queueMaxFill + drift * 1.8)));
+  metricsState.rejects      = Math.max(2, Math.min(28, Math.floor(metricsState.rejects + drift * 1.2)));
+  metricsState.timers       = Math.max(280, Math.min(410, Math.floor(metricsState.timers + drift * 3)));
+  metricsState.maxLag       = Math.max(40, Math.min(210, Math.floor(metricsState.maxLag + drift * 6)));
+  metricsState.frameRate    = Math.max(780, Math.min(910, Math.floor(metricsState.frameRate + drift * 4)));
+  metricsState.bytes        = Math.max(29, Math.min(47, +(metricsState.bytes + drift * 0.6).toFixed(1)));
+  metricsState.rss          = Math.max(298, Math.min(328, Math.floor(metricsState.rss + drift * 0.8)));
+  metricsState.slabFree     = Math.max(71, Math.min(91, Math.floor(metricsState.slabFree + drift * 0.9)));
+
+  if (Math.random() < 0.08) {
+    metricsState.queueMaxFill = Math.min(94, metricsState.queueMaxFill + 8);
+    metricsState.maxLag       = Math.min(280, metricsState.maxLag + 35);
+  }
+
+  checkThresholds();
+  updateLiveCharts();
+  updateKPIs();
+  updateQueueBars();
+  updateQueueTable();
+  updateRatePage();
+  if (document.getElementById('page-topology').classList.contains('active')) renderTopology();
+  document.getElementById('last-sync').textContent = `last sync: ${new Date().toLocaleTimeString('en-GB', { hour12: false })}`;
+}
+
+function pushShift(chart, idx, value) {
+  if (!chart) return;
+  chart.data.datasets[idx].data.shift();
+  chart.data.datasets[idx].data.push(value);
+}
+
+function updateLiveCharts() {
+  const noise = (base, spread) => +(base + (Math.random() - 0.5) * spread).toFixed(1);
+  const tput = chartInstances['ov-throughput'];
+  if (tput) { pushShift(tput, 0, metricsState.throughput); tput.update('none'); }
+  const lat = chartInstances['ov-latency'];
+  if (lat)  { pushShift(lat,  0, metricsState.p99);        lat.update('none'); }
+  const latTrend = chartInstances['lat-trend'];
+  if (latTrend) { pushShift(latTrend, 0, metricsState.p99); pushShift(latTrend, 1, noise(metricsState.p99 * 2.2, 1.5)); latTrend.update('none'); }
+  const depth = chartInstances['q-depth'];
+  if (depth) { pushShift(depth, 0, 47000 + (metricsState.queueMaxFill - 70) * 180); depth.update('none'); }
+  const qtput = chartInstances['q-tput'];
+  if (qtput) { pushShift(qtput, 0, metricsState.throughput); pushShift(qtput, 1, noise(metricsState.throughput * 0.98, 30)); qtput.update('none'); }
+  const frames = chartInstances['net-frames'];
+  if (frames) { pushShift(frames, 0, metricsState.frameRate); frames.update('none'); }
+  const bytes = chartInstances['net-bytes-chart'];
+  if (bytes)  { pushShift(bytes, 0, metricsState.bytes); pushShift(bytes, 1, noise(metricsState.bytes * 0.36, 1)); bytes.update('none'); }
+  const rss = chartInstances['mem-rss-chart'];
+  if (rss) { pushShift(rss, 0, metricsState.rss); rss.update('none'); }
+  const slab = chartInstances['mem-slab'];
+  if (slab) { slab.data.datasets[0].data[0] = 100 - metricsState.slabFree; slab.update('none'); }
+  const rateTrend = chartInstances['rate-trend'];
+  if (rateTrend) { pushShift(rateTrend, 0, metricsState.rejects); rateTrend.update('none'); }
+  ['sp1','sp2','sp3','sp4','sp5','sp6','sp7','sp8','sp9','sp10','sp11','sp12','sp13'].forEach(id => {
+    const chart = chartInstances[id];
+    if (!chart) return;
+    const last = chart.data.datasets[0].data[chart.data.datasets[0].data.length - 1] || 1.5;
+    pushShift(chart, 0, +(last + (Math.random() - 0.5) * 0.15).toFixed(2));
+    chart.update('none');
+  });
+}
+
+function simBackpressure() {
+  const prev = { fill: metricsState.queueMaxFill, lag: metricsState.maxLag, rejects: metricsState.rejects };
+  metricsState.queueMaxFill = 91; metricsState.maxLag = 265; metricsState.rejects = 31;
+  updateKPIs(); updateQueueBars(); updateQueueTable();
+  if (document.getElementById('page-topology').classList.contains('active')) renderTopology();
+  fireAlert('queue-crit', 'critical', 'order-inbound queue at 91% - backpressure detected', 'threshold: 70% | SPSC | triggered by simulation');
+  showToast('Backpressure event simulated');
+  setTimeout(() => {
+    metricsState.queueMaxFill = prev.fill; metricsState.maxLag = prev.lag; metricsState.rejects = prev.rejects;
+    updateKPIs(); updateQueueBars(); updateQueueTable();
+    showToast('Backpressure cleared');
+  }, 8000);
+}
+
+function toggleActionsMenu(e) {
+  if (e) e.stopPropagation();
+  document.getElementById('actions-menu').classList.toggle('open');
+}
+function closeActionsMenu() {
+  document.getElementById('actions-menu').classList.remove('open');
+}
+
+function simLatencySpike() {
+  const prev = metricsState.p99;
+  metricsState.p99 = 22.4;
+  updateKPIs();
+  fireAlert('p99', 'critical', 'p99 latency spike - 22.4µs', `threshold: ${thresholds.p99}µs | component: nexus-queue`);
+  showToast('Latency spike simulated');
+  setTimeout(() => { metricsState.p99 = prev; updateKPIs(); }, 5000);
+}
+
+function simReconnect() {
+  const conn = CONNECTIONS[0];
+  const prevStatus = conn.status;
+  conn.status = 'warn';
+  conn.reconnects += 1;
+  updateConnections();
+  fireAlert('reconnect', 'warning', 'nexus-async-net reconnect on ws://feed-01:9001', 'ClientPool self-healing | reconnect attempt 1/3 | auto-heal in ~3s');
+  showToast('Reconnect event simulated');
+  setTimeout(() => {
+    conn.status = prevStatus;
+    updateConnections();
+    showToast('feed-01 reconnected - self-healed');
+  }, 3000);
+}
+
+function simMemPressure() {
+  const prevSlab = metricsState.slabFree;
+  const prevRss  = metricsState.rss;
+  metricsState.slabFree = 8;
+  metricsState.rss = 341;
+  updateKPIs();
+  const slabChart = chartInstances['mem-slab'];
+  if (slabChart) {
+    slabChart.data.datasets[0].data[1] = 96;
+    slabChart.data.datasets[0].backgroundColor[1] = RED;
+    slabChart.update();
+  }
+  fireAlert('slab', 'critical', 'slab exhaustion - frame-slab at 96%', 'pool: frame-slab | free: 8% | drain cycle required');
+  fireAlert('rss',  'warning',  'RSS elevated - 341MB', 'threshold: 340MB | component: nexus-slab');
+  showToast('Memory pressure simulated');
+  setTimeout(() => {
+    metricsState.slabFree = prevSlab;
+    metricsState.rss = prevRss;
+    updateKPIs();
+    if (slabChart) {
+      slabChart.data.datasets[0].data[1] = 70;
+      slabChart.data.datasets[0].backgroundColor[1] = AMBER;
+      slabChart.update();
+    }
+    showToast('Memory pressure resolved');
+  }, 6000);
+}
+
+function simInferenceDeg() {
+  const gbdtSpark = chartInstances['sp5'];
+  if (gbdtSpark) {
+    for (let i = 0; i < 5; i++) {
+      gbdtSpark.data.datasets[0].data.shift();
+      gbdtSpark.data.datasets[0].data.push(+(14.8 + Math.random() * 3).toFixed(1));
+    }
+    gbdtSpark.update();
+    const valEl = document.getElementById('sp5-val');
+    if (valEl) valEl.textContent = '14.8 µs';
+  }
+  const infNode = TOPO_NODES.find(n => n.id === 'inference');
+  if (infNode) infNode.metric = () => ({ val: '14.8 / 4.2', label: 'µs' });
+  fireAlert('inference', 'critical', 'GBDT inference degraded - 14.8µs', 'expected: 0.6µs | possible SIMD path miss or cold model cache');
+  showToast('Inference degradation simulated');
+  setTimeout(() => {
+    if (gbdtSpark) {
+      for (let i = 0; i < 5; i++) {
+        gbdtSpark.data.datasets[0].data.shift();
+        gbdtSpark.data.datasets[0].data.push(+(0.6 + Math.random() * 0.2).toFixed(1));
+      }
+      gbdtSpark.update();
+      const valEl = document.getElementById('sp5-val');
+      if (valEl) valEl.textContent = '0.6 µs';
+    }
+    if (infNode) infNode.metric = () => ({ val: '0.6 / 4.2', label: 'µs' });
+    showToast('Inference recovered');
+  }, 7000);
+}
+
+function simTimerBacklog() {
+  const prev = metricsState.timers;
+  metricsState.timers = 3840;
+  updateKPIs();
+  if (document.getElementById('page-topology').classList.contains('active')) renderTopology();
+  fireAlert('timer-backlog', 'warning', 'timer wheel backlog - 3840 pending', 'capacity: 8192 | fill: 47% | possible tick starvation');
+  showToast('Timer backlog simulated');
+  let drainStep = 0;
+  const drainInterval = setInterval(() => {
+    drainStep++;
+    metricsState.timers = Math.max(prev, metricsState.timers - 350);
+    updateKPIs();
+    if (drainStep >= 8 || metricsState.timers <= prev) {
+      metricsState.timers = prev;
+      clearInterval(drainInterval);
+      showToast('Timer backlog drained');
+    }
+  }, 750);
+}
+
+function simNetPartition() {
+  const c = CONNECTIONS;
+  const s0 = c[0].status, s1 = c[1].status, s2 = c[2].status;
+  c[0].status = 'warn'; c[0].reconnects++;
+  c[1].status = 'warn'; c[1].reconnects++;
+  c[2].status = 'warn'; c[2].reconnects++;
+  updateConnections();
+  const prevTput   = metricsState.throughput;
+  const prevFrames = metricsState.frameRate;
+  metricsState.throughput = Math.floor(prevTput   * 0.31);
+  metricsState.frameRate  = Math.floor(prevFrames * 0.28);
+  updateKPIs();
+  fireAlert('net-partition', 'critical',
+    'network partition - 3 feed connections lost',
+    'affected: feed-01, feed-02, feed-03 | throughput collapsed | ClientPool reconnecting');
+  showToast('Network partition simulated');
+  setTimeout(() => {
+    c[0].status = s0; updateConnections(); showToast('feed-01 recovered');
+    metricsState.throughput = Math.floor(prevTput * 0.62);
+    metricsState.frameRate  = Math.floor(prevFrames * 0.59);
+    updateKPIs();
+  }, 2000);
+  setTimeout(() => {
+    c[1].status = s1; updateConnections(); showToast('feed-02 recovered');
+    metricsState.throughput = Math.floor(prevTput * 0.84);
+    metricsState.frameRate  = Math.floor(prevFrames * 0.81);
+    updateKPIs();
+  }, 4000);
+  setTimeout(() => {
+    c[2].status = s2; updateConnections(); showToast('feed-03 recovered');
+    metricsState.throughput = prevTput;
+    metricsState.frameRate  = prevFrames;
+    updateKPIs();
+  }, 6000);
+}
+
+function simAllocSpike() {
+  showToast('Hot path alloc spike simulated');
+  fireAlert('heap-alloc', 'critical',
+    'hot path allocation spike - 347 allocs/s',
+    'expected: 0 | zero-alloc contract violated | check recent push for Box/Vec on hot path');
+  setTimeout(() => showToast('Allocation spike cleared'), 6000);
+}
+
+function simRateMisconfig() {
+  const r = rateState.sources;
+  const p = [
+    { rejects: r[0].rejects, bucketFill: r[0].bucketFill, current: r[0].current },
+    { rejects: r[1].rejects, bucketFill: r[1].bucketFill, current: r[1].current },
+    { rejects: r[3].rejects, bucketFill: r[3].bucketFill, current: r[3].current }
+  ];
+  r[0].rejects = 142; r[0].bucketFill = 2;
+  r[1].rejects = 98;  r[1].bucketFill = 4;
+  r[3].rejects = 61;  r[3].bucketFill = 9;
+  metricsState.rejects = r.reduce((s, x) => s + x.rejects, 0);
+  updateKPIs();
+  updateRatePage();
+  const bc = chartInstances['rate-buckets'];
+  if (bc) {
+    bc.data.datasets[0].data            = [2, 4, 31, 9, 0, 98];
+    bc.data.datasets[0].backgroundColor = [RED, RED, AMBER, RED, RED, GREEN];
+    bc.update();
+  }
+  fireAlert('rate-misconfig', 'critical',
+    'rate limiter misconfiguration - 4 sources over limit',
+    'affected: feed-01 (142/s), feed-02 (98/s), oms-primary (61/s) | check GCRA ceiling config');
+  showToast('Rate misconfig simulated');
+  setTimeout(() => {
+    r[0].rejects = p[0].rejects; r[0].bucketFill = p[0].bucketFill; r[0].current = p[0].current;
+    r[1].rejects = p[1].rejects; r[1].bucketFill = p[1].bucketFill; r[1].current = p[1].current;
+    r[3].rejects = p[2].rejects; r[3].bucketFill = p[2].bucketFill; r[3].current = p[2].current;
+    metricsState.rejects = r.reduce((s, x) => s + x.rejects, 0);
+    updateKPIs();
+    updateRatePage();
+    if (bc) {
+      bc.data.datasets[0].data            = [99, 98, 31, 96, 0, 98];
+      bc.data.datasets[0].backgroundColor = [GREEN, GREEN, AMBER, GREEN, RED, GREEN];
+      bc.update();
+    }
+    showToast('Rate config rolled back - limits restored');
+  }, 7000);
+}
+
+function checkThresholds() {
+  const s = metricsState;
+  if (s.p99 > thresholds.p99)
+    fireAlert('p99', 'critical', `p99 latency - ${s.p99}µs`, `threshold: ${thresholds.p99}µs | component: nexus-queue`);
+  if (s.queueMaxFill >= thresholds.queueCrit)
+    fireAlert('queue-crit', 'critical', `order-inbound queue critical - ${s.queueMaxFill}%`, `threshold: ${thresholds.queueCrit}% | SPSC | capacity: 65536`);
+  if (s.maxLag > thresholds.lag)
+    fireAlert('lag', 'warning', `consumer lag - ${s.maxLag}µs`, `threshold: ${thresholds.lag}µs | queue: order-inbound`);
+  if (s.rejects > thresholds.rejects)
+    fireAlert('rejects', 'warning', `rate limiter elevated - ${s.rejects} rejects/s`, `threshold: ${thresholds.rejects}/s | source: /exec endpoint`);
+}
+
+function navigate(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  const navEl = document.querySelector(`[onclick="navigate('${page}')"]`);
+  if (navEl) navEl.classList.add('active');
+  document.querySelector('.main').scrollTop = 0;
+  closeSidePanel();
+  closeActionsMenu();
+  if (page === 'topology') renderTopology();
+}
+
+function showToast(message) {
+  const toast = document.getElementById('toast');
+  toast.textContent = message;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 2200);
+}
+
+function tickClock() {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('en-GB', { hour12: false });
+}
+
+function initDashboard() {
+  initCharts();
+  updateKPIs(); updateQueueBars(); updateQueueTable();
+  updateConnections(); updatePoolTable(); renderAlerts(); updateRatePage();
+  checkThresholds();
+  tickClock();
+  setInterval(tickClock, 1000);
+  document.getElementById('last-sync').textContent = `last sync: ${new Date().toLocaleTimeString('en-GB', { hour12: false })}`;
+  liveInterval = setInterval(liveTick, 1000);
+
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    closeThresholdModal();
+    closeSidePanel();
+    closeActionsMenu();
+  });
+
+  document.addEventListener('click', e => {
+    const dd = document.getElementById('actions-dropdown');
+    if (dd && !dd.contains(e.target)) closeActionsMenu();
+  });
+
+  const topoWrap = document.getElementById('topo-wrap');
+  if (topoWrap && typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => {
+      if (document.getElementById('page-topology').classList.contains('active')) {
+        renderTopology();
+      }
+    }).observe(topoWrap);
+  }
+
+  document.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); item.click(); } });
+  });
+
+  console.log('%c[nexus-operator v5] dashboard initialized', 'color:#71717a');
+}
+
+initDashboard();
+</script>
+</body>
+</html>
