@@ -343,11 +343,11 @@ CHANGELOG entry in `nexus-stats-core`:
   `u`: use `eval(x)`, or `to_raw_basis()` for powers of `x`. A fit needs as
   many distinct x as coefficients, `r_squared` is `None` past what rounding
   explains (before, it could leave `[0, 1]`), and singularity is judged
-  relative to the matrix scale, never giving NaN coefficients. `LinearRegression` /
-  `EwLinearRegression` keep means and co-moments instead of raw power sums,
-  so a large x or y offset (unix timestamps, a price level) no longer
-  cancels, and return `None` for constant x instead of a rounding-noise
-  slope.
+  relative to the matrix scale, never giving NaN coefficients.
+  `LinearRegression` / `EwLinearRegression` keep means and co-moments
+  instead of raw power sums, so a large x or y offset (unix timestamps, a
+  price level) no longer cancels, and return `None` for constant x instead
+  of a rounding-noise slope.
 - `ShiryaevRoberts` saturates its statistic at `1e300` instead of overflowing
   to `+inf`, turning NaN and reporting `false` forever.
 - `RobustZScore` scales by `sqrt(2/π)` (its spread is a *mean* absolute

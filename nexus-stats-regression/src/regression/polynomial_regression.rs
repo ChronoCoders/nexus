@@ -399,7 +399,8 @@ pub(crate) fn gauss_solve_f64(dim: usize, a: &mut [[f64; 9]; 9], b: &mut [f64; 9
 
 /// Online polynomial regression via sufficient statistics.
 ///
-/// Accumulates sums of powers of x and cross-products with y.
+/// Accumulates sums of powers of `u = (x - x_ref) / x_scale` and their
+/// cross-products with `v = y - y_ref`.
 /// Solves the normal equations at query time via Gaussian elimination
 /// with partial pivoting.
 ///
@@ -450,8 +451,8 @@ pub(crate) fn gauss_solve_f64(dim: usize, a: &mut [[f64; 9]; 9], b: &mut [f64; 9
 ///
 /// # Complexity
 /// - O(degree) per update. An update that moves the anchor shifts every sum,
-///   which is O(degree²). A steadily growing x, such as a timestamp, never moves it; a jump in
-///   level that outweighs the history does.
+///   which is O(degree²). A steadily growing x, such as a timestamp, never
+///   moves it; a jump in level that outweighs the history does.
 /// - O(degree³) per coefficient query.
 /// - ~344 bytes state. Zero allocation.
 ///
